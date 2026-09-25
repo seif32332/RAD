@@ -529,8 +529,9 @@ JSON لكل مستأجر: الشركات، الفروع، الموظفون ال�
 ### 5.1 خدمة التحقق من الوجه `radeef-face`
 - **ما هي:** خدمة Python داخلية على `127.0.0.1:8090`، نسخة واحدة لكل المستأجرين، ولا يعرضها Nginx. لا تخزن شيئاً،
   وكل طلب يحتاج `Authorization: Bearer` بالتوكن.
-- **مرة واحدة قبل أول نشر، على جهاز تطوير:** تحويل نماذج كشف الالتقاط المباشر إلى ONNX ورفعها إلى المستودع:
-  `services/face/tools/convert_fasnet.py`. التعليمات داخل الملف، والتراخيص في `services/face/models/MODELS.md`.
+- **نماذج كشف الالتقاط المباشر:** محوّلة إلى ONNX ومرفوعة في المستودع (`services/face/models/fasnet_*.onnx`، تم التحقق
+  من مطابقتها للأصل). لا تحتاج إعادة التحويل إلا عند تغيير النموذج: `services/face/tools/convert_fasnet.py`. التراخيص في
+  `services/face/models/MODELS.md`.
 - **التثبيت على المضيف (نمط PM2):**
   ```bash
   sudo apt install -y python3-venv
