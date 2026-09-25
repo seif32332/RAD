@@ -30,10 +30,12 @@ export async function GET() {
         geoRequired: !ctx.employee.attendanceGeoExempt,
         faceRequired: ctx.faceRequired,
         faceEnrolled: ctx.faceEnrolled,
+        faceConsentCurrent: ctx.faceConsentCurrent,
         faceServiceConfigured: faceServiceConfigured(),
         locations: ctx.fences.map((f) => ({ name: f.name })),
         gpsMaxAccuracyM: ctx.settings.gpsMaxAccuracyM,
         consentVersion: FACE_CONSENT_VERSION,
+        selfieRetentionDays: ctx.settings.selfieRetentionDays,
       },
       { headers: { 'Cache-Control': 'no-store' } },
     );

@@ -7,6 +7,7 @@ import { notFound } from '@/lib/http';
 import { resolveEmployeeSchedule } from '@/lib/hr-workflows';
 import { FACE_MODEL } from '@/lib/face';
 import {
+  FACE_CONSENT_VERSION,
   SELF_ATTENDANCE_BLOCKERS,
   SELF_ATTENDANCE_SETTING_KEYS,
   parseSelfAttendanceSettings,
@@ -75,6 +76,8 @@ export interface SelfAttendanceContext {
   faceRequired: boolean;
   /** A FaceProfile made by the current model exists. */
   faceEnrolled: boolean;
+  /** The enrolled employee accepted the current version of the privacy notice. */
+  faceConsentCurrent: boolean;
   blockers: SelfAttendanceBlocker[];
 }
 
@@ -89,7 +92,7 @@ export async function loadSelfAttendanceContext(db: Db, employeeId: string, now:
       employmentStatus: true,
       attendanceGeoExempt: true,
       attendanceFaceExempt: true,
-      faceProfile: { select: { model: true } },
+      faceProfile: { select: { model: true, consentVersion: true } },
     },
   });
   if (!employee) throw notFound('ملف الموظف غير موجود');
@@ -122,6 +125,7 @@ export async function loadSelfAttendanceContext(db: Db, employeeId: string, now:
     record,
     faceRequired: !employee.attendanceFaceExempt,
     faceEnrolled: faceProfile?.model === FACE_MODEL,
+    faceConsentCurrent: faceProfile?.consentVersion === FACE_CONSENT_VERSION,
     blockers,
   };
 }

@@ -103,6 +103,9 @@ export async function POST(req: Request) {
     if (ctx.faceRequired && !ctx.faceEnrolled) {
       throw conflict(PUNCH_REASON_MESSAGES.NOT_ENROLLED, { code: PUNCH_REASONS.NOT_ENROLLED });
     }
+    if (ctx.faceRequired && !ctx.faceConsentCurrent) {
+      throw conflict('تم تحديث إشعار الخصوصية. اقرأه ووافق عليه قبل تسجيل الحركة.', { code: 'CONSENT_OUTDATED' });
+    }
     const recent = await prisma.attendancePunch.count({ where: { employeeId, createdAt: { gte: new Date(now.getTime() - PUNCH_WINDOW_MS) } } });
     if (recent >= MAX_PUNCHES_PER_WINDOW) {
       return jsonError(429, 'محاولات كثيرة خلال وقت قصير. انتظر قليلاً ثم حاول مرة أخرى.', { retryAfterSeconds: Math.ceil(PUNCH_WINDOW_MS / 1000) });

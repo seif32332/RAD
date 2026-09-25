@@ -3,7 +3,7 @@ import { z } from 'zod';
 import { prisma } from '@/lib/prisma';
 import { getClientIp, requireEmployeeId, requireUser } from '@/lib/auth';
 import { ROLE_GROUPS } from '@/lib/constants';
-import { HttpError, badRequest, conflict, forbidden, handleApiError, jsonError } from '@/lib/http';
+import { HttpError, badRequest, conflict, forbidden, handleApiError, jsonError, parseBody } from '@/lib/http';
 import { zNumber } from '@/lib/validation';
 import { rateLimit } from '@/lib/rate-limit';
 import { logAudit } from '@/lib/audit';
@@ -144,6 +144,38 @@ export async function POST(req: Request) {
   } catch (err) {
     if (photoName) await deleteBiometricImage(photoName).catch(() => undefined);
     return handleApiError(err, 'portal/face:POST');
+  }
+}
+
+const renewSchema = z.object({
+  consent: z.literal(true, { errorMap: () => ({ message: 'يجب الموافقة على إشعار الخصوصية' }) }),
+  consentVersion: z.string().trim().max(40),
+});
+
+/**
+ * PATCH /api/portal/face — an enrolled employee accepts a new version of the privacy notice
+ * (the face template itself is unchanged).
+ */
+export async function PATCH(req: Request) {
+  try {
+    const user = await requireUser(ROLE_GROUPS.ALL);
+    const employeeId = await requireEmployeeId(user);
+    const body = await parseBody(req, renewSchema);
+    if (body.consentVersion !== FACE_CONSENT_VERSION) throw conflict('تم تحديث إشعار الخصوصية. حدّث الصفحة واقرأه ثم وافق من جديد.', { code: 'CONSENT_OUTDATED' });
+    const profile = await prisma.faceProfile.findUnique({ where: { employeeId }, select: { id: true, consentVersion: true } });
+    if (!profile) throw conflict('لا توجد صورة وجه مسجلة لك', { code: 'NOT_ENROLLED' });
+    await prisma.faceProfile.update({ where: { id: profile.id }, data: { consentAt: new Date(), consentVersion: FACE_CONSENT_VERSION } });
+    await logAudit({
+      userId: user.id,
+      action: 'UPDATE',
+      entityType: 'FaceProfile',
+      entityId: profile.id,
+      details: { employeeId, event: 'CONSENT_RENEWED', from: profile.consentVersion, to: FACE_CONSENT_VERSION },
+      ipAddress: getClientIp(req),
+    });
+    return NextResponse.json({ message: 'تم تسجيل موافقتك على الإشعار المحدث' });
+  } catch (err) {
+    return handleApiError(err, 'portal/face:PATCH');
   }
 }
 

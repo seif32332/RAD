@@ -11,8 +11,13 @@ import { nearestFence, type GeoFence, type LatLng, type NearestFence } from '@/l
 const HOUR_MS = 60 * 60 * 1000;
 const DAY_MS = 24 * HOUR_MS;
 
-/** Version of the biometric / location notice the employee accepted (FaceProfile.consentVersion). */
-export const FACE_CONSENT_VERSION = '2026-09-v1';
+/**
+ * Version of the biometric / location notice the employee accepted (FaceProfile.consentVersion).
+ * Bump it whenever the notice text in src/app/portal/_components/ClockCard.tsx changes: enrolled
+ * employees are then asked to accept the new text before their next punch.
+ * v2 (approved by the owner on 2026-09-26): retention period in days + HR as the contact for requests.
+ */
+export const FACE_CONSENT_VERSION = '2026-09-v2';
 
 /** Minimum gap between a check-in and the check-out of the same record (double-tap guard). */
 export const MIN_PUNCH_GAP_MS = 5 * 60 * 1000;

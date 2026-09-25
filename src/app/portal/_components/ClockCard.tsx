@@ -18,10 +18,13 @@ interface SelfAttendanceStatus {
   geoRequired: boolean;
   faceRequired: boolean;
   faceEnrolled: boolean;
+  /** The enrolled employee accepted the current version of the privacy notice. */
+  faceConsentCurrent: boolean;
   faceServiceConfigured: boolean;
   locations: { name: string }[];
   gpsMaxAccuracyM: number;
   consentVersion: string;
+  selfieRetentionDays: number;
 }
 
 interface Position {
@@ -75,6 +78,8 @@ export default function ClockCard({ onPunched, onRequestCorrection }: { onPunche
   const [status, setStatus] = useState<SelfAttendanceStatus | null>(null);
   const [consentOpen, setConsentOpen] = useState(false);
   const [consentChecked, setConsentChecked] = useState(false);
+  // 'enroll' = first registration of the face; 'renew' = the notice changed since the employee accepted it.
+  const [consentMode, setConsentMode] = useState<'enroll' | 'renew'>('enroll');
   const [camera, setCamera] = useState<'enroll' | 'punch' | null>(null);
   const [busy, setBusy] = useState(false);
   const [phase, setPhase] = useState<string | null>(null);
@@ -200,7 +205,8 @@ export default function ClockCard({ onPunched, onRequestCorrection }: { onPunche
 
   const start = () => {
     setRejection(null);
-    if (status.faceRequired && !status.faceEnrolled) {
+    if (status.faceRequired && (!status.faceEnrolled || !status.faceConsentCurrent)) {
+      setConsentMode(status.faceEnrolled ? 'renew' : 'enroll');
       setConsentChecked(false);
       setConsentOpen(true);
       return;
@@ -210,7 +216,29 @@ export default function ClockCard({ onPunched, onRequestCorrection }: { onPunche
     else void submitPunch(null);
   };
 
-  const continueAfterConsent = () => {
+  const continueAfterConsent = async () => {
+    if (consentMode === 'renew') {
+      try {
+        const res = await fetch('/api/portal/face', {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ consent: true, consentVersion: status.consentVersion }),
+        });
+        if (res.status === 401) return redirectToLogin();
+        if (!res.ok) {
+          toast.error(await readApiError(res, 'تعذر تسجيل الموافقة'));
+          return;
+        }
+      } catch {
+        toast.error('تعذر الاتصال بالخادم');
+        return;
+      }
+      setConsentOpen(false);
+      void load();
+      beginPosition();
+      setCamera('punch');
+      return;
+    }
     setConsentOpen(false);
     beginPosition();
     setCamera('enroll');
@@ -324,25 +352,29 @@ export default function ClockCard({ onPunched, onRequestCorrection }: { onPunche
         onClose={() => setConsentOpen(false)}
         tone="emerald"
         icon={<ScanFace size={22} />}
-        title="تسجيل صورة الوجه لأول مرة"
-        description="اقرأ الإشعار التالي قبل المتابعة"
+        title={consentMode === 'renew' ? 'تحديث إشعار الخصوصية' : 'تسجيل صورة الوجه لأول مرة'}
+        description={consentMode === 'renew' ? 'تغيّر نص الإشعار منذ موافقتك السابقة. اقرأه ووافق عليه للمتابعة.' : 'اقرأ الإشعار التالي قبل المتابعة'}
       >
         <div className="p-6 md:p-8 space-y-5">
+          {/* Notice text: bump FACE_CONSENT_VERSION (src/lib/self-attendance.ts) whenever it changes. */}
           <div className="bg-slate-50 border border-slate-100 rounded-2xl p-4 text-[13px] font-bold text-slate-700 leading-loose space-y-2">
             <p><span className="font-black">الغرض:</span> التأكد من أنك صاحب الحساب وأنك في موقع العمل عند تسجيل الحضور والانصراف فقط.</p>
             <p><span className="font-black">ما نحفظه:</span> قالب رقمي مشفر لوجهك وصورة مرجعية واحدة يطّلع عليها قسم الموارد البشرية عند الحاجة. موقعك يُؤخذ لحظة الضغط على الزر فقط، ولا يتم تتبعك.</p>
-            <p><span className="font-black">صور الحركات:</span> لا تُحفظ صور الحركات المقبولة. صور الحركات المرفوضة أو المشبوهة تُحفظ مدة محددة للمراجعة ثم تُحذف تلقائياً.</p>
+            <p><span className="font-black">صور الحركات:</span> لا تُحفظ صور الحركات المقبولة. صور الحركات المرفوضة أو المشبوهة تُحفظ {status.selfieRetentionDays} يوماً للمراجعة ثم تُحذف تلقائياً.</p>
             <p><span className="font-black">المعالجة:</span> تتم على خوادم المنشأة، ولا تُرسل بيانات وجهك إلى أي طرف خارجي.</p>
             <p><span className="font-black">حقوقك:</span> يمكنك سحب موافقتك وحذف بيانات وجهك في أي وقت من هذه البوابة، وتُحذف تلقائياً عند انتهاء خدمتك.</p>
+            <p><span className="font-black">للتواصل:</span> لأي طلب أو اعتراض يخص بياناتك (الاطلاع عليها أو تصحيحها أو حذفها) تواصل مع قسم الموارد البشرية في منشأتك.</p>
           </div>
           <label className="flex items-start gap-3 cursor-pointer">
             <input type="checkbox" checked={consentChecked} onChange={(e) => setConsentChecked(e.target.checked)} className="mt-1 w-5 h-5 accent-emerald-600" />
             <span className="text-[13px] font-extrabold text-slate-800">قرأت الإشعار وأوافق على معالجة صورة وجهي وموقعي لهذا الغرض.</span>
           </label>
-          <p className="text-[12px] font-bold text-slate-500">سجّل صورتك وأنت في موقع العمل، وستُستخدم نفس الصورة لتسجيل هذه الحركة.</p>
+          {consentMode === 'enroll' && (
+            <p className="text-[12px] font-bold text-slate-500">سجّل صورتك وأنت في موقع العمل، وستُستخدم نفس الصورة لتسجيل هذه الحركة.</p>
+          )}
           <div className="flex gap-3">
-            <button type="button" disabled={!consentChecked} onClick={continueAfterConsent} className="flex-1 bg-emerald-600 hover:bg-emerald-700 text-white py-3.5 rounded-2xl font-black transition disabled:opacity-50">
-              متابعة إلى الكاميرا
+            <button type="button" disabled={!consentChecked} onClick={() => void continueAfterConsent()} className="flex-1 bg-emerald-600 hover:bg-emerald-700 text-white py-3.5 rounded-2xl font-black transition disabled:opacity-50">
+              {consentMode === 'renew' ? 'موافق، متابعة' : 'متابعة إلى الكاميرا'}
             </button>
             <button type="button" onClick={() => setConsentOpen(false)} className="px-6 bg-slate-100 hover:bg-slate-200 text-slate-600 py-3.5 rounded-2xl font-bold transition">
               إلغاء
