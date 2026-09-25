@@ -241,9 +241,3 @@ sudo ops/new-tenant.sh --email ops@example.com <tenant> <domain> <port>
 ## الترخيص
 
 هذا المشروع خاص ومحمي. جميع الحقوق محفوظة. لا يُسمح بالنسخ أو التوزيع بدون إذن مسبق.
-
-<div align="center">
-
-**تم التطوير بواسطة [YoserDev](https://github.com/yosersev-sys)**
-
-</div>
