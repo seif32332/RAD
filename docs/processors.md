@@ -47,8 +47,8 @@ listed in the first column of this table.
 
 | Package(s) | Component | Purpose | Data processed | Leaves the server? | Status | Approved by / date |
 |---|---|---|---|---|---|---|
-| `fastapi`, `uvicorn`, `python-multipart` | `services/face` (radeef-face, 127.0.0.1:8090) | HTTP layer of the internal face verification service | Selfie image, in memory only | No | PENDING: owner approval (DEC-011); keep `self_attendance_enabled` = 0 until approved | — |
-| `numpy`, `opencv-python-headless`, `onnxruntime` | `services/face` | Face detection (YuNet, MIT), 128-d embedding (SFace, Apache-2.0), passive liveness (MiniFASNet, Apache-2.0) | Selfie image, in memory only; returns an embedding that Radeef stores encrypted | No | PENDING: owner approval (DEC-011) | — |
+| `fastapi`, `uvicorn`, `python-multipart` | `services/face` (radeef-face, 127.0.0.1:8090) | HTTP layer of the internal face verification service | Selfie image, in memory only | No | APPROVED (DEC-011). Enable `self_attendance_enabled` only after the remaining DEC-011 steps | Owner: saif (seifmostafa@qiadah.sa), 2026-09-26 |
+| `numpy`, `opencv-python-headless`, `onnxruntime` | `services/face` | Face detection (YuNet, MIT), 128-d embedding (SFace, Apache-2.0), passive liveness (MiniFASNet, Apache-2.0) | Selfie image, in memory only; returns an embedding that Radeef stores encrypted | No | APPROVED (DEC-011) | Owner: saif (seifmostafa@qiadah.sa), 2026-09-26 |
 
 Biometric data handling (PDPL: sensitive data):
 - **Consent:** explicit and versioned (`FaceProfile.consentVersion`).
