@@ -55,6 +55,8 @@ const PAGE_ROLES = {
   corrections: ROLE_GROUPS.MANAGERS,
   /** GET /api/visas, /api/medical-insurance: HR + GOV */
   hrOrGov: union(ROLE_GROUPS.HR, ROLE_GROUPS.GOV),
+  /** GET /api/integrations/muqeem/status, transactions, residents sync: ROLE_GROUPS.GOV */
+  muqeem: ROLE_GROUPS.GOV,
 } as const;
 
 /**
@@ -236,6 +238,7 @@ export const MENU_GROUPS: readonly MenuGroup[] = [
     defaultRoles: ['SUPER_ADMIN', 'COMPANY_ADMIN', 'GOV_RELATIONS', 'HR_MANAGER', 'FINANCE_MANAGER', 'PAYROLL_ADMIN'],
     items: [
       { href: '/renewals', label: 'إدارة التجديدات الدورية', iconName: 'BellRing', iconClassName: 'text-orange-500', roles: PAGE_ROLES.renewals },
+      { href: '/integrations/muqeem', label: 'الربط مع منصة مقيم', iconName: 'Landmark', iconClassName: 'text-teal-600', roles: PAGE_ROLES.muqeem },
       {
         href: '/incoming-requests',
         label: 'الطلبات الواردة',

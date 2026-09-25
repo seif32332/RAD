@@ -100,6 +100,8 @@ model Company {
   taxNumber               String? // الرقم الضريبي
   molEstablishmentNumber  String? // رقم المنشأة في وزارة الموارد البشرية
   gosiEstablishmentNumber String? // رقم المنشأة في التأمينات الاجتماعية
+  moiNumber               String? // رقم المنشأة في الجوازات (700) المستخدم في مقيم
+  muqeemPlatformId        String? // حساب مقيم المخزن مشفراً في خزنة المنصات الحكومية
   taxCertificateUrl       String? // مرفق الشهادة الضريبية
   nationalAddress         String? // العنوان الوطني (الرقم المختصر)
   nationalAddressUrl      String? // مرفق العنوان الوطني
@@ -131,6 +133,7 @@ model Company {
   violations        ComplianceViolation[]
   medicalInsurances MedicalInsurance[]
   administrations   Administration[]
+  muqeemPlatform    GovPlatform?          @relation("CompanyMuqeemPlatform", fields: [muqeemPlatformId], references: [id], onDelete: SetNull)
 
   @@index([commercialRegExp])
   @@index([trademarkExpDate])
@@ -716,6 +719,12 @@ model Visa {
   departureDate       DateTime? // تاريخ المغادرة
   returnDate          DateTime? // تاريخ العودة
   ticketAttachmentUrl String? // مرفق تذكرة الطيران
+  // --- بيانات التأشيرة الرسمية (مقيم) ---
+  externalVisaNumber  String? // رقم التأشيرة في مقيم
+  visaDurationDays    Int? // مدة التأشيرة بالأيام
+  returnBefore        DateTime? // العودة قبل (ميلادي)
+  visaPdfUrl          String?   @db.Text // نسخة التأشيرة PDF
+  issuedViaMuqeemAt   DateTime? // تاريخ الإصدار عبر مقيم
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -1869,8 +1878,9 @@ model GovPlatform {
   authorizedPerson String? // اسم الشخص المفوض
   notes            String? @db.Text // ملاحظات إضافية
 
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+  muqeemCompanies Company[] @relation("CompanyMuqeemPlatform")
 }
 
 // ---------------------------------------------------------
@@ -1987,4 +1997,30 @@ model NotificationOutbox {
   updatedAt      DateTime  @default(now()) @updatedAt
 
   @@index([status, createdAt])
+}
+
+// --- معاملات مقيم (سجل وحماية من التنفيذ المزدوج) ---
+model MuqeemTransaction {
+  id              String    @id @default(uuid())
+  idempotencyKey  String    @unique // يمنع تكرار نفس العملية على نفس الكيان
+  operation       String // EXIT_REENTRY_ISSUE, IQAMA_RENEW, FINAL_EXIT_ISSUE, ...
+  status          String    @default("PENDING") // PENDING, SUCCEEDED, FAILED, UNKNOWN
+  companyId       String?
+  employeeId      String?
+  entityType      String? // VISA, EMPLOYEE, SETTLEMENT
+  entityId        String?
+  externalRef     String? // رقم التأشيرة / رقم البلاغ ...
+  httpStatus      Int?
+  errorMessage    String?   @db.Text
+  requestSummary  String?   @db.Text // ملخص الطلب بلا بيانات حساسة
+  responseSummary String?   @db.Text
+  documentUrl     String?   @db.Text // ملف PDF المُرجع (إن وجد)
+  requestedById   String?
+  createdAt       DateTime  @default(now())
+  completedAt     DateTime?
+
+  @@index([companyId, createdAt])
+  @@index([employeeId])
+  @@index([entityType, entityId])
+  @@index([status])
 }

@@ -50,6 +50,316 @@ function redirectToLogin() {
   if (typeof window !== 'undefined') window.location.assign('/login');
 }
 
+// ---------------------------------------------------------------------------
+// Final exit via Muqeem (GET/POST /api/settlements/[id]/muqeem)
+// ---------------------------------------------------------------------------
+
+interface MuqeemTxView {
+  id: string;
+  operation: string;
+  status: string;
+  externalRef: string | null;
+  errorMessage: string | null;
+  createdAt: string;
+  completedAt: string | null;
+  reconcilable: boolean;
+  targetVisaNumber: string | null;
+}
+
+interface FinalExitView {
+  settlement: { id: string; type: string; status: string };
+  employee: { id: string; name: string; nationality: string | null; iqamaLast4: string };
+  company: { id: string; name: string; linked: boolean } | null;
+  muqeem: { usable: boolean };
+  canOperate: boolean;
+  relevant: boolean;
+  eligible: boolean;
+  reasons: string[];
+  reasonCodes: string[];
+  canCancel: boolean;
+  cancelReasons: string[];
+  warnings: string[];
+  state: {
+    phase: 'NONE' | 'FAILED' | 'ISSUED' | 'CANCELLED' | 'UNDETERMINED';
+    visaNumber: string | null;
+    exitBefore: string | null;
+    exitBeforeHijri: string | null;
+    issuedAt: string | null;
+    visaRecord: { id: string; status: string } | null;
+    lastError: string | null;
+    undetermined: MuqeemTxView | null;
+  };
+  transactions: MuqeemTxView[];
+}
+
+type FinalExitEntry = { data: FinalExitView | null; error: string | null; loading: boolean };
+
+/** Settlements whose final exit state is worth loading for the list badges. */
+const needsFinalExitState = (s: { type: string; status: string }) =>
+  s.type === 'END_OF_SERVICE' && (s.status === 'OWNER_APPROVED' || s.status === 'PAID');
+
+const FE_OP_LABEL: Record<string, string> = { FINAL_EXIT_ISSUE: 'إصدار', FINAL_EXIT_CANCEL: 'إلغاء' };
+const FE_TX_STATUS: Record<string, { label: string; cls: string }> = {
+  SUCCEEDED: { label: 'نُفّذت', cls: 'bg-emerald-50 text-emerald-700 border-emerald-200' },
+  FAILED: { label: 'لم تُنفّذ', cls: 'bg-rose-50 text-rose-700 border-rose-200' },
+  UNKNOWN: { label: 'غير محسومة', cls: 'bg-amber-50 text-amber-800 border-amber-300' },
+  PENDING: { label: 'قيد التنفيذ', cls: 'bg-slate-50 text-slate-600 border-slate-200' },
+};
+
+/** Short badge on a settlement card. */
+function FinalExitBadge({ entry }: { entry: FinalExitEntry | undefined }) {
+  const d = entry?.data;
+  if (!d) return null;
+  const { phase, visaNumber } = d.state;
+  if (phase === 'ISSUED') {
+    return (
+      <span className="text-[10px] font-black bg-emerald-50 text-emerald-700 px-2 py-0.5 rounded-lg border border-emerald-200">
+        خروج نهائي صادر عبر مقيم{visaNumber ? ` رقم ${visaNumber}` : ''}
+      </span>
+    );
+  }
+  if (phase === 'UNDETERMINED') {
+    return (
+      <span className="text-[10px] font-black bg-amber-50 text-amber-800 px-2 py-0.5 rounded-lg border border-amber-300">
+        خروج نهائي: نتيجة غير محسومة في مقيم، تتطلب تسوية
+      </span>
+    );
+  }
+  if (phase === 'CANCELLED') {
+    return <span className="text-[10px] font-black bg-slate-50 text-slate-600 px-2 py-0.5 rounded-lg border border-slate-200">خروج نهائي ملغى في مقيم</span>;
+  }
+  if (d.eligible && d.canOperate) {
+    return <span className="text-[10px] font-black bg-indigo-50 text-indigo-700 px-2 py-0.5 rounded-lg border border-indigo-200">جاهزة لإصدار الخروج النهائي عبر مقيم</span>;
+  }
+  return null;
+}
+
+async function postFinalExit(settlementId: string, body: Record<string, unknown>): Promise<{ ok: boolean; status: number; data: Record<string, unknown> | null }> {
+  const res = await fetch(`/api/settlements/${encodeURIComponent(settlementId)}/muqeem`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  let data: Record<string, unknown> | null = null;
+  try {
+    data = await res.json();
+  } catch {
+    data = null;
+  }
+  return { ok: res.ok, status: res.status, data };
+}
+
+function FinalExitPanel({
+  entry,
+  settlementId,
+  onChanged,
+}: {
+  entry: FinalExitEntry | undefined;
+  settlementId: string;
+  onChanged: () => Promise<void>;
+}) {
+  const [busy, setBusy] = useState(false);
+  if (!entry || (entry.loading && !entry.data)) {
+    return <div className="border border-slate-200 rounded-[1.5rem] p-5 text-[12px] font-bold text-slate-500">جارٍ تحميل حالة الخروج النهائي في مقيم...</div>;
+  }
+  if (entry.error && !entry.data) {
+    return (
+      <div className="border border-rose-200 bg-rose-50 rounded-[1.5rem] p-5 text-[12px] font-bold text-rose-700 flex items-center justify-between gap-3">
+        <span>{entry.error}</span>
+        <button type="button" onClick={() => void onChanged()} className="px-3 py-1.5 bg-white border border-rose-200 rounded-lg">إعادة المحاولة</button>
+      </div>
+    );
+  }
+  const d = entry.data;
+  if (!d || !d.relevant) return null;
+  const { state } = d;
+
+  const run = async (body: Record<string, unknown>) => {
+    setBusy(true);
+    try {
+      const r = await postFinalExit(settlementId, body);
+      if (r.status === 401) return redirectToLogin();
+      const message = (r.data?.message as string) || (r.ok ? 'تم' : 'تعذر تنفيذ العملية');
+      if (r.ok) {
+        if (r.data?.alreadyDone) toast.info(message);
+        else toast.success(message);
+        if (typeof r.data?.warning === 'string') toast.warning(r.data.warning);
+      } else if (r.status === 504) {
+        // UNKNOWN outcome: never retried automatically.
+        toast.error(`${message}\nتظهر العملية الآن في قسم «نتيجة غير محسومة» أدناه لتسجيل نتيجتها بعد التحقق.`);
+      } else {
+        toast.error(message);
+      }
+    } catch {
+      toast.error('تعذر الاتصال بالخادم. لا تُعِد المحاولة قبل تحديث الصفحة والتحقق من حالة العملية.');
+    } finally {
+      setBusy(false);
+      await onChanged();
+    }
+  };
+
+  const issue = async () => {
+    const warn = d.warnings.length ? `\n\nتنبيهات قبل المتابعة:\n${d.warnings.map((w) => `• ${w}`).join('\n')}` : '';
+    const ok = await confirmDialog(
+      `سيُرسَل الآن طلب حقيقي إلى منصة مقيم (الجوازات) لإصدار تأشيرة خروج نهائي للموظف «${d.employee.name}» (إقامة تنتهي بـ ${d.employee.iqamaLast4}) على حساب الشركة «${d.company?.name ?? ''}».\n\n` +
+        '• هذا إجراء حكومي فعلي يُسجَّل في مقيم باسم المنشأة، وليس مسودة داخل النظام.\n' +
+        '• يجب أن يغادر الموظف المملكة خلال مدة صلاحية التأشيرة، وإلا ترتبت مخالفات على المنشأة والموظف.\n' +
+        '• قد تُفرض رسوم حكومية على العملية.\n' +
+        '• لا يمكن التراجع إلا بطلب إلغاء عبر مقيم قبل مغادرة الموظف، وقد لا تُسترد الرسوم.\n' +
+        '• تأكد أولاً من استلام العهد وتسوية السلف وصرف المستحقات.' +
+        warn,
+      { title: 'إصدار تأشيرة خروج نهائي عبر مقيم', confirmText: 'نعم، أصدر التأشيرة في مقيم', cancelText: 'تراجع', danger: true },
+    );
+    if (!ok) return;
+    await run({ action: 'ISSUE_FINAL_EXIT', confirm: true });
+  };
+
+  const cancel = async () => {
+    if (!state.visaNumber) return;
+    const ok = await confirmDialog(
+      `سيُرسَل الآن طلب حقيقي إلى منصة مقيم لإلغاء تأشيرة الخروج النهائي رقم ${state.visaNumber} للموظف «${d.employee.name}».\n\n` +
+        '• يُقبل الإلغاء فقط إذا كان الموظف ما زال داخل المملكة.\n' +
+        '• قد لا تُسترد الرسوم المدفوعة عند الإصدار.\n' +
+        '• بعد الإلغاء يبقى الموظف على كفالة المنشأة ويلزم تصحيح وضعه (إقامة سارية أو إصدار جديد).',
+      { title: 'إلغاء تأشيرة الخروج النهائي في مقيم', confirmText: 'نعم، ألغِ التأشيرة في مقيم', cancelText: 'تراجع', danger: true },
+    );
+    if (!ok) return;
+    await run({ action: 'CANCEL_FINAL_EXIT', confirm: true, visaNumber: state.visaNumber });
+  };
+
+  const reconcile = async (tx: MuqeemTxView, outcome: 'SUCCEEDED' | 'FAILED') => {
+    const what = tx.operation === 'FINAL_EXIT_ISSUE' ? 'إصدار' : 'إلغاء';
+    let visaNumber: string | null = null;
+    if (outcome === 'SUCCEEDED' && tx.operation === 'FINAL_EXIT_ISSUE') {
+      visaNumber = await promptDialog('رقم تأشيرة الخروج النهائي كما يظهر في تقرير الخدمات التفاعلية في مقيم', {
+        title: 'تسجيل أن الإصدار نُفّذ في مقيم',
+        placeholder: 'أرقام فقط',
+        confirmText: 'متابعة',
+      });
+      if (visaNumber === null) return;
+      if (!/^[0-9٠-٩\s-]+$/.test(visaNumber.trim())) { toast.warning('رقم التأشيرة يجب أن يتكون من أرقام فقط'); return; }
+    }
+    const ok = await confirmDialog(
+      outcome === 'SUCCEEDED'
+        ? `ستُسجَّل عملية ${what} الخروج النهائي على أنها نُفّذت فعلاً في مقيم${visaNumber ? ` برقم ${visaNumber.trim()}` : ''}. لا يُرسل أي طلب إلى مقيم. سجّل ذلك فقط بعد التحقق من تقرير الخدمات التفاعلية.`
+        : `ستُسجَّل عملية ${what} الخروج النهائي على أنها لم تُنفّذ في مقيم، ويصبح إرسال الطلب مجدداً ممكناً. سجّل ذلك فقط إذا تحققت أنها لا تظهر في تقرير الخدمات التفاعلية.`,
+      { title: 'تسوية عملية مقيم', confirmText: 'تأكيد التسوية', cancelText: 'تراجع', danger: outcome === 'FAILED' },
+    );
+    if (!ok) return;
+    await run({ action: 'RECONCILE', transactionId: tx.id, outcome, ...(visaNumber ? { visaNumber: visaNumber.trim() } : {}) });
+  };
+
+  const und = state.undetermined;
+  return (
+    <div className="border border-indigo-200 bg-indigo-50/40 rounded-[1.5rem] p-6 space-y-4">
+      <div className="flex items-start gap-3">
+        <Plane className="text-indigo-600 shrink-0 mt-0.5" size={22} />
+        <div className="flex-1">
+          <h4 className="font-black text-indigo-900 text-[14px]">الخروج النهائي عبر مقيم</h4>
+          <p className="text-[12px] font-bold text-indigo-700/80 mt-1">
+            {d.company ? `حساب مقيم: ${d.company.name}${d.company.linked ? '' : ' (غير مربوطة)'}` : 'لم تُحدَّد الشركة الكفيلة للموظف'}
+          </p>
+        </div>
+      </div>
+
+      {state.phase === 'ISSUED' && (
+        <div className="bg-emerald-50 border border-emerald-200 rounded-xl p-4 text-[13px] font-bold text-emerald-800 space-y-1">
+          <p>صدرت تأشيرة الخروج النهائي في مقيم{state.visaNumber ? <> برقم <span dir="ltr" className="font-black">{state.visaNumber}</span></> : ' (رقم التأشيرة غير معروف)'}.</p>
+          {state.exitBefore && <p>يجب أن يغادر الموظف المملكة قبل {formatDate(state.exitBefore)}{state.exitBeforeHijri ? ` (${state.exitBeforeHijri} هـ)` : ''}.</p>}
+          {!state.visaRecord && state.visaNumber && <p className="text-amber-700">لم يُحدَّث سجل التأشيرات في النظام بعد. اضغط «مزامنة سجل التأشيرة» لإكماله (لن يُرسل طلب إلى مقيم).</p>}
+        </div>
+      )}
+      {state.phase === 'CANCELLED' && (
+        <div className="bg-slate-50 border border-slate-200 rounded-xl p-4 text-[13px] font-bold text-slate-700">أُلغيت تأشيرة الخروج النهائي السابقة في مقيم.</div>
+      )}
+      {state.phase === 'FAILED' && state.lastError && (
+        <div className="bg-rose-50 border border-rose-200 rounded-xl p-4 text-[12px] font-bold text-rose-700">آخر محاولة لم تُنفّذ في مقيم: {state.lastError}</div>
+      )}
+
+      {und && (
+        <div role="alert" className="bg-amber-50 border-2 border-amber-300 rounded-xl p-4 space-y-3">
+          <p className="text-[13px] font-black text-amber-900">
+            نتيجة غير محسومة: طلب {FE_OP_LABEL[und.operation] ?? ''} الخروج النهائي المرسل بتاريخ {formatDate(und.createdAt)} لم تُعرف نتيجته، وربما نُفّذ في مقيم.
+          </p>
+          <p className="text-[12px] font-bold text-amber-800 leading-6">
+            لا تُعِد المحاولة. افتح بوابة مقيم ← تقرير الخدمات التفاعلية وتحقق هل نُفّذت العملية لهذا الموظف، ثم سجّل النتيجة هنا.
+          </p>
+          {d.canOperate && und.reconcilable ? (
+            <div className="flex flex-wrap gap-2">
+              <button type="button" disabled={busy} onClick={() => void reconcile(und, 'SUCCEEDED')} className="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white rounded-lg text-[12px] font-black">
+                تحققتُ: نُفّذت في مقيم
+              </button>
+              <button type="button" disabled={busy} onClick={() => void reconcile(und, 'FAILED')} className="px-4 py-2 bg-white border border-rose-200 hover:bg-rose-50 disabled:opacity-50 text-rose-700 rounded-lg text-[12px] font-black">
+                تحققتُ: لم تُنفّذ
+              </button>
+            </div>
+          ) : (
+            <p className="text-[12px] font-bold text-amber-700">
+              {und.status === 'PENDING' ? 'العملية ما زالت قيد التنفيذ؛ أعد تحميل الصفحة بعد دقائق.' : 'تسوية العملية متاحة لموظفي العلاقات الحكومية والموارد البشرية ومديري النظام.'}
+            </p>
+          )}
+        </div>
+      )}
+
+      {d.warnings.length > 0 && state.phase !== 'ISSUED' && (
+        <div className="bg-white border border-amber-200 rounded-xl p-4">
+          <p className="text-[12px] font-black text-amber-800 mb-2">تحقق قبل إصدار الخروج النهائي:</p>
+          <ul className="list-disc pr-5 space-y-1 text-[12px] font-bold text-amber-700">
+            {d.warnings.map((w) => <li key={w}>{w}</li>)}
+          </ul>
+        </div>
+      )}
+
+      {d.canOperate && !und && (
+        <div className="space-y-2">
+          {d.eligible ? (
+            <button type="button" disabled={busy} onClick={() => void issue()} className="w-full px-6 py-3 bg-indigo-700 hover:bg-indigo-800 disabled:opacity-50 text-white font-black text-[13px] rounded-xl transition shadow-lg flex justify-center items-center gap-2">
+              <Plane size={16} /> {busy ? 'جارٍ الإرسال إلى مقيم...' : 'إصدار خروج نهائي عبر مقيم'}
+            </button>
+          ) : state.phase !== 'ISSUED' && d.reasons.length > 0 ? (
+            <ul className="list-disc pr-5 space-y-1 text-[12px] font-bold text-slate-600">
+              {d.reasons.map((r) => <li key={r}>{r}</li>)}
+            </ul>
+          ) : null}
+          {state.phase === 'ISSUED' && !state.visaRecord && state.visaNumber && (
+            <button type="button" disabled={busy} onClick={() => void run({ action: 'SYNC_VISA_RECORD' })} className="w-full px-6 py-2.5 bg-white border border-emerald-300 hover:bg-emerald-50 disabled:opacity-50 text-emerald-800 font-black text-[12px] rounded-xl">
+              مزامنة سجل التأشيرة (دون أي طلب إلى مقيم)
+            </button>
+          )}
+          {d.canCancel && (
+            <button type="button" disabled={busy} onClick={() => void cancel()} className="w-full px-6 py-2.5 bg-white border border-rose-200 hover:bg-rose-50 disabled:opacity-50 text-rose-700 font-black text-[12px] rounded-xl flex justify-center items-center gap-2">
+              <XCircle size={14} /> {busy ? 'جارٍ الإرسال إلى مقيم...' : 'إلغاء تأشيرة الخروج النهائي في مقيم'}
+            </button>
+          )}
+        </div>
+      )}
+      {!d.canOperate && state.phase === 'NONE' && d.eligible && (
+        <p className="text-[12px] font-bold text-slate-500">إصدار الخروج النهائي عبر مقيم متاح لموظفي العلاقات الحكومية والموارد البشرية ومديري النظام.</p>
+      )}
+
+      {d.transactions.length > 0 && (
+        <div>
+          <p className="text-[11px] font-black text-slate-400 mb-2">سجل عمليات مقيم لهذه التصفية</p>
+          <ul className="space-y-1.5">
+            {d.transactions.map((t) => {
+              const st = FE_TX_STATUS[t.status] ?? FE_TX_STATUS.PENDING;
+              return (
+                <li key={t.id} className="flex flex-wrap items-center gap-2 text-[11px] font-bold text-slate-600">
+                  <span className={`px-2 py-0.5 rounded-lg border ${st.cls}`}>{st.label}</span>
+                  <span>{FE_OP_LABEL[t.operation] ?? t.operation}</span>
+                  {(t.externalRef || t.targetVisaNumber) && <span dir="ltr">#{t.externalRef ?? t.targetVisaNumber}</span>}
+                  <span className="text-slate-400">{formatDate(t.createdAt)}</span>
+                  {t.status === 'FAILED' && t.errorMessage && <span className="text-rose-600">{t.errorMessage}</span>}
+                </li>
+              );
+            })}
+          </ul>
+        </div>
+      )}
+    </div>
+  );
+}
+
 const money2 = (v: number | null | undefined) => Number(v || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 
 const typeMap: Record<string, { label: string; color: string }> = {
@@ -139,6 +449,46 @@ export default function SettlementsPage() {
   useEffect(() => {
     fetchSettlements();
   }, [fetchSettlements]);
+
+  // Final exit (Muqeem) state per END_OF_SERVICE settlement that is approved / paid.
+  const [finalExit, setFinalExit] = useState<Record<string, FinalExitEntry>>({});
+
+  const loadFinalExit = useCallback(async (id: string) => {
+    setFinalExit((m) => ({ ...m, [id]: { data: m[id]?.data ?? null, error: null, loading: true } }));
+    try {
+      const res = await fetch(`/api/settlements/${encodeURIComponent(id)}/muqeem`);
+      if (res.status === 401) return redirectToLogin();
+      if (!res.ok) {
+        const error = await readApiError(res, 'تعذر تحميل حالة الخروج النهائي في مقيم');
+        setFinalExit((m) => ({ ...m, [id]: { data: null, error, loading: false } }));
+        return;
+      }
+      const data = (await res.json()) as FinalExitView;
+      setFinalExit((m) => ({ ...m, [id]: { data, error: null, loading: false } }));
+    } catch {
+      setFinalExit((m) => ({ ...m, [id]: { data: m[id]?.data ?? null, error: 'تعذر الاتصال بالخادم', loading: false } }));
+    }
+  }, []);
+
+  useEffect(() => {
+    const ids = settlements.filter(needsFinalExitState).map((s) => s.id);
+    if (!ids.length) return;
+    let cancelled = false;
+    (async () => {
+      // Small concurrency: a handful of approved end-of-service settlements at most.
+      const queue = [...ids];
+      const worker = async () => {
+        while (!cancelled && queue.length) {
+          const id = queue.shift();
+          if (id) await loadFinalExit(id);
+        }
+      };
+      await Promise.all([worker(), worker(), worker()]);
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [settlements, loadFinalExit]);
 
   const handleReject = async (id: string) => {
     const reason = await promptDialog('سبب رفض التصفية');
@@ -314,6 +664,7 @@ export default function SettlementsPage() {
                           {s.employee?.legalCompany && (
                             <span className="text-[10px] font-bold bg-slate-50 text-slate-500 px-2 py-0.5 rounded-lg border border-slate-100">{s.employee.legalCompany.nameArabic}</span>
                           )}
+                          <FinalExitBadge entry={finalExit[s.id]} />
                         </div>
                         {s.paymentDeadline && <PaymentDeadlineLine deadline={s.paymentDeadline} status={s.status} />}
                       </div>
@@ -507,6 +858,15 @@ export default function SettlementsPage() {
                        {selectedSettlement.transferReceiptUrl && <p className="text-[11px] text-emerald-500 mt-1">{'\u0631\u0642\u0645 \u0627\u0644\u0625\u064a\u0635\u0627\u0644'}: {selectedSettlement.transferReceiptUrl}</p>}
                      </div>
                    </div>
+                 )}
+
+                 {/* Final exit via Muqeem (END_OF_SERVICE, approved or paid) */}
+                 {needsFinalExitState(selectedSettlement) && (
+                   <FinalExitPanel
+                     entry={finalExit[selectedSettlement.id]}
+                     settlementId={selectedSettlement.id}
+                     onChanged={() => loadFinalExit(selectedSettlement.id)}
+                   />
                  )}
                </div>
             </div>

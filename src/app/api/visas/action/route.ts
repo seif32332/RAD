@@ -120,6 +120,20 @@ export async function POST(req: Request) {
     if (newStatus === 'ISSUED' && !attachmentUrl) {
       throw badRequest('لا يمكن الإصدار إلا بارفاق التأشيرة');
     }
+    if (newStatus === 'ISSUED') {
+      // A Muqeem issuance whose outcome is not settled yet may have issued a real visa: recording a
+      // manual issue now would hide it. It must be reconciled first (visas page).
+      const open = await prisma.muqeemTransaction.findFirst({
+        where: { entityType: 'VISA', entityId: visaId, operation: 'EXIT_REENTRY_ISSUE', status: { in: ['PENDING', 'UNKNOWN'] } },
+        select: { id: true, status: true },
+      });
+      if (open) {
+        throw conflict(
+          'يوجد طلب إصدار لهذه التأشيرة عبر مقيم لم تُحسم نتيجته بعد. تحقق من مقيم وقم بتسوية العملية من شاشة التأشيرات قبل تسجيل إصدار يدوي.',
+          { muqeemTransactionId: open.id, status: open.status },
+        );
+      }
+    }
 
     const { visa, audits } = await prisma.$transaction(async (tx) => {
       const res = await tx.visa.updateMany({

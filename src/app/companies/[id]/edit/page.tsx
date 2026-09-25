@@ -55,6 +55,8 @@ export default function EditCompanyPage({ params }: { params: Promise<{ id: stri
         trademarkRegDate: toDateInputValue(data.trademarkRegDate),
         trademarkExpDate: toDateInputValue(data.trademarkExpDate),
         trademarkCertUrl: text('trademarkCertUrl'),
+        moiNumber: text('moiNumber'),
+        muqeemPlatformId: text('muqeemPlatformId'),
       });
     } catch {
       setLoadError('تعذر الاتصال بالخادم. تحقق من الاتصال ثم أعد المحاولة.');
@@ -90,7 +92,9 @@ export default function EditCompanyPage({ params }: { params: Promise<{ id: stri
         window.scrollTo({ top: 0, behavior: 'smooth' });
         return;
       }
+      const saved = (await res.json().catch(() => null)) as { warnings?: string[] } | null;
       toast.success('تم تحديث بيانات الشركة بنجاح');
+      for (const w of saved?.warnings ?? []) toast.warning(w);
       router.push('/companies');
     } catch {
       const msg = 'تعذر الاتصال بالخادم. تحقق من الاتصال ثم أعد المحاولة.';

@@ -37,7 +37,9 @@ export default function NewCompanyPage() {
         window.scrollTo({ top: 0, behavior: 'smooth' });
         return;
       }
+      const saved = (await res.json().catch(() => null)) as { warnings?: string[] } | null;
       toast.success('تم إنشاء الشركة بنجاح');
+      for (const w of saved?.warnings ?? []) toast.warning(w);
       router.push('/companies');
     } catch {
       const msg = 'تعذر الاتصال بالخادم. تحقق من الاتصال ثم أعد المحاولة.';

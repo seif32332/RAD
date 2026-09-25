@@ -9,6 +9,7 @@ import { zText, zOptText, zDate, zOptDate, zOptMoney } from '@/lib/validation';
 import { roundMoney } from '@/lib/money';
 import { logAudit } from '@/lib/audit';
 import { isUniqueViolationOn } from '@/lib/employee';
+import { zMoiNumber, zMuqeemPlatformId, moiNumberWarnings, assertMuqeemPlatformChange } from './_muqeem';
 
 export const dynamic = 'force-dynamic';
 
@@ -36,12 +37,16 @@ const createCompanySchema = z.object({
   trademarkExpDate: zOptDate,
   trademarkCertUrl: zOptText(2000),
   trademarkCost: zOptMoney,
+  // Muqeem link (see ./_muqeem.ts)
+  moiNumber: zMoiNumber,
+  muqeemPlatformId: zMuqeemPlatformId,
 });
 
 export async function POST(req: Request) {
   try {
     const user = await requireUser(WRITERS);
     const b = await parseBody(req, createCompanySchema);
+    await assertMuqeemPlatformChange(user, b.muqeemPlatformId, undefined);
 
     // commercialRegNum is unique and required by the schema: generate a placeholder when omitted.
     const commercialRegNum = b.commercialRegNum || `CR-${Date.now()}-${randomInt(1000)}`;
@@ -73,6 +78,8 @@ export async function POST(req: Request) {
           trademarkExpDate: b.trademarkExpDate ?? null,
           trademarkCertUrl: b.trademarkCertUrl ?? null,
           trademarkCost: b.trademarkCost !== undefined ? roundMoney(b.trademarkCost) : undefined,
+          moiNumber: b.moiNumber ?? null,
+          muqeemPlatformId: b.muqeemPlatformId ?? null,
         },
       });
     } catch (err) {
@@ -85,11 +92,19 @@ export async function POST(req: Request) {
       action: 'CREATE',
       entityType: 'Company',
       entityId: company.id,
-      details: { nameArabic: company.nameArabic, commercialRegNum: company.commercialRegNum },
+      details: {
+        nameArabic: company.nameArabic,
+        commercialRegNum: company.commercialRegNum,
+        moiNumber: company.moiNumber,
+        muqeemLinked: !!company.muqeemPlatformId,
+      },
       ipAddress: getClientIp(req),
     });
 
-    return NextResponse.json({ message: 'تم إضافة الشركة بنجاح', company }, { status: 201 });
+    return NextResponse.json(
+      { message: 'تم إضافة الشركة بنجاح', company, warnings: moiNumberWarnings(company.moiNumber, company.muqeemPlatformId) },
+      { status: 201 },
+    );
   } catch (err) {
     return handleApiError(err, 'companies:POST');
   }

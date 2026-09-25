@@ -11,6 +11,7 @@ import {
   findStoredFile,
   getFileTypeInfo,
   isSensitiveCategory,
+  mayReadAsMuqeemDocument,
   storedNameFromSegments,
 } from '@/lib/storage';
 
@@ -70,6 +71,20 @@ async function referencedByOwnRecords(employeeId: string, storedName: string): P
   return !!insurance;
 }
 
+/**
+ * True when the file is a document returned by Muqeem: referenced by a MuqeemTransaction
+ * (documentUrl) or a visa's official PDF (Visa.visaPdfUrl). Both columns are written only by the
+ * Muqeem routes (never from user input), so they cannot be used to open other files.
+ */
+async function isMuqeemDocument(storedName: string): Promise<boolean> {
+  const urls = { in: fileUrlCandidates(storedName) };
+  const [tx, visa] = await Promise.all([
+    prisma.muqeemTransaction.findFirst({ where: { documentUrl: urls }, select: { id: true } }),
+    prisma.visa.findFirst({ where: { visaPdfUrl: urls }, select: { id: true } }),
+  ]);
+  return !!tx || !!visa;
+}
+
 /** True when `employeeId` is in the manager's team (direct reports, own branch / department). */
 async function isInManagersTeam(user: AuthUser, employeeId: string): Promise<boolean> {
   const scope = await managedEmployeesWhere(prisma, user);
@@ -87,7 +102,8 @@ async function isInManagersTeam(user: AuthUser, employeeId: string): Promise<boo
  * - HR / payroll / owner / admin: any file (legacy unregistered files: these roles only);
  * - BRANCH_MANAGER / DEPT_MANAGER: files registered to an employee of their team;
  * - other back-office roles: CONTRACT / OTHER documents or files they uploaded;
- * - sensitive categories (IDENTITY, PASSPORT, HEALTH, BANK): the roles above and the employee only;
+ * - sensitive categories (IDENTITY, PASSPORT, HEALTH, BANK): the roles above and the employee only,
+ *   except the documents returned by Muqeem (visa PDFs), also readable by GOV_RELATIONS;
  * - everyone: their own files, and files referenced by their own records.
  * Every successful read of a sensitive-category file is written to the AuditLog (VIEW).
  */
@@ -108,7 +124,9 @@ export async function GET(req: Request, { params }: { params: Promise<{ path: st
     const allowed =
       decision === 'allow' ||
       (decision === 'check-team' && !!entry?.employeeId && (await isInManagersTeam(user, entry.employeeId))) ||
-      ((decision === 'check-references' || decision === 'check-team') && (await byReferences()));
+      ((decision === 'check-references' || decision === 'check-team') && (await byReferences())) ||
+      // GOV_RELATIONS: the visa / Muqeem PDFs they issue (IDENTITY), and nothing else of that category.
+      (mayReadAsMuqeemDocument(user, entry) && (await isMuqeemDocument(storedName)));
     // Same answer whether the file exists or not, so names cannot be probed.
     if (!allowed) throw forbidden('لا تملك صلاحية الوصول إلى هذا الملف');
 

@@ -8,6 +8,7 @@ import { zText, zOptText, zOptDate, zDate, zOptMoney } from '@/lib/validation';
 import { roundMoney } from '@/lib/money';
 import { logAudit } from '@/lib/audit';
 import { deletionBlockers, isUniqueViolationOn } from '@/lib/employee';
+import { zMoiNumber, zMuqeemPlatformId, moiNumberWarnings, assertMuqeemPlatformChange } from '../_muqeem';
 
 export const dynamic = 'force-dynamic';
 
@@ -23,10 +24,12 @@ export async function GET(_req: Request, { params }: Ctx) {
       where: { id },
       include: {
         _count: { select: { legalEmployees: true, actualEmployees: true, branches: true, administrations: true } },
+        // Name only: never credentials.
+        muqeemPlatform: { select: { id: true, platformName: true } },
       },
     });
     if (!company) throw notFound('الشركة غير موجودة');
-    return NextResponse.json(company);
+    return NextResponse.json({ ...company, muqeemLinked: !!company.moiNumber && !!company.muqeemPlatformId });
   } catch (err) {
     return handleApiError(err, 'companies/[id]:GET');
   }
@@ -57,6 +60,9 @@ const updateCompanySchema = z.object({
   trademarkExpDate: zOptDate,
   trademarkCertUrl: zOptText(2000),
   trademarkCost: zOptMoney,
+  // Muqeem link (see ../_muqeem.ts)
+  moiNumber: zMoiNumber,
+  muqeemPlatformId: zMuqeemPlatformId,
 });
 
 export async function PUT(req: Request, { params }: Ctx) {
@@ -64,6 +70,10 @@ export async function PUT(req: Request, { params }: Ctx) {
     const user = await requireUser(WRITERS);
     const { id } = await params;
     const b = await parseBody(req, updateCompanySchema);
+
+    const current = await prisma.company.findUnique({ where: { id }, select: { id: true, moiNumber: true, muqeemPlatformId: true } });
+    if (!current) throw notFound('الشركة غير موجودة');
+    await assertMuqeemPlatformChange(user, b.muqeemPlatformId, current.muqeemPlatformId);
 
     const data = definedOnly({
       ...b,
@@ -84,11 +94,19 @@ export async function PUT(req: Request, { params }: Ctx) {
       action: 'UPDATE',
       entityType: 'Company',
       entityId: id,
-      details: { fields: Object.keys(data) },
+      details: {
+        fields: Object.keys(data),
+        ...(b.moiNumber !== undefined && b.moiNumber !== current.moiNumber ? { moiNumber: b.moiNumber } : {}),
+        ...(b.muqeemPlatformId !== undefined && b.muqeemPlatformId !== current.muqeemPlatformId ? { muqeemLinkChanged: true } : {}),
+      },
       ipAddress: getClientIp(req),
     });
 
-    return NextResponse.json({ message: 'تم تحديث الشركة بنجاح', company: updated });
+    return NextResponse.json({
+      message: 'تم تحديث الشركة بنجاح',
+      company: updated,
+      warnings: moiNumberWarnings(updated.moiNumber, updated.muqeemPlatformId),
+    });
   } catch (err) {
     return handleApiError(err, 'companies/[id]:PUT');
   }

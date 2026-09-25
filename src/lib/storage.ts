@@ -10,6 +10,7 @@ import 'server-only';
 import path from 'path';
 import { randomUUID } from 'crypto';
 import { mkdir, writeFile, stat } from 'fs/promises';
+import { ROLE_GROUPS } from '@/lib/constants';
 
 /** Public URL prefix of the authenticated download route. */
 export const FILES_URL_PREFIX = '/api/files/';
@@ -444,6 +445,20 @@ export function decideScopedFileAccess(subject: ScopedFileSubject, entry: Scoped
     return 'allow';
   }
   return subject.employeeId ? 'check-references' : 'deny';
+}
+
+/** Muqeem operators (ROLE_GROUPS.GOV) that do not already read every file (i.e. GOV_RELATIONS). */
+const MUQEEM_DOCUMENT_ROLES: readonly string[] = ROLE_GROUPS.GOV.filter((r) => !FULL_FILE_ROLES.includes(r));
+
+/**
+ * True when the user may read this file ONLY IF it is a document returned by Muqeem (its URL is
+ * referenced by MuqeemTransaction.documentUrl or Visa.visaPdfUrl, which only the Muqeem routes
+ * write): the government-relations operator who issues a visa must be able to print it, but the
+ * IDENTITY category stays closed to that role for every other file (iqama copies...).
+ * Pure: the route does the reference lookup. Reads stay audited like any sensitive file.
+ */
+export function mayReadAsMuqeemDocument(subject: Pick<ScopedFileSubject, 'role'>, entry: ScopedFileEntry | null): boolean {
+  return !!entry && MUQEEM_DOCUMENT_ROLES.includes(subject.role) && entry.category === 'IDENTITY' && !entry.isPublic;
 }
 
 /** Minimal DB surface needed to classify uploads (a Prisma client or transaction). */

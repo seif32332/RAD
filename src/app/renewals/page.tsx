@@ -1,9 +1,9 @@
 "use client";
 
-import React, { useState, useEffect, useCallback, Suspense } from 'react';
+import React, { useState, useEffect, useCallback, useRef, Suspense } from 'react';
 import {
   BellRing, CalendarDays, Archive, RefreshCw, X, ShieldAlert,
-  Users, Building2, Truck, FileText, AlertTriangle, AlertCircle, Plus, Trash2, CheckCircle2, UserCheck, Scale, ExternalLink
+  Users, Building2, Truck, FileText, AlertTriangle, AlertCircle, Plus, Trash2, CheckCircle2, UserCheck, Scale, ExternalLink, Landmark
 } from 'lucide-react';
 import Link from 'next/link';
 import DashboardLayout from '@/components/DashboardLayout';
@@ -13,6 +13,16 @@ import { useRouter, useSearchParams } from 'next/navigation';
 import { toast, confirmDialog, readApiError } from '@/components/ui/feedback';
 import { dateKey, daysUntil, formatDate, todayKey } from '@/lib/dates';
 import { formatMoney, sumMoney, toNumber } from '@/lib/money';
+import {
+  RECONCILE_GUIDANCE,
+  addMonthsToDateKey,
+  classifyMuqeemApiError,
+  firstUnresolved,
+  looksLikeIqama,
+  ltr,
+  type MuqeemEmployeeStatus,
+  type MuqeemUiError,
+} from '@/app/api/employees/[id]/muqeem/logic';
 
 export const dynamic = 'force-dynamic';
 
@@ -108,6 +118,24 @@ function RenewalsPageContent() {
   const [paymentEntries, setPaymentEntries] = useState<PaymentEntry[]>(() => [newPaymentEntry()]);
   const [submitting, setSubmitting] = useState(false);
   const [errorMsg, setErrorMsg] = useState('');
+
+  // Muqeem (iqama renewal through the government platform). Offered only when the integration is
+  // usable; eligibility of the employee (non-Saudi, linked legal company) is checked in the dialog.
+  const [muqeemUsable, setMuqeemUsable] = useState(false);
+  const [muqeemItem, setMuqeemItem] = useState<RenewalItem | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    fetch('/api/integrations/muqeem/status', { cache: 'no-store' })
+      .then((r) => (r.ok ? r.json() : null))
+      .then((d: { usable?: boolean } | null) => { if (!cancelled) setMuqeemUsable(!!d?.usable); })
+      .catch(() => undefined);
+    return () => { cancelled = true; };
+  }, []);
+
+  /** Employee iqama (not a Saudi national ID, which starts with 1) while the integration is usable. */
+  const canOfferMuqeem = (item: RenewalItem) =>
+    muqeemUsable && !item.readOnly && item.entityType === 'EMPLOYEE' && item.documentType === 'IQAMA' && looksLikeIqama(item.iqamaNumber);
 
   const fetchData = useCallback(async () => {
     setLoading(true);
@@ -546,6 +574,12 @@ function RenewalsPageContent() {
                           </>
                         )}
                   </div>
+                  {canOfferMuqeem(item) && !item.isPendingPayment && (
+                    <button type="button" onClick={() => setMuqeemItem(item)}
+                      className="-mt-2 py-2.5 text-[13px] font-black bg-indigo-50 text-indigo-700 hover:bg-indigo-600 hover:text-white rounded-[1rem] transition-colors flex items-center justify-center gap-2 border border-indigo-100">
+                      <Landmark size={14} /> تجديد عبر مقيم
+                    </button>
+                  )}
                 </div>
               );
             })}
@@ -759,7 +793,202 @@ function RenewalsPageContent() {
           </div>
         </div>
       )}
+
+      {muqeemItem && (
+        <MuqeemIqamaRenewModal
+          item={muqeemItem}
+          onClose={() => setMuqeemItem(null)}
+          onDone={() => { setMuqeemItem(null); fetchData(); }}
+        />
+      )}
     </DashboardLayout>
+  );
+}
+
+/**
+ * Iqama renewal through Muqeem: real renewal on the government platform (fees charged to the
+ * establishment). Loads the employee's Muqeem status first (eligibility, unpaid fee request,
+ * undetermined previous attempts), then asks for an explicit confirmation before calling.
+ */
+function MuqeemIqamaRenewModal({ item, onClose, onDone }: { item: RenewalItem; onClose: () => void; onDone: () => void }) {
+  const [status, setStatus] = useState<MuqeemEmployeeStatus | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [duration, setDuration] = useState('12');
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState<MuqeemUiError | null>(null);
+  const inFlight = useRef(false);
+
+  const load = useCallback(async () => {
+    try {
+      const res = await fetch(`/api/employees/${encodeURIComponent(item.entityId)}/muqeem`, { cache: 'no-store' });
+      if (res.status === 401) { window.location.href = '/login'; return; }
+      if (!res.ok) { setLoadError(await readApiError(res, 'تعذر تحميل حالة مقيم للموظف')); return; }
+      setLoadError(null);
+      setStatus((await res.json()) as MuqeemEmployeeStatus);
+    } catch {
+      setLoadError('تعذر الاتصال بالخادم');
+    }
+  }, [item.entityId]);
+
+  useEffect(() => { load(); }, [load]);
+
+  const unresolved = status ? firstUnresolved(status.transactions, ['IQAMA_RENEW']) : null;
+  const currentExp = status?.employee.iqamaExp ?? null;
+  // Estimate only: Muqeem decides the new date (from the current expiry, or today if already expired).
+  const estimateBase = currentExp && currentExp > todayKey() ? currentExp : todayKey();
+  const estimate = addMonthsToDateKey(estimateBase, parseInt(duration, 10));
+  const blocked = !status || !status.eligibility.eligible || !!unresolved || !!status.unpaidRenewalPayment || !currentExp || !!error?.mustReconcile;
+
+  const submit = async () => {
+    if (!status || !currentExp || blocked || inFlight.current) return;
+    const ok = await confirmDialog(
+      `سيتم تجديد إقامة «${status.employee.name}» (رقم الإقامة ${ltr(status.employee.iqamaNumber)}) لمدة ${duration} شهراً تجديداً فعلياً في منصة مقيم (المديرية العامة للجوازات) باسم «${status.company?.name ?? ''}».\n\n` +
+        'ستُحتسب رسوم تجديد الإقامة وما يرتبط بها على حساب المنشأة، ولا يمكن التراجع عن التجديد من هذا النظام.\n\nهل تريد المتابعة؟',
+      { title: 'تأكيد التجديد عبر مقيم', confirmText: 'نعم، جدّد في مقيم', cancelText: 'إلغاء', danger: true },
+    );
+    if (!ok || inFlight.current) return;
+    inFlight.current = true;
+    setSubmitting(true);
+    setError(null);
+    try {
+      const res = await fetch(`/api/employees/${encodeURIComponent(item.entityId)}/muqeem`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'RENEW_IQAMA', iqamaDuration: duration, expectedIqamaExp: currentExp, confirmed: true }),
+      });
+      if (res.status === 401) { window.location.href = '/login'; return; }
+      const data: unknown = await res.json().catch(() => null);
+      if (!res.ok) {
+        const e = classifyMuqeemApiError(res.status, data, 'تعذر تنفيذ التجديد عبر مقيم');
+        setError(e);
+        if (e.mustReconcile) load();
+        return;
+      }
+      const d = (data ?? {}) as { message?: string; applied?: boolean; alreadyDone?: boolean; differentRequest?: boolean };
+      // differentRequest: answered from a renewal already executed with another duration.
+      if (d.applied === false || d.differentRequest) toast.warning(d.message || 'تم التجديد في مقيم؛ راجع تاريخ الإقامة يدوياً');
+      else toast.success(d.message || 'تم تجديد الإقامة عبر مقيم');
+      onDone();
+    } catch {
+      // The request may have reached the server: do not invite a blind retry.
+      setError({
+        kind: 'UNKNOWN_OUTCOME',
+        message: 'انقطع الاتصال بالخادم أثناء تنفيذ الطلب، ولا يمكن التأكد من نتيجته. أعد تحميل الصفحة وتحقق من سجل عمليات مقيم في ملف الموظف قبل أي محاولة جديدة.',
+        transactionId: null,
+        mustReconcile: true,
+      });
+    } finally {
+      inFlight.current = false;
+      setSubmitting(false);
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 z-[100] flex items-center justify-center px-4" role="dialog" aria-modal="true" aria-labelledby="muqeem-renew-title">
+      <div className="absolute inset-0 bg-slate-900/60 backdrop-blur-sm" onClick={() => { if (!submitting) onClose(); }}></div>
+      <div className="bg-white w-full max-w-lg rounded-[2.5rem] p-6 sm:p-8 shadow-2xl relative z-10 max-h-[90vh] overflow-y-auto">
+        <button type="button" aria-label="إغلاق" disabled={submitting} onClick={onClose} className="absolute top-6 left-6 w-10 h-10 bg-slate-50 text-slate-400 hover:text-red-500 hover:bg-red-50 rounded-full flex items-center justify-center transition disabled:opacity-50">
+          <X size={20} />
+        </button>
+        <div className="mb-6 pr-2 text-right">
+          <div className="w-14 h-14 rounded-2xl flex items-center justify-center mb-4 bg-indigo-100 text-indigo-600"><Landmark size={28} /></div>
+          <h2 id="muqeem-renew-title" className="text-2xl font-black text-slate-800 mb-2">تجديد الإقامة عبر مقيم</h2>
+          <p className="text-[13px] font-bold text-slate-500 leading-relaxed">
+            {item.entityName} {item.iqamaNumber ? `(${item.iqamaNumber})` : ''}
+          </p>
+        </div>
+
+        {!status && !loadError && (
+          <div className="py-10 flex justify-center"><div className="w-8 h-8 border-4 border-indigo-200 border-t-indigo-500 rounded-full animate-spin" aria-label="جاري التحميل" /></div>
+        )}
+        {loadError && (
+          <div className="bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded-2xl text-[13px] font-bold flex items-center justify-between gap-3">
+            <span>{loadError}</span>
+            <button type="button" onClick={load} className="underline shrink-0">إعادة المحاولة</button>
+          </div>
+        )}
+
+        {status && (
+          <div className="space-y-5">
+            {!status.eligibility.eligible && (
+              <div className="bg-amber-50 border border-amber-200 text-amber-800 px-4 py-3 rounded-2xl text-[13px] font-bold leading-relaxed flex items-start gap-2">
+                <AlertTriangle size={16} className="shrink-0 mt-0.5" /> {status.eligibility.message}
+              </div>
+            )}
+
+            {(unresolved || error?.mustReconcile) && (
+              <div role="alert" className="bg-red-50 border-2 border-red-300 text-red-800 px-4 py-4 rounded-2xl text-[13px] font-bold leading-relaxed space-y-2">
+                <p className="font-black flex items-start gap-2"><ShieldAlert size={16} className="shrink-0 mt-0.5" /> {error?.kind === 'UNKNOWN_OUTCOME' ? 'نتيجة هذا التجديد في مقيم غير معروفة' : 'نتيجة تجديد سابق عبر مقيم غير معروفة'}</p>
+                <p>{error?.mustReconcile ? error.message : `عملية «${unresolved?.operationLabel}» بتاريخ ${formatDate(unresolved?.createdAt ?? null)} حالتها: ${unresolved?.statusLabel}.`}</p>
+                <p>{RECONCILE_GUIDANCE}</p>
+                <Link href={`/employees/${encodeURIComponent(item.entityId)}#muqeem`} className="inline-flex items-center gap-1 underline font-black">
+                  <ExternalLink size={13} /> فتح ملف الموظف للتسوية
+                </Link>
+              </div>
+            )}
+
+            {status.unpaidRenewalPayment && (
+              <div className="bg-orange-50 border border-orange-200 text-orange-800 px-4 py-3 rounded-2xl text-[13px] font-bold leading-relaxed">
+                {status.unpaidRenewalPayment}
+              </div>
+            )}
+
+            {status.eligibility.eligible && (
+              <>
+                <div className="bg-slate-50 border border-slate-100 rounded-2xl p-4 grid grid-cols-2 gap-3 text-[13px]">
+                  <div>
+                    <div className="text-[11px] font-extrabold text-slate-400 mb-1">الانتهاء الحالي في النظام</div>
+                    <div className="font-black text-slate-800">{currentExp ? formatDate(currentExp) : 'غير محدد'}</div>
+                  </div>
+                  <div>
+                    <div className="text-[11px] font-extrabold text-slate-400 mb-1">حساب مقيم المستخدم</div>
+                    <div className="font-black text-slate-800">{status.company?.name ?? '—'}</div>
+                  </div>
+                </div>
+
+                <div className="flex flex-col gap-2">
+                  <label htmlFor="muqeem-iqama-duration" className="text-[12px] font-extrabold text-slate-700">مدة التجديد <span className="text-red-500">*</span></label>
+                  <select id="muqeem-iqama-duration" value={duration} onChange={(e) => setDuration(e.target.value)} disabled={submitting}
+                    className="w-full px-5 py-4 bg-slate-50 border-2 border-transparent focus:border-indigo-400 focus:bg-white rounded-[1.25rem] font-bold text-slate-800 text-[14px] focus:outline-none appearance-none">
+                    {status.iqamaDurations.map((m) => (
+                      <option key={m} value={m}>{m} {Number(m) <= 10 ? 'أشهر' : 'شهراً'}</option>
+                    ))}
+                  </select>
+                  {estimate && (
+                    <p className="text-[11px] font-bold text-slate-500">
+                      الانتهاء المتوقع تقريباً: {formatDate(estimate)}. التاريخ الذي يُحفظ هو ما تُرجعه منصة مقيم بعد التجديد.
+                    </p>
+                  )}
+                </div>
+
+                <div className="bg-amber-50 border border-amber-200 text-amber-900 px-4 py-3 rounded-2xl text-[12px] font-bold leading-relaxed">
+                  هذا الإجراء يجدّد الإقامة فعلياً في منصة مقيم (الجوازات)، وتُحتسب رسوم التجديد على حساب المنشأة. بعد النجاح يُحدَّث تاريخ انتهاء الإقامة ويُسجَّل التجديد في أرشيف التجديدات تلقائياً.
+                </div>
+
+                {error && !error.mustReconcile && (
+                  <div role="alert" className="bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded-2xl text-[13px] font-bold leading-relaxed flex items-start gap-2">
+                    <AlertCircle size={16} className="shrink-0 mt-0.5" /> {error.message}
+                  </div>
+                )}
+              </>
+            )}
+
+            <div className="flex gap-3 pt-2">
+              <button type="button" onClick={onClose} disabled={submitting}
+                className="flex-1 py-3.5 bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold rounded-[1.25rem] transition disabled:opacity-50">
+                إغلاق
+              </button>
+              {status.eligibility.eligible && (
+                <button type="button" onClick={submit} disabled={blocked || submitting}
+                  className="flex-[2] py-3.5 text-[14px] font-black text-white rounded-[1.25rem] bg-indigo-600 hover:bg-indigo-700 transition flex items-center justify-center gap-2 disabled:opacity-50">
+                  {submitting ? <><div className="w-5 h-5 border-2 border-white/30 border-t-white rounded-full animate-spin" /> جاري التجديد في مقيم...</> : <><Landmark size={16} /> تجديد في مقيم</>}
+                </button>
+              )}
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
   );
 }
 

@@ -1,11 +1,54 @@
 "use client";
 
 import React, { useState, useEffect, useCallback } from 'react';
-import { Plane, CheckCircle, Clock, PlaneTakeoff, XCircle, RefreshCw } from 'lucide-react';
+import { Plane, CheckCircle, Clock, PlaneTakeoff, XCircle, RefreshCw, FileText, ShieldAlert, Landmark, CalendarPlus, Printer, Ban } from 'lucide-react';
 import DashboardLayout from '@/components/DashboardLayout';
 import FileUploadField from '@/components/FileUploadField';
-import { toast, readApiError } from '@/components/ui/feedback';
-import { formatDate, toDateInputValue } from '@/lib/dates';
+import { toast, readApiError, confirmDialog, promptDialog } from '@/components/ui/feedback';
+import { formatDate, formatDateTime, toDateInputValue, todayKey } from '@/lib/dates';
+import {
+  EXIT_REENTRY_VISA_TYPE,
+  MIN_VISA_DAYS,
+  VISA_MUQEEM_OPERATION_LABEL,
+  VISA_MUQEEM_TYPE_LABEL,
+  planExtension,
+  planIssue,
+  safeHijri,
+  toDateKey,
+  txStatusView,
+  type DurationInput,
+  type ReturnSuggestion,
+  type VisaMuqeemOperation,
+  type VisaMuqeemType,
+} from '@/app/api/visas/muqeem/shared';
+
+interface MuqeemIntegrationStatus {
+  enabled: boolean;
+  usable: boolean;
+  canOperate: boolean;
+  reason: string | null;
+}
+
+interface MuqeemTx {
+  id: string;
+  operation: string;
+  status: string;
+  externalRef: string | null;
+  error: string | null;
+  documentUrl: string | null;
+  createdAt: string;
+  completedAt: string | null;
+}
+
+interface VisaMuqeemInfo {
+  eligible: boolean;
+  reason: string | null;
+  company: { id: string; name: string; linked: boolean } | null;
+  leave: { id: string; startDate: string; endDate: string } | null;
+  suggestion: ReturnSuggestion | null;
+  pendingSync: VisaMuqeemOperation | null;
+  transactions: MuqeemTx[];
+}
 
 interface Visa {
   id: string;
@@ -22,6 +65,12 @@ interface Visa {
   departureDate?: string | null;
   returnDate?: string | null;
   ticketAttachmentUrl?: string | null;
+  externalVisaNumber?: string | null;
+  visaDurationDays?: number | null;
+  returnBefore?: string | null;
+  visaPdfUrl?: string | null;
+  issuedViaMuqeemAt?: string | null;
+  muqeem?: VisaMuqeemInfo | null;
   employee?: {
     firstNameArabic?: string;
     lastNameArabic?: string;
@@ -39,6 +88,24 @@ export default function VisasPage() {
   const [activeUploadId, setActiveUploadId] = useState<string | null>(null);
   const [attachmentUrl, setAttachmentUrl] = useState('');
   const [isIssuing, setIsIssuing] = useState(false);
+  const [muqeemStatus, setMuqeemStatus] = useState<MuqeemIntegrationStatus | null>(null);
+
+  const fetchMuqeemStatus = useCallback(async () => {
+    try {
+      const res = await fetch('/api/visas/muqeem');
+      if (!res.ok) {
+        setMuqeemStatus({ enabled: false, usable: false, canOperate: false, reason: await readApiError(res, 'تعذر التحقق من حالة الربط مع مقيم') });
+        return;
+      }
+      setMuqeemStatus((await res.json()) as MuqeemIntegrationStatus);
+    } catch {
+      setMuqeemStatus({ enabled: false, usable: false, canOperate: false, reason: 'تعذر التحقق من حالة الربط مع مقيم' });
+    }
+  }, []);
+
+  useEffect(() => {
+    fetchMuqeemStatus();
+  }, [fetchMuqeemStatus]);
 
   const fetchVisas = useCallback(async () => {
     setIsLoading(true);
@@ -194,12 +261,19 @@ export default function VisasPage() {
                     <button
                       type="button"
                       onClick={() => { setActiveUploadId(visa.id); setAttachmentUrl(''); }}
-                      className="text-[12px] font-black bg-indigo-600 text-white px-5 py-2.5 rounded-xl hover:bg-indigo-700 transition"
+                      className={muqeemUsableFor(visa, muqeemStatus)
+                        ? 'text-[12px] font-black bg-white text-indigo-700 border border-indigo-200 px-5 py-2.5 rounded-xl hover:bg-indigo-50 transition'
+                        : 'text-[12px] font-black bg-indigo-600 text-white px-5 py-2.5 rounded-xl hover:bg-indigo-700 transition'}
+                      title="تسجيل إصدار تم خارج النظام برفع نسخة التأشيرة"
                     >
-                      متابعة الإصدار <PlaneTakeoff size={14} className="inline ml-1" />
+                      {muqeemUsableFor(visa, muqeemStatus) ? 'تسجيل إصدار يدوي' : 'متابعة الإصدار'} <PlaneTakeoff size={14} className="inline ml-1" />
                     </button>
                   )}
                 </div>
+
+                {visa.visaType === EXIT_REENTRY_VISA_TYPE && visa.muqeem && (
+                  <MuqeemVisaPanel visa={visa} status={muqeemStatus} onChanged={fetchVisas} />
+                )}
 
                 {/* Upload Form (Expandable) */}
                 {activeUploadId === visa.id && (
@@ -288,6 +362,417 @@ export default function VisasPage() {
         )}
       </div>
     </DashboardLayout>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Muqeem (مقيم): official exit/re-entry visa actions
+// ---------------------------------------------------------------------------
+
+/** True when this visa can be issued / managed through Muqeem by the current user. */
+function muqeemUsableFor(visa: Visa, status: MuqeemIntegrationStatus | null): boolean {
+  return !!status?.usable && !!status.canOperate && visa.visaType === EXIT_REENTRY_VISA_TYPE && !!visa.muqeem?.eligible;
+}
+
+function gregAndHijri(d: string | null | undefined): string {
+  const key = toDateKey(d);
+  if (!key) return '-';
+  const h = safeHijri(key);
+  return `${formatDate(key)}${h ? ` (${h} هـ)` : ''}`;
+}
+
+interface MuqeemPostResult {
+  ok: boolean;
+  status: number;
+  message: string;
+  alreadyDone: boolean;
+  kind: string | null;
+}
+
+async function postMuqeem(body: Record<string, unknown>): Promise<MuqeemPostResult | null> {
+  try {
+    const res = await fetch('/api/visas/muqeem', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    if (res.status === 401) { window.location.href = '/login'; return null; }
+    const data = (await res.json().catch(() => ({}))) as { message?: string; error?: string; alreadyDone?: boolean; details?: { muqeemKind?: string } };
+    return {
+      ok: res.ok,
+      status: res.status,
+      message: data.message || data.error || (res.ok ? 'تم' : 'تعذر تنفيذ الطلب'),
+      alreadyDone: !!data.alreadyDone,
+      kind: data.details?.muqeemKind ?? null,
+    };
+  } catch {
+    toast.error('تعذر الاتصال بالخادم. لا تُعِد المحاولة قبل تحديث الصفحة والتحقق من حالة العملية.');
+    return null;
+  }
+}
+
+const TX_TONE_CLASS: Record<string, string> = {
+  success: 'bg-emerald-100 text-emerald-700',
+  pending: 'bg-sky-100 text-sky-700',
+  unknown: 'bg-amber-100 text-amber-800',
+  failed: 'bg-rose-100 text-rose-700',
+};
+
+const MQ_INPUT = 'px-3 py-2 bg-white border border-teal-200 rounded-xl text-[12px] font-bold text-slate-800 focus:outline-none focus:border-teal-400';
+
+function MuqeemVisaPanel({ visa, status, onChanged }: { visa: Visa; status: MuqeemIntegrationStatus | null; onChanged: () => void }) {
+  const info = visa.muqeem as VisaMuqeemInfo;
+  const [busy, setBusy] = useState<string | null>(null);
+  const [form, setForm] = useState<null | 'issue' | 'extend'>(null);
+  const [visaType, setVisaType] = useState<VisaMuqeemType>(1);
+  const [mode, setMode] = useState<'days' | 'date'>(info.suggestion ? 'date' : 'days');
+  const [days, setDays] = useState(info.suggestion ? '' : '30');
+  const [date, setDate] = useState(info.suggestion?.date ?? '');
+
+  const employeeName = `${visa.employee?.firstNameArabic ?? ''} ${visa.employee?.lastNameArabic ?? ''}`.trim();
+  const issuedViaMuqeem = visa.status === 'ISSUED' && !!visa.externalVisaNumber;
+  const canOperate = !!status?.canOperate;
+  const blockingTx = info.transactions.find((t) => txStatusView(t).blocking);
+  const disabledReason = !status
+    ? 'جاري التحقق من حالة الربط مع مقيم...'
+    : status.reason ?? info.reason ??
+      (blockingTx ? 'يوجد طلب سابق على مقيم لهذه التأشيرة لم تُحسم نتيجته بعد؛ لا تُعِد المحاولة قبل تسويته (أدناه).' : null) ??
+      (info.pendingSync ? 'توجد نتيجة عملية مقيم لم تُطبَّق على بيانات التأشيرة بعد؛ اضغط «تحديث بيانات التأشيرة» أولاً.' : null);
+  const actionsEnabled = !disabledReason && !busy;
+  const durationInput: DurationInput = mode === 'days' ? { mode: 'days', days: Number(days) } : { mode: 'date', returnBefore: date };
+
+  const openForm = (f: 'issue' | 'extend') => {
+    setForm(f);
+    if (f === 'extend') { setMode('days'); setDays('30'); setDate(''); }
+    else { setMode(info.suggestion ? 'date' : 'days'); setDays(info.suggestion ? '' : '30'); setDate(info.suggestion?.date ?? ''); }
+  };
+
+  const finish = (r: MuqeemPostResult | null) => {
+    if (!r) { onChanged(); return; }
+    if (r.ok) {
+      if (r.alreadyDone) toast.info(r.message); else toast.success(r.message);
+      setForm(null);
+    } else if (r.kind === 'UNKNOWN_OUTCOME') {
+      toast.warning(r.message);
+    } else {
+      toast.error(r.message);
+    }
+    // Always refresh: the transaction badge (FAILED / UNKNOWN / SUCCEEDED) is part of the answer.
+    onChanged();
+  };
+
+  const run = async (label: string, body: Record<string, unknown>) => {
+    if (busy) return;
+    setBusy(label);
+    try {
+      finish(await postMuqeem({ visaId: visa.id, ...body }));
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const submitIssue = async () => {
+    const plan = planIssue(durationInput, todayKey());
+    if (!plan.ok) { toast.error(plan.error); return; }
+    const p = plan.value;
+    const hijri = safeHijri(p.expectedReturnBefore);
+    const durationLine = p.visaDuration !== undefined
+      ? `المدة: ${p.visaDuration} يوماً (العودة قبل ${formatDate(p.expectedReturnBefore)}${hijri ? ` / ${hijri} هـ` : ''} تقريباً؛ تحسبه مقيم من تاريخ الإصدار)`
+      : `العودة قبل: ${formatDate(p.expectedReturnBefore)} الموافق ${p.returnBeforeHijri} هـ (${p.days} يوماً من اليوم)`;
+    const ok = await confirmDialog(
+      [
+        'سيتم إصدار تأشيرة خروج وعودة حقيقية في منصة مقيم (المديرية العامة للجوازات) باسم الموظف، وليس مجرد تسجيل في النظام.',
+        '',
+        `الموظف: ${employeeName}`,
+        `حساب مقيم المستخدم: ${info.company?.name ?? '-'}`,
+        `نوع التأشيرة: ${VISA_MUQEEM_TYPE_LABEL[visaType]}`,
+        durationLine,
+        '',
+        'قد تُخصم رسوم حكومية من رصيد المنشأة في مقيم عند الإصدار. لا يمكن التراجع عن الإصدار إلا بإلغاء التأشيرة في مقيم.',
+      ].join('\n'),
+      { title: 'تأكيد الإصدار عبر مقيم', confirmText: 'نعم، أصدر التأشيرة في مقيم', cancelText: 'تراجع' },
+    );
+    if (!ok) return;
+    await run('issue', { action: 'ISSUE', confirm: true, visaType, ...durationInput });
+  };
+
+  const submitExtend = async () => {
+    const base = toDateKey(visa.returnBefore);
+    const plan = planExtension(base, durationInput);
+    if (!plan.ok || !base) { toast.error(plan.ok ? 'تاريخ العودة الحالي غير معروف' : plan.error); return; }
+    const p = plan.value;
+    const ok = await confirmDialog(
+      [
+        `سيتم تمديد تأشيرة الخروج والعودة رقم ${visa.externalVisaNumber} في منصة مقيم (إجراء حقيقي في الجوازات).`,
+        '',
+        `الموظف: ${employeeName}`,
+        `العودة قبل حالياً: ${gregAndHijri(base)}`,
+        `العودة قبل بعد التمديد: ${formatDate(p.newReturnBefore)} (${p.newReturnBeforeHijri} هـ)`,
+        `مدة التمديد: ${p.extraDays} يوماً`,
+        '',
+        'قد تُخصم رسوم تمديد حكومية من رصيد المنشأة في مقيم.',
+      ].join('\n'),
+      { title: 'تأكيد التمديد عبر مقيم', confirmText: 'نعم، مدّد التأشيرة في مقيم', cancelText: 'تراجع' },
+    );
+    if (!ok) return;
+    await run('extend', { action: 'EXTEND', confirm: true, baseReturnBefore: base, ...durationInput });
+  };
+
+  const submitCancel = async () => {
+    const ok = await confirmDialog(
+      [
+        `سيتم إلغاء تأشيرة الخروج والعودة رقم ${visa.externalVisaNumber} في منصة مقيم (إجراء حقيقي في الجوازات) للموظف ${employeeName}.`,
+        '',
+        'لا يمكن التراجع عن الإلغاء من النظام: إذا احتاج الموظف للسفر لاحقاً يلزم إصدار تأشيرة جديدة قد تترتب عليها رسوم جديدة.',
+        'لا يُنشئ هذا الإجراء أي استرداد للرسوم المدفوعة في النظام، وستصبح حالة التأشيرة «ملغاة».',
+      ].join('\n'),
+      { title: 'تأكيد إلغاء التأشيرة في مقيم', confirmText: 'نعم، ألغِ التأشيرة في مقيم', cancelText: 'تراجع', danger: true },
+    );
+    if (!ok) return;
+    await run('cancel', { action: 'CANCEL', confirm: true });
+  };
+
+  const submitReprint = async () => {
+    const ok = await confirmDialog(
+      [
+        `سيتم طلب نسخة جديدة من التأشيرة رقم ${visa.externalVisaNumber} من منصة مقيم وحفظها في ملف الموظف.`,
+        'لا يغيّر هذا الطلب التأشيرة نفسها، ولا تذكر مواصفة مقيم رسوماً لإعادة الطباعة.',
+      ].join('\n'),
+      { title: 'إعادة طباعة التأشيرة من مقيم', confirmText: 'متابعة', cancelText: 'تراجع' },
+    );
+    if (!ok) return;
+    await run('reprint', { action: 'REPRINT', confirm: true });
+  };
+
+  const reconcile = async (tx: MuqeemTx, outcome: 'SUCCEEDED' | 'FAILED') => {
+    const op = VISA_MUQEEM_OPERATION_LABEL[tx.operation as VisaMuqeemOperation] ?? tx.operation;
+    let externalRef: string | null = null;
+    if (outcome === 'SUCCEEDED' && tx.operation === 'EXIT_REENTRY_ISSUE') {
+      externalRef = await promptDialog('أدخل رقم التأشيرة كما يظهر في مقيم (تقرير الخدمات التفاعلية أو سجل تأشيرات الموظف):', {
+        title: 'تسجيل الإصدار كمنفَّذ',
+        placeholder: 'رقم التأشيرة',
+        confirmText: 'متابعة',
+        cancelText: 'تراجع',
+      });
+      if (externalRef === null) return;
+      externalRef = externalRef.trim();
+      if (!/^\d+$/.test(externalRef)) { toast.error('رقم التأشيرة يجب أن يتكون من أرقام فقط'); return; }
+    }
+    const ok = await confirmDialog(
+      outcome === 'SUCCEEDED'
+        ? `ستُسجَّل عملية «${op}» على أنها نُفِّذت فعلاً في مقيم${externalRef ? ` (رقم التأشيرة ${externalRef})` : ''}، وتُحدَّث بيانات التأشيرة في النظام وفق ذلك.\nتأكد من ذلك في مقيم قبل المتابعة.`
+        : `ستُسجَّل عملية «${op}» على أنها لم تُنفَّذ في مقيم، وسيُسمح بإعادة المحاولة.\nتأكد أولاً من مقيم أنها لم تُنفَّذ؛ وإلا فقد يؤدي إعادة الطلب إلى تنفيذها مرتين ودفع الرسوم مرتين.`,
+      { title: 'تسوية عملية مقيم', confirmText: 'متابعة', cancelText: 'تراجع', danger: outcome === 'FAILED' },
+    );
+    if (!ok) return;
+    const note = await promptDialog('اكتب كيف تحققت من النتيجة في مقيم (مثال: تقرير الخدمات التفاعلية بتاريخ اليوم، رقم الطلب ...):', {
+      title: 'ملاحظة التسوية (إلزامية)',
+      placeholder: 'ملاحظة التحقق',
+      confirmText: 'تأكيد التسوية',
+      cancelText: 'تراجع',
+    });
+    if (note === null) return;
+    if (note.trim().length < 3) { toast.error('اكتب ملاحظة توضح كيف تحققت من النتيجة في مقيم'); return; }
+    await run('reconcile', { action: 'RECONCILE', muqeemTransactionId: tx.id, outcome, externalRef, note: note.trim() });
+  };
+
+  const syncFromTransactions = async () => {
+    const op = info.pendingSync ? VISA_MUQEEM_OPERATION_LABEL[info.pendingSync] : '';
+    const ok = await confirmDialog(
+      `سيتم تحديث بيانات التأشيرة في النظام وفق نتيجة عملية «${op}» المسجلة كمنفَّذة في مقيم. لن يُرسل أي طلب إلى مقيم.`,
+      { title: 'تحديث بيانات التأشيرة', confirmText: 'تحديث', cancelText: 'تراجع' },
+    );
+    if (!ok) return;
+    await run('sync', { action: 'SYNC' });
+  };
+
+  const issuePreview = form === 'issue' ? planIssue(durationInput, todayKey()) : null;
+  const extendPreview = form === 'extend' ? planExtension(visa.returnBefore, durationInput) : null;
+
+  return (
+    <div className="mt-4 p-4 bg-teal-50/60 border border-teal-200 rounded-2xl space-y-3">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <h4 className="font-black text-teal-900 text-[13px] flex items-center gap-2"><Landmark size={16} className="text-teal-600" /> التأشيرة الرسمية عبر منصة مقيم</h4>
+        {info.company && (
+          <span className={`px-2.5 py-1 rounded-full text-[10px] font-black ${info.company.linked ? 'bg-teal-100 text-teal-800' : 'bg-slate-200 text-slate-600'}`}>
+            {info.company.name} · {info.company.linked ? 'مربوطة بمقيم' : 'غير مربوطة بمقيم'}
+          </span>
+        )}
+      </div>
+
+      {visa.externalVisaNumber && (
+        <div className="bg-white rounded-xl p-3 border border-teal-100 grid grid-cols-1 sm:grid-cols-2 gap-2 text-[12px]">
+          <div className="flex justify-between gap-2"><span className="font-bold text-slate-500">رقم التأشيرة</span><span className="font-black text-slate-800" dir="ltr">{visa.externalVisaNumber}</span></div>
+          <div className="flex justify-between gap-2"><span className="font-bold text-slate-500">المدة</span><span className="font-black text-slate-800">{visa.visaDurationDays ? `${visa.visaDurationDays} يوماً` : '-'}</span></div>
+          <div className="flex justify-between gap-2 sm:col-span-2"><span className="font-bold text-slate-500">العودة قبل</span><span className="font-black text-slate-800">{gregAndHijri(visa.returnBefore)}</span></div>
+          {visa.issuedViaMuqeemAt && (
+            <div className="flex justify-between gap-2 sm:col-span-2"><span className="font-bold text-slate-500">تاريخ الإصدار عبر مقيم</span><span className="font-bold text-slate-700">{formatDateTime(visa.issuedViaMuqeemAt)}</span></div>
+          )}
+          {visa.visaPdfUrl ? (
+            <a href={visa.visaPdfUrl} target="_blank" rel="noopener noreferrer" className="sm:col-span-2 flex items-center justify-center gap-2 py-2 bg-teal-50 hover:bg-teal-100 text-teal-700 border border-teal-200 rounded-xl font-extrabold transition">
+              <FileText size={14} /> عرض نسخة التأشيرة (PDF من مقيم)
+            </a>
+          ) : (
+            <p className="sm:col-span-2 text-[11px] font-bold text-slate-500">لا توجد نسخة PDF محفوظة؛ استخدم «إعادة طباعة» لجلبها من مقيم.</p>
+          )}
+        </div>
+      )}
+
+      {info.pendingSync && (
+        <div className="bg-sky-50 border border-sky-200 rounded-xl p-3 space-y-2">
+          <p className="text-[11px] font-bold text-sky-900 leading-5">
+            عملية «{VISA_MUQEEM_OPERATION_LABEL[info.pendingSync]}» مسجلة كمنفَّذة في مقيم (غالباً بعد تسوية) لكن بيانات التأشيرة في النظام لم تُحدَّث بعد.
+          </p>
+          {canOperate && (
+            <button type="button" onClick={syncFromTransactions} disabled={!!busy}
+              className="text-[11px] font-black bg-sky-600 text-white px-3 py-1.5 rounded-lg hover:bg-sky-700 disabled:opacity-50">
+              تحديث بيانات التأشيرة
+            </button>
+          )}
+        </div>
+      )}
+
+      {/* Actions */}
+      {canOperate && visa.status === 'PAID' && !visa.externalVisaNumber && form !== 'issue' && (
+        <button type="button" onClick={() => openForm('issue')} disabled={!actionsEnabled}
+          className="w-full sm:w-auto text-[12px] font-black bg-teal-600 text-white px-5 py-2.5 rounded-xl hover:bg-teal-700 transition disabled:bg-slate-300 disabled:cursor-not-allowed flex items-center justify-center gap-2">
+          <Landmark size={14} /> إصدار عبر مقيم
+        </button>
+      )}
+      {canOperate && visa.status === 'PENDING_PAYMENT' && (
+        <p className="text-[11px] font-bold text-slate-600">الإصدار عبر مقيم يتاح بعد أن تؤكد الإدارة المالية سداد رسوم التأشيرة.</p>
+      )}
+      {canOperate && issuedViaMuqeem && !form && (
+        <div className="flex flex-wrap gap-2">
+          <button type="button" onClick={() => openForm('extend')} disabled={!actionsEnabled}
+            className="text-[12px] font-black bg-white text-teal-700 border border-teal-300 px-4 py-2 rounded-xl hover:bg-teal-50 transition disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-1.5">
+            <CalendarPlus size={14} /> تمديد
+          </button>
+          <button type="button" onClick={submitReprint} disabled={!actionsEnabled}
+            className="text-[12px] font-black bg-white text-slate-700 border border-slate-300 px-4 py-2 rounded-xl hover:bg-slate-50 transition disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-1.5">
+            <Printer size={14} /> {busy === 'reprint' ? 'جاري الطلب...' : 'إعادة طباعة'}
+          </button>
+          <button type="button" onClick={submitCancel} disabled={!actionsEnabled}
+            className="text-[12px] font-black bg-white text-rose-700 border border-rose-300 px-4 py-2 rounded-xl hover:bg-rose-50 transition disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-1.5">
+            <Ban size={14} /> {busy === 'cancel' ? 'جاري الإلغاء...' : 'إلغاء التأشيرة'}
+          </button>
+        </div>
+      )}
+      {(visa.status === 'PAID' || issuedViaMuqeem) && disabledReason && status && (
+        <p className="text-[11px] font-bold text-amber-800 bg-amber-50 border border-amber-200 rounded-xl px-3 py-2 flex items-start gap-2">
+          <ShieldAlert size={14} className="shrink-0 mt-0.5" /> <span>إجراءات مقيم غير متاحة: {disabledReason}</span>
+        </p>
+      )}
+
+      {/* Issue / extend form */}
+      {form && (
+        <div className="bg-white rounded-xl p-4 border border-teal-200 space-y-3">
+          <p className="text-[12px] font-black text-teal-900">{form === 'issue' ? 'بيانات إصدار التأشيرة في مقيم' : `تمديد التأشيرة ${visa.externalVisaNumber}`}</p>
+          {form === 'issue' && (
+            <div className="flex flex-wrap gap-2 items-center">
+              <span className="text-[11px] font-bold text-slate-600">نوع التأشيرة:</span>
+              {([1, 2] as VisaMuqeemType[]).map((t) => (
+                <label key={t} className={`px-3 py-1.5 rounded-xl border text-[12px] font-black cursor-pointer ${visaType === t ? 'bg-teal-600 text-white border-teal-600' : 'bg-white text-slate-700 border-slate-200'}`}>
+                  <input type="radio" name={`vtype-${visa.id}`} className="sr-only" checked={visaType === t} onChange={() => setVisaType(t)} />
+                  {VISA_MUQEEM_TYPE_LABEL[t]}
+                </label>
+              ))}
+            </div>
+          )}
+          <div className="flex flex-wrap gap-2 items-center">
+            <span className="text-[11px] font-bold text-slate-600">{form === 'issue' ? 'تحديد المدة:' : 'التمديد:'}</span>
+            <label className="text-[12px] font-bold text-slate-700 flex items-center gap-1">
+              <input type="radio" name={`mode-${visa.id}`} checked={mode === 'days'} onChange={() => setMode('days')} /> {form === 'issue' ? 'عدد الأيام' : 'أيام إضافية'}
+            </label>
+            <label className="text-[12px] font-bold text-slate-700 flex items-center gap-1">
+              <input type="radio" name={`mode-${visa.id}`} checked={mode === 'date'} onChange={() => setMode('date')} /> {form === 'issue' ? 'العودة قبل تاريخ' : 'تاريخ عودة جديد'}
+            </label>
+          </div>
+          {mode === 'days' ? (
+            <input type="number" min={MIN_VISA_DAYS} step={1} inputMode="numeric" aria-label="عدد الأيام" value={days} onChange={(e) => setDays(e.target.value)} className={`${MQ_INPUT} w-40`} />
+          ) : (
+            <input type="date" aria-label="العودة قبل" value={date} onChange={(e) => setDate(e.target.value)} className={`${MQ_INPUT} w-48`} />
+          )}
+          {form === 'issue' && info.suggestion && (
+            <p className="text-[11px] font-bold text-slate-500">
+              مقترح: {gregAndHijri(info.suggestion.date)} = {info.suggestion.source === 'leave' ? 'نهاية الإجازة المرتبطة' : 'تاريخ عودة التذكرة'} ({formatDate(info.suggestion.baseDate)}) + {info.suggestion.marginDays} يوماً احتياطاً.
+            </p>
+          )}
+          {form === 'issue' && issuePreview && (
+            issuePreview.ok ? (
+              <p className="text-[11px] font-bold text-teal-800">
+                {issuePreview.value.returnBeforeHijri
+                  ? `سيُرسل إلى مقيم: العودة قبل ${issuePreview.value.returnBeforeHijri} هـ (${issuePreview.value.days} يوماً من اليوم).`
+                  : `سيُرسل إلى مقيم: مدة ${issuePreview.value.visaDuration} يوماً (العودة قبل ${gregAndHijri(issuePreview.value.expectedReturnBefore)} تقريباً).`}
+              </p>
+            ) : <p className="text-[11px] font-bold text-rose-600">{issuePreview.error}</p>
+          )}
+          {form === 'extend' && extendPreview && (
+            extendPreview.ok ? (
+              <p className="text-[11px] font-bold text-teal-800">
+                العودة قبل حالياً {gregAndHijri(visa.returnBefore)} ← بعد التمديد {formatDate(extendPreview.value.newReturnBefore)} ({extendPreview.value.newReturnBeforeHijri} هـ)، بزيادة {extendPreview.value.extraDays} يوماً.
+              </p>
+            ) : <p className="text-[11px] font-bold text-rose-600">{extendPreview.error}</p>
+          )}
+          <div className="flex gap-2">
+            <button type="button" onClick={form === 'issue' ? submitIssue : submitExtend} disabled={!actionsEnabled}
+              className="flex-1 text-white text-[12px] font-black py-2.5 rounded-xl transition bg-teal-600 hover:bg-teal-700 disabled:bg-slate-300 disabled:cursor-not-allowed">
+              {busy ? 'جاري التنفيذ في مقيم...' : form === 'issue' ? 'متابعة الإصدار في مقيم' : 'متابعة التمديد في مقيم'}
+            </button>
+            <button type="button" onClick={() => setForm(null)} disabled={!!busy} className="px-4 py-2.5 bg-slate-200 hover:bg-slate-300 text-slate-700 text-[12px] font-bold rounded-xl transition disabled:opacity-50">
+              إغلاق
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Muqeem transactions of this visa */}
+      {info.transactions.length > 0 && (
+        <div className="space-y-2">
+          <p className="text-[11px] font-black text-slate-500">سجل العمليات على مقيم</p>
+          {info.transactions.map((tx) => {
+            const view = txStatusView(tx);
+            const op = VISA_MUQEEM_OPERATION_LABEL[tx.operation as VisaMuqeemOperation] ?? tx.operation;
+            return (
+              <div key={tx.id} className="bg-white rounded-xl border border-slate-100 p-3 space-y-1.5">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <span className="text-[12px] font-black text-slate-800">{op}</span>
+                  <span className={`px-2.5 py-0.5 rounded-full text-[10px] font-black ${TX_TONE_CLASS[view.tone]}`}>{view.label}</span>
+                </div>
+                <p className="text-[11px] font-bold text-slate-500">
+                  {formatDateTime(tx.createdAt)}{tx.externalRef ? ` · المرجع: ${tx.externalRef}` : ''}
+                </p>
+                {tx.error && tx.status !== 'SUCCEEDED' && <p className="text-[11px] font-bold text-rose-700">{tx.error}</p>}
+                {tx.status === 'PENDING' && !view.needsReconcile && (
+                  <p className="text-[11px] font-bold text-sky-700">الطلب قيد التنفيذ؛ لا تُعِد المحاولة، حدّث الصفحة بعد قليل.</p>
+                )}
+                {view.needsReconcile && (
+                  <div className="bg-amber-50 border border-amber-200 rounded-lg p-2.5 space-y-2">
+                    <p className="text-[11px] font-bold text-amber-900 leading-5">
+                      نتيجة هذه العملية غير معروفة: ربما نُفِّذت في مقيم. لا تُعِد المحاولة. تحقق من «تقرير الخدمات التفاعلية» أو سجل تأشيرات الموظف في بوابة مقيم، ثم سجّل النتيجة هنا (تسوية).
+                    </p>
+                    {canOperate && (
+                      <div className="flex flex-wrap gap-2">
+                        {tx.operation !== 'EXIT_REENTRY_REPRINT' && (
+                          <button type="button" disabled={!!busy} onClick={() => reconcile(tx, 'SUCCEEDED')}
+                            className="text-[11px] font-black bg-emerald-600 text-white px-3 py-1.5 rounded-lg hover:bg-emerald-700 disabled:opacity-50">
+                            نُفِّذت في مقيم
+                          </button>
+                        )}
+                        <button type="button" disabled={!!busy} onClick={() => reconcile(tx, 'FAILED')}
+                          className="text-[11px] font-black bg-white text-rose-700 border border-rose-300 px-3 py-1.5 rounded-lg hover:bg-rose-50 disabled:opacity-50">
+                          لم تُنفَّذ في مقيم
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
   );
 }
 

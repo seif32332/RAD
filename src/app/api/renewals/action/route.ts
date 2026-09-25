@@ -15,6 +15,13 @@ import {
   LEGAL_MANAGED_RENEWALS,
   renewalPaymentTitle,
 } from '@/lib/alerts';
+import {
+  MUQEEM_OPERATIONS_BY_DOCUMENT,
+  UNRESOLVED_MUQEEM_MESSAGE,
+  closeRenewalPaymentMarkers,
+  findUnresolvedMuqeemTransaction,
+  lockRenewalDocument,
+} from '@/app/api/employees/[id]/muqeem/renewal-record';
 
 export const dynamic = 'force-dynamic';
 
@@ -255,7 +262,24 @@ export async function POST(req: Request) {
 
     const result = await prisma.$transaction(async (tx) => {
       // Serialize all actions on the same document (released automatically at commit/rollback).
-      await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${`renewal:${entityId}:${documentType}`}))`;
+      await lockRenewalDocument(tx, entityId, documentType);
+
+      // ---- A Muqeem renewal of this document with an unknown outcome must be reconciled first:
+      // it may have been executed, and changing the date here would allow a second Muqeem call.
+      const muqeemOps = Object.prototype.hasOwnProperty.call(MUQEEM_OPERATIONS_BY_DOCUMENT, documentType)
+        ? MUQEEM_OPERATIONS_BY_DOCUMENT[documentType]
+        : null;
+      if (action === 'RENEWED' && entityType === 'EMPLOYEE' && muqeemOps) {
+        const unresolved = await findUnresolvedMuqeemTransaction(tx, entityId, muqeemOps);
+        if (unresolved) {
+          throw conflict(UNRESOLVED_MUQEEM_MESSAGE, {
+            code: 'MUQEEM_UNRESOLVED',
+            muqeemTransactionId: unresolved.id,
+            operation: unresolved.operation,
+            status: unresolved.status,
+          });
+        }
+      }
 
       // ---- Guards against double submission ----
       if (requiresPayment) {
@@ -330,13 +354,8 @@ export async function POST(req: Request) {
           paymentRequestId = payment.id;
         } else {
           // Renewal confirmed: close PAID requests and drop PENDING_PAYMENT markers
-          await tx.paymentRequest.updateMany({
-            where: { entityId, documentType, status: 'PAID' },
-            data: { status: 'COMPLETED' },
-          });
-          await tx.renewalArchive.deleteMany({
-            where: { entityId, documentType, action: 'PENDING_PAYMENT' },
-          });
+          // (shared with the Muqeem renewal, src/app/api/employees/[id]/muqeem).
+          await closeRenewalPaymentMarkers(tx, entityId, documentType);
         }
       }
 

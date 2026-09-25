@@ -2,7 +2,7 @@
 
 import React, { useState, useEffect, useCallback, use } from 'react';
 import {
-  Building2, ChevronRight, FileText, Edit, Trash2, Calendar, Hash, MapPin, ShieldCheck, Globe, AlertTriangle, RefreshCw
+  Building2, ChevronRight, FileText, Edit, Trash2, Calendar, Hash, MapPin, ShieldCheck, Globe, AlertTriangle, RefreshCw, Link2
 } from 'lucide-react';
 import { useRouter } from 'next/navigation';
 import Link from 'next/link';
@@ -31,6 +31,10 @@ interface CompanyDetails {
   createdAt?: string | null;
   updatedAt?: string | null;
   _count?: { legalEmployees?: number };
+  moiNumber?: string | null;
+  muqeemPlatformId?: string | null;
+  muqeemLinked?: boolean;
+  muqeemPlatform?: { id: string; platformName: string } | null;
 }
 
 type Tone = 'blue' | 'indigo' | 'emerald' | 'violet' | 'amber' | 'slate';
@@ -226,6 +230,25 @@ export default function CompanyDetailsPage({ params }: { params: Promise<{ id: s
             <InfoRow label="رقم التسجيل" value={company.trademarkNumber || '—'} />
             <InfoRow label="تاريخ التسجيل" value={formatDate(company.trademarkRegDate)} />
             <InfoRow label="تاريخ الانتهاء" value={formatDate(company.trademarkExpDate)} />
+          </InfoCard>
+
+          {/* الربط مع مقيم */}
+          <InfoCard icon={<Link2 size={20} className="text-teal-500" />} title="الربط مع مقيم" color="emerald">
+            <div className="flex justify-between items-center">
+              <span className="text-[11px] font-bold text-slate-400">الحالة</span>
+              <span
+                className={`text-[11px] font-black px-2.5 py-1 rounded-lg ${company.muqeemLinked ? 'bg-emerald-50 text-emerald-700 border border-emerald-200' : 'bg-slate-100 text-slate-500 border border-slate-200'}`}
+              >
+                {company.muqeemLinked ? 'مربوطة بمقيم' : 'غير مربوطة'}
+              </span>
+            </div>
+            <InfoRow label="رقم المنشأة (الجوازات)" value={company.moiNumber || '—'} />
+            <InfoRow label="حساب مقيم" value={company.muqeemPlatform?.platformName || '—'} />
+            {!company.muqeemLinked && (
+              <p className="text-[11px] font-bold text-slate-400 leading-relaxed">
+                أدخل رقم المنشأة واختر حساب مقيم من صفحة تعديل البيانات لتفعيل خدمات مقيم.
+              </p>
+            )}
           </InfoCard>
 
           {/* تاريخ التسجيل */}
