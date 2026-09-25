@@ -1,0 +1,33 @@
+@import "tailwindcss";
+
+@theme {
+  --color-background-start: #f8fafc;
+  --color-background-end: #f1f5f9;
+  --font-sans: var(--font-cairo), ui-sans-serif, system-ui, sans-serif, "Apple Color Emoji", "Segoe UI Emoji", "Segoe UI Symbol", "Noto Color Emoji";
+}
+
+/* The product has no dark theme: keep form controls/scrollbars light even when the OS is dark. */
+:root {
+  color-scheme: light;
+}
+
+body {
+  background: var(--color-background-start);
+  color: #1e293b;
+  min-height: 100vh;
+  font-family: var(--font-sans);
+}
+
+@layer utilities {
+  .text-balance {
+    text-wrap: balance;
+  }
+  
+  .scrollbar-hide::-webkit-scrollbar {
+    display: none;
+  }
+  .scrollbar-hide {
+    -ms-overflow-style: none;
+    scrollbar-width: none;
+  }
+}

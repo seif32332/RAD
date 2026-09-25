@@ -1,0 +1,105 @@
+#!/bin/bash
+# ============================================================================
+# DEPRECATED - DO NOT RUN. Kept only as a historical reference of the old deploy.
+# Known problems: runs as root, rsyncs /root/ (incl. .ssh, backups, uploads) into
+# other tenants, builds on the live server three times, and uses
+# `prisma db push --accept-data-loss`. Secrets that used to be hardcoded here were
+# removed and MUST be rotated (see docs/RUNBOOK.md).
+# Use ops/deploy.sh (or docker-compose.yml) instead.
+# ============================================================================
+echo "ops/legacy/deploy_all.sh.old is deprecated; use ops/deploy.sh" >&2
+exit 1
+set -e
+
+echo "=== 1. Updating Base Repository (Radeef) ==="
+cd /root
+git pull origin main
+rm -rf node_modules/.prisma node_modules/@prisma/client
+npm install
+npm install @prisma/client@5.22.0 prisma@5.22.0
+node node_modules/prisma/build/index.js generate
+npm run build
+pm2 restart radeef
+
+echo "=== 2. Updating Rakan Tenant ==="
+rsync -av --exclude 'node_modules' --exclude '.next' --exclude 'rakan' --exclude 'dar' --exclude '.git' --exclude '.env' /root/ /root/rakan/
+cd /root/rakan
+rm -rf node_modules/.prisma node_modules/@prisma/client
+npm install
+npm install @prisma/client@5.22.0 prisma@5.22.0
+node node_modules/prisma/build/index.js generate
+npm run build
+pm2 restart rakan
+
+echo "=== 3. Setting up / Updating Dar Tenant ==="
+mkdir -p /root/dar
+rsync -av --exclude 'node_modules' --exclude '.next' --exclude 'rakan' --exclude 'dar' --exclude '.git' --exclude '.env' /root/ /root/dar/
+
+# Create DB if not exists
+su - postgres -c "psql -tc \"SELECT 1 FROM pg_database WHERE datname = 'dar_erp'\" | grep -q 1 || psql -c \"CREATE DATABASE dar_erp;\""
+
+# Ensure .env exists
+if [ ! -f /root/dar/.env ]; then
+echo "DATABASE_URL=\"postgresql://${PGUSER:?set PGUSER}:${PGPASSWORD:?set PGPASSWORD}@localhost:5432/dar_erp?schema=public\"
+NEXTAUTH_URL=\"https://dar.radeef-sa.com\"
+SESSION_SECRET=\"${SESSION_SECRET:?set SESSION_SECRET}\"" > /root/dar/.env
+fi
+
+# Build and Start
+cd /root/dar
+rm -rf node_modules/.prisma node_modules/@prisma/client
+npm install
+npm install @prisma/client@5.22.0 prisma@5.22.0
+node node_modules/prisma/build/index.js generate
+npx prisma db push --accept-data-loss
+npm run build
+
+# PM2 logic
+if pm2 show dar > /dev/null; then
+    pm2 restart dar
+else
+    PORT=3002 pm2 start npm --name "dar" -- start
+    pm2 save
+fi
+
+# Ensure Nginx config for Dar
+if [ ! -f /etc/nginx/sites-available/dar.radeef-sa.com ]; then
+echo "server {
+    listen 80;
+    server_name dar.radeef-sa.com;
+
+    location / {
+        proxy_pass http://127.0.0.1:3002;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade \$http_upgrade;
+        proxy_set_header Connection 'upgrade';
+        proxy_set_header Host \$host;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto \$scheme;
+        proxy_cache_bypass \$http_upgrade;
+    }
+}" > /etc/nginx/sites-available/dar.radeef-sa.com
+ln -sf /etc/nginx/sites-available/dar.radeef-sa.com /etc/nginx/sites-enabled/
+systemctl reload nginx
+fi
+
+# Create Admin User for Dar
+node -e "
+const { PrismaClient } = require('@prisma/client');
+const bcrypt = require('bcryptjs');
+const prisma = new PrismaClient();
+async function main() {
+  const hash = await bcrypt.hash(process.env.ADMIN_PASSWORD, 10);
+  const user = await prisma.user.findUnique({ where: { email: 'admin@dar.com' } });
+  if (!user) {
+    await prisma.user.create({
+      data: { email: 'admin@dar.com', passwordHash: hash, role: 'SUPER_ADMIN' }
+    });
+    console.log('✅ Admin created: admin@dar.com');
+  }
+}
+main().catch(console.error).finally(() => prisma.\$disconnect());
+"
+
+echo "=== All updates completed successfully! ==="

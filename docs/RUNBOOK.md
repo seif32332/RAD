@@ -1,0 +1,517 @@
+# دليل التشغيل — Radeef HRMS (RUNBOOK)
+
+هذا الدليل لمالك السيرفر ومن يتولى التشغيل. القسم 1 **إجراءات فورية** يجب تنفيذها قبل أي نشر للنسخة الجديدة، والقسم 2 الانتقال من الترتيب الحالي (تطبيق يعمل كـ root من `/root`) إلى الترتيب الجديد، والقسم 3 عمليات اليوم الثاني.
+
+المصطلحات: `<tenant>` أحد `radeef` أو `rakan` أو `dar` (أو مستأجر جديد)، و`<domain>` نطاقه، و`<port>` منفذه المحلي (3000 / 3001 / 3002).
+
+مرجعيات: [`../README.md`](../README.md)، [`DATABASE.md`](DATABASE.md) (الترحيلات)، [`../PRODUCTION_READINESS_PLAN.md`](../PRODUCTION_READINESS_PLAN.md)، سكربتات [`../ops/`](../ops).
+
+---
+
+## 1. إجراءات فورية (اليوم)
+
+كانت هذه القيم مكتوبة نصًا داخل ملفات في المستودع (19+ ملفًا) وتُعتبر **مسرّبة**: كلمة مرور root لـ SSH، عنوان IP السيرفر، كلمة مرور مستخدم `postgres`، سرّ الجلسة الثابت لـ `dar`، وكلمة المرور الافتراضية `admin123` لحساب مدير `dar`، إضافة إلى حساب دخول خلفي ثابت في كود تسجيل الدخول القديم. حذفها من الملفات لا يكفي: هي في تاريخ git وعلى أي جهاز نُسخ إليه المستودع. **دوّرها كلها.**
+
+### 1.1 SSH: مفاتيح بدل كلمة المرور، وإيقاف دخول root بكلمة مرور
+
+من جهازك المحلي:
+```bash
+ssh-keygen -t ed25519 -C "radeef-ops"             # إن لم يكن لديك مفتاح
+```
+على السيرفر (ما زلت متصلًا كـ root، **لا تغلق الجلسة** حتى تتأكد من الدخول الجديد):
+```bash
+adduser --disabled-password --gecos "" ops
+usermod -aG sudo ops
+install -d -m 700 -o ops -g ops /home/ops/.ssh
+# الصق المفتاح العام (id_ed25519.pub) في:
+nano /home/ops/.ssh/authorized_keys && chown ops:ops /home/ops/.ssh/authorized_keys && chmod 600 /home/ops/.ssh/authorized_keys
+passwd ops                                       # كلمة مرور لـ sudo فقط (لا تُستخدم لـ SSH)
+```
+من نافذة **ثانية** تأكد أن `ssh ops@<server>` و`sudo -v` يعملان، ثم:
+```bash
+cat >/etc/ssh/sshd_config.d/99-radeef-hardening.conf <<'EOF'
+PermitRootLogin no
+PasswordAuthentication no
+KbdInteractiveAuthentication no
+PubkeyAuthentication yes
+MaxAuthTries 3
+EOF
+sshd -t && systemctl reload ssh
+passwd root                                      # كلمة مرور عشوائية طويلة، تُحفظ في مدير كلمات المرور
+```
+فحص الاختراق (كلمة المرور كانت مكشوفة):
+```bash
+cat /root/.ssh/authorized_keys /home/*/.ssh/authorized_keys   # احذف أي مفتاح لا تعرفه
+last -a | head -50; lastb -a | head -20
+journalctl -u ssh --since "-30 days" | grep -i "accepted" | awk '{print $NF, $(NF-3)}' | sort | uniq -c
+crontab -l; ls /etc/cron.d /etc/systemd/system; ss -ltnp
+```
+الجدار الناري: التطبيق الحالي (`next start`) يستمع على `0.0.0.0` فيمكن الوصول إلى المنافذ 3000-3002 مباشرة متجاوزًا Nginx:
+```bash
+ufw default deny incoming
+ufw allow OpenSSH && ufw allow 80/tcp && ufw allow 443/tcp
+ufw enable && ufw status verbose
+```
+(Postgres 5432 ولوحة `radeef-manage` يجب ألا يكونا مفتوحين للإنترنت. أوقف `radeef-manage` أو اربطه بـ `127.0.0.1` حتى تُصلح ثغرة حقن الأوامر.)
+يُنصح أيضًا: `apt install fail2ban unattended-upgrades`.
+
+### 1.2 Postgres: تدوير كلمة المرور ودور مستقل لكل مستأجر
+
+```bash
+sudo -u postgres psql -c '\l'          # حدد اسم قاعدة كل مستأجر (dar = dar_erp)
+```
+1. اجعل `postgres` بدون دخول شبكي: في `pg_hba.conf` يبقى `local all postgres peer` فقط، ثم دوّر كلمة مروره:
+   ```bash
+   sudo -u postgres psql -c "ALTER ROLE postgres PASSWORD '$(openssl rand -hex 32)';"
+   ```
+2. لكل مستأجر أنشئ دورًا مالكًا لقاعدته (استبدل `dar_app` و`dar_erp`):
+   ```bash
+   PW="$(openssl rand -hex 32)"; echo "احفظ: $PW"
+   sudo -u postgres psql -v ON_ERROR_STOP=1 <<SQL
+   CREATE ROLE dar_app LOGIN PASSWORD '$PW' NOSUPERUSER NOCREATEDB NOCREATEROLE;
+   ALTER DATABASE dar_erp OWNER TO dar_app;
+   REVOKE ALL ON DATABASE dar_erp FROM PUBLIC;
+   \connect dar_erp
+   ALTER SCHEMA public OWNER TO dar_app;
+   DO \$\$
+   DECLARE r record;
+   BEGIN
+     FOR r IN SELECT tablename AS n FROM pg_tables WHERE schemaname = 'public' LOOP
+       EXECUTE format('ALTER TABLE public.%I OWNER TO dar_app', r.n);
+     END LOOP;
+     FOR r IN SELECT sequence_name AS n FROM information_schema.sequences WHERE sequence_schema = 'public' LOOP
+       EXECUTE format('ALTER SEQUENCE public.%I OWNER TO dar_app', r.n);
+     END LOOP;
+     FOR r IN SELECT t.typname AS n FROM pg_type t JOIN pg_namespace ns ON ns.oid = t.typnamespace
+              WHERE ns.nspname = 'public' AND t.typtype = 'e' LOOP
+       EXECUTE format('ALTER TYPE public.%I OWNER TO dar_app', r.n);
+     END LOOP;
+   END \$\$;
+   SQL
+   ```
+3. `pg_hba.conf`: `host <db> <role> 127.0.0.1/32 scram-sha-256` (ولـ Docker: `host <db> <role> 172.16.0.0/12 scram-sha-256` مع `listen_addresses = 'localhost,172.17.0.1'`)، ثم `systemctl reload postgresql`.
+4. ضع `DATABASE_URL` الجديد في `/etc/radeef/<tenant>.env` (القسم 1.3). المستأجرون الجدد يحصلون على كل هذا تلقائيًا من `ops/new-tenant.sh`.
+
+### 1.3 ملف بيئة لكل مستأجر: SESSION_SECRET و DATA_ENCRYPTION_KEY
+
+```bash
+sudo install -d -m 755 /etc/radeef
+sudo cp /opt/radeef/src/.env.example /etc/radeef/dar.env      # أو من نسخة المستودع لديك
+sudo nano /etc/radeef/dar.env
+```
+- `DATABASE_URL` بالدور الجديد و`?schema=public&connection_limit=10&pool_timeout=20`.
+- `SESSION_SECRET` = `openssl rand -base64 48` (قيمة جديدة؛ **لا تعِد استخدام** سرّ `dar` القديم).
+- `DATA_ENCRYPTION_KEY` = `openssl rand -base64 32`. **إلزامي في الإنتاج**: التطبيق يرفض التشغيل المشفَّر بدونه، ولا يشتق مفتاحًا من `SESSION_SECRET` بعد الآن. احفظه في مدير كلمات المرور **وخارج السيرفر** قبل أول تشغيل، ولا تغيّره بعدها؛ فقدانه يعني فقدان كلمات مرور المنصات الحكومية المشفرة نهائيًا.
+  - **مستأجر كان يعمل على النسخة السابقة** (شفّرت كلمات المرور بمفتاح مشتق من `SESSION_SECRET`): اضبط المفتاح على القيمة المشتقة نفسها مرة واحدة كي تبقى البيانات مقروءة:
+    ```bash
+    printf 'radeef-data-key:%s' "$SESSION_SECRET_OLD" | sha256sum | cut -d' ' -f1
+    ```
+    ضع الناتج في `DATA_ENCRYPTION_KEY`، ثم شغّل `scripts/encrypt-gov-passwords.mjs` تجريبياً للتأكد أن كلمات المرور تُقرأ، ثم دوّر `SESSION_SECRET` بحرية.
+  - التدوير لاحقاً: `DATA_ENCRYPTION_KEY_ID` (افتراضي `k1`) يُكتب في كل نص مشفَّر جديد، والمفاتيح القديمة تبقى مقروءة عبر `DATA_ENCRYPTION_KEY_<KID>`.
+- `PORT` (3000 / 3001 / 3002) و`UPLOAD_DIR=/var/lib/radeef/<tenant>/uploads`.
+```bash
+sudo chown radeef:radeef /etc/radeef/*.env && sudo chmod 600 /etc/radeef/*.env
+```
+(مستخدم `radeef` يُنشأ في القسم 2.1.)
+
+### 1.4 المدير الأول وإغلاق الحسابات المكشوفة
+
+حُذف حساب الدخول الخلفي الثابت والمقارنة النصية لكلمات المرور من الكود، لذا تسجيل الدخول يتم فقط بحسابات حقيقية في قاعدة البيانات. بعد نشر النسخة الجديدة لكل مستأجر:
+```bash
+cd /opt/radeef/src
+sudo -u radeef node --env-file=/etc/radeef/dar.env scripts/create-admin.mjs owner@company.sa
+```
+يطبع كلمة مرور عشوائية **مرة واحدة**. نفس الأمر مع بريد موجود يعيد تعيين كلمة مروره: نفّذه على `admin@dar.com` (كلمة مروره القديمة `admin123` مكشوفة) وعلى أي حساب بكلمة مرور ضعيفة معروفة. راجع جدول المستخدمين وعطّل من لا تعرفه من صفحة الإعدادات ← المستخدمين.
+
+### 1.5 تبنّي الترحيلات
+
+نفّذ [`DATABASE.md`](DATABASE.md) — "One-time adoption of migrations" لكل مستأجر على حدة، **بعد** نسخة احتياطية. من الآن: لا `prisma db push` في الإنتاج أبدًا؛ النشر يستخدم `prisma migrate deploy` مسبوقًا بـ `pg_dump` (يفعلها `ops/deploy.sh` تلقائيًا).
+
+### 1.6 نقل الملفات المرفوعة من `public/uploads` إلى `UPLOAD_DIR`
+
+الملفات القديمة في `public/uploads` داخل كل نسخة (`/root`, `/root/rakan`, `/root/dar`، وربما `/var/www/radeef`). انتبه: سكربت النشر القديم كان ينسخ `/root/` إلى المستأجرين الآخرين، فقد تحتوي مجلدات مستأجر على ملفات مستأجر آخر. انقل لكل مستأجر **فقط الملفات التي تشير إليها قاعدته**:
+```bash
+T=dar; SRC=/root/dar/public/uploads; DST=/var/lib/radeef/$T/uploads
+sudo install -d -m 750 -o radeef -g radeef "$DST"           # Docker: -o 1001 -g 1001
+# الأسماء المشار إليها في قاعدة المستأجر (/uploads/<name> أو /api/files/<name>):
+sudo -u postgres pg_dump --data-only dar_erp | tr '\t' '\n' \
+  | grep -oE "/(uploads|api/files)/[^\"',;)<>\\]+" \
+  | sed -E 's#^/(uploads|api/files)/##' | sort -u > /tmp/$T-referenced.txt
+wc -l /tmp/$T-referenced.txt; sudo ls "$SRC" | wc -l      # قارن العددين وراجع عينات قبل النسخ
+sudo rsync -a --files-from=/tmp/$T-referenced.txt "$SRC/" "$DST/"
+sudo chown -R radeef:radeef "$DST"                           # Docker: 1001:1001
+```
+الروابط القديمة `/uploads/<name>` تبقى صالحة (تُحوَّل داخليًا إلى `/api/files/<name>` المحمي). احتفظ بالمجلدات القديمة حتى تتأكد، ثم احذفها.
+
+### 1.6.1 تسجيل الملفات القديمة وتشفير كلمات مرور المنصات الحكومية
+
+بعد تطبيق الترحيلات ونقل الملفات، نفّذ لكل مستأجر (بملف البيئة الخاص به):
+
+```bash
+# 1) تسجيل الملفات المرفوعة سابقاً في جدول UploadedFile (بدونه يرى الموظف 403 على مستنداته القديمة)
+node --env-file=/etc/radeef/<tenant>.env scripts/register-legacy-uploads.mjs          # تجربة بلا كتابة
+node --env-file=/etc/radeef/<tenant>.env scripts/register-legacy-uploads.mjs --apply  # تنفيذ
+
+# 2) تشفير كلمات مرور المنصات الحكومية المخزنة نصاً (يرفض الكتابة إن كان المفتاح خاطئاً)
+node --env-file=/etc/radeef/<tenant>.env scripts/encrypt-gov-passwords.mjs
+node --env-file=/etc/radeef/<tenant>.env scripts/encrypt-gov-passwords.mjs --apply
+```
+
+ملاحظات:
+- `DATA_ENCRYPTION_KEY` يجب ضبطه **قبل** تشغيل سكربت التشفير ولا يُغيَّر بعده، لأن تغييره يجعل كلمات المرور المشفرة غير قابلة للقراءة.
+- تسجيل الخروج يُنهي جلسات المستخدم على **كل** الأجهزة، وكذلك تغيير كلمة المرور.
+- ضع التطبيق خلف Nginx دائماً: التطبيق يعتمد على ترويسة `X-Real-IP` التي يضبطها Nginx لحساب محاولات الدخول.
+- الترحيل `4_cancel_visas_of_cancelled_leaves` ينظّف تأشيرات قديمة لإجازات ملغاة، ويُطبَّق تلقائياً مع `npm run db:migrate`.
+
+### 1.7 نسخة احتياطية فورية + النسخ اليومي
+
+قبل أي تغيير آخر:
+```bash
+sudo install -d -m 700 /var/backups/radeef/manual
+for db in dar_erp <radeef_db> <rakan_db>; do
+  sudo -u postgres pg_dump -Fc -f /var/backups/radeef/manual/$db-$(date +%F).dump $db
+done
+```
+انسخها **خارج السيرفر** (`scp` إلى جهازك أو مخزن خارجي). بعد إعداد `/etc/radeef/*.env` فعّل النسخ اليومي (القسم 3.4).
+
+### 1.8 تنظيف تاريخ git
+
+إن كان المستودع على GitHub أو أي خادم git: بعد التدوير أعلاه، نظّف التاريخ بـ [`git filter-repo`](https://github.com/newren/git-filter-repo) (`--replace-text` بقائمة القيم المسرّبة)، ثم `push --force` لكل الفروع والوسوم، واطلب من كل من لديه نسخة أن يعيد الاستنساخ. الـ CI (gitleaks) سيفشل حتى يتم ذلك. التدوير أهم من التنظيف: اعتبر القيم القديمة معروفة للجميع.
+
+---
+
+## 2. الانتقال إلى الترتيب الجديد
+
+الهدف: مستخدم نظام `radeef` غير root، الكود في `/opt/radeef/src`، الإصدارات في `/opt/radeef/releases`، البيانات في `/var/lib/radeef/<tenant>`، الأسرار في `/etc/radeef`، النسخ في `/var/backups/radeef`. اختر **PM2** (الأقرب للوضع الحالي) أو **Docker** (المُوصى به على المدى البعيد).
+
+### 2.1 التحضير المشترك
+
+```bash
+sudo apt install -y git curl postgresql-client nginx certbot rsync
+# مستخدم الخدمة (uid 1001 = مستخدم الصورة في Docker)
+sudo groupadd --system --gid 1001 radeef && sudo useradd --system --uid 1001 --gid 1001 -m -s /bin/bash radeef && sudo passwd -l radeef
+sudo install -d -m 755 /opt/radeef /etc/radeef /var/lib/radeef /var/backups/radeef
+sudo install -d -m 750 -o radeef -g radeef /opt/radeef/releases /var/log/radeef /opt/radeef/{radeef,rakan,dar} /var/lib/radeef/{radeef,rakan,dar}
+sudo chown radeef:radeef /var/backups/radeef
+# نسخة المستودع (مفتاح نشر للقراءة فقط على GitHub)
+sudo -u radeef git clone <repo-url> /opt/radeef/src
+```
+ثم ملفات `/etc/radeef/<tenant>.env` (القسم 1.3) ونقل الملفات (1.6).
+
+Nginx لكل نطاق موجود (يعطّل ملف الموقع القديم الذي يخدم نفس النطاق، يضيف HTTPS وصفحة صيانة عامة):
+```bash
+sudo /opt/radeef/src/ops/new-tenant.sh --nginx-only --email ops@company.sa dar dar.radeef-sa.com 3002
+```
+(ملف `ops/nginx/dar.radeef-sa.com.conf.legacy` هو الإعداد القديم للمرجعية فقط.)
+
+### 2.2 مسار PM2
+
+```bash
+curl -fsSL https://deb.nodesource.com/setup_22.x | sudo -E bash - && sudo apt install -y nodejs
+sudo npm install -g pm2
+sudo -iu radeef pm2 install pm2-logrotate
+sudo -iu radeef pm2 set pm2-logrotate:max_size 20M
+sudo -iu radeef pm2 set pm2-logrotate:retain 14
+sudo -iu radeef pm2 set pm2-logrotate:compress true
+```
+1. **ابنِ الإصدار بدون تبديل** (التطبيق القديم يبقى يعمل):
+   ```bash
+   sudo -iu radeef /opt/radeef/src/ops/deploy.sh --build-only        # يطبع RELEASE_ID
+   ```
+2. **نافذة صيانة قصيرة**: أوقف تطبيقات root القديمة ثم انشر الإصدار (نسخة احتياطية + ترحيل + canary + تشغيل):
+   ```bash
+   sudo -i pm2 delete radeef rakan dar && sudo -i pm2 save --force         # PM2 الخاص بـ root
+   sudo -iu radeef /opt/radeef/src/ops/deploy.sh --release <RELEASE_ID> radeef rakan dar
+   ```
+   (إن لم تُكمل تبني الترحيلات في 1.5 بعد، فافعل ذلك قبل هذه الخطوة.)
+3. التشغيل التلقائي بعد إعادة الإقلاع:
+   ```bash
+   sudo -iu radeef pm2 save
+   sudo env PATH=$PATH pm2 startup systemd -u radeef --hp /home/radeef
+   sudo systemctl disable pm2-root 2>/dev/null || true
+   ```
+4. تحقق من `https://<domain>/api/health` لكل مستأجر، ثم أنشئ المديرين (1.4).
+5. بعد أسبوع مستقر: أرشف `/root/src`, `/root/rakan`, `/root/dar` (`tar czf`) خارج السيرفر ثم احذفها.
+
+### 2.3 مسار Docker (بديل)
+
+```bash
+curl -fsSL https://get.docker.com | sudo sh
+sudo cp /opt/radeef/src/docker-compose.yml /opt/radeef/docker-compose.yml
+```
+- في `/etc/radeef/<tenant>.env` استخدم `host.docker.internal` بدل `localhost` في `DATABASE_URL`، واضبط Postgres على `listen_addresses = 'localhost,172.17.0.1'` مع قاعدة `pg_hba` للشبكة `172.16.0.0/12` (القسم 1.2).
+- مجلدات الملفات مملوكة لـ `1001:1001`.
+- لإضافة مستأجر جديد أضف خدمة له في `/opt/radeef/docker-compose.yml` على نمط الخدمات الموجودة.
+```bash
+sudo /opt/radeef/src/ops/deploy.sh --mode docker --build-only      # يطبع radeef:<sha>
+sudo -i pm2 delete radeef rakan dar && sudo -i pm2 save --force           # نافذة الصيانة
+sudo /opt/radeef/src/ops/deploy.sh --mode docker --release radeef:<sha> radeef rakan dar
+```
+الحاويات تُعاد تلقائيًا بعد الإقلاع (`restart: unless-stopped`).
+
+---
+
+## 3. عمليات اليوم الثاني
+
+### 3.1 نشر إصدار جديد
+```bash
+sudo -iu radeef /opt/radeef/src/ops/deploy.sh --all                      # PM2، من origin/main
+sudo -iu radeef /opt/radeef/src/ops/deploy.sh --ref v1.4.0 dar           # إصدار/مستأجر محدد
+sudo /opt/radeef/src/ops/deploy.sh --mode docker --all                   # Docker
+```
+لكل مستأجر: `pg_dump` إلى `/var/backups/radeef/<tenant>/pre-deploy-<ts>.dump` ← `prisma migrate deploy` + seed ← canary على `PORT+1000` حتى ينجح `/api/health` ← التبديل ← فحص صحة، مع رجوع تلقائي للإصدار السابق إن فشل. يُحتفظ بآخر 5 إصدارات. جرّب النشر أولًا على مستأجر واحد (مثل `dar`) ثم الباقي.
+
+### 3.2 الرجوع (Rollback)
+```bash
+sudo -iu radeef /opt/radeef/src/ops/deploy.sh --rollback dar             # PM2
+sudo /opt/radeef/src/ops/deploy.sh --mode docker --rollback dar           # Docker
+```
+يعيد **الكود** فقط. إن كان الترحيل نفسه هو المشكلة، استعد نسخة ما قبل النشر:
+```bash
+sudo /opt/radeef/src/ops/restore.sh dar /var/backups/radeef/dar/pre-deploy-<ts>.dump
+```
+(أي بيانات أُدخلت بعد النسخة ستضيع؛ قرر ذلك بوعي.)
+
+### 3.3 السجلات والمراقبة
+- التطبيق: `sudo -iu radeef pm2 logs dar` أو `/var/log/radeef/dar.{out,err}.log`؛ Docker: `docker logs -f dar`.
+- Nginx: `/var/log/nginx/<tenant>.{access,error}.log`.
+- الصحة: `curl -fsS https://<domain>/api/health` (يرجع 503 إن تعذر الوصول لقاعدة البيانات). أضف كل نطاق إلى خدمة مراقبة خارجية (UptimeRobot / Better Stack) على هذا المسار، مع تنبيه بالبريد/واتساب.
+- الموارد: `pm2 monit`، `docker stats`، `df -h /var/lib/radeef /var/backups`.
+
+### 3.4 النسخ الاحتياطي
+```bash
+sudo crontab -e
+15 2 * * * /opt/radeef/src/ops/backup.sh --all >>/var/log/radeef/backup.log 2>&1
+```
+- الاحتفاظ: 7 يومية، 4 أسبوعية (الأحد)، 6 شهرية (يوم 1)، ونسخ ما قبل النشر/الاستعادة 30 يومًا.
+- **خارج السيرفر (إلزامي عمليًا):** `apt install rclone`، ثم `rclone config` لإنشاء remote (Backblaze B2 / Hetzner Storage Box / S3) ثم remote من نوع `crypt` فوقه، وضع في `/etc/radeef/backup.conf`:
+  ```
+  RCLONE_REMOTE=radeef-crypt:
+  BACKUP_PING_URL=https://hc-ping.com/<uuid>
+  ```
+  (`chmod 600`، ومع `BACKUP_PING_URL` تنبيه تلقائي إن لم يعمل النسخ.)
+- **اختبار استعادة شهري** في قاعدة مؤقتة (لا يلمس الإنتاج):
+  ```bash
+  sudo -u postgres createdb restore_test
+  sudo -u postgres pg_restore --no-owner -d restore_test /var/backups/radeef/dar/daily/<latest>.dump
+  sudo -u postgres psql -d restore_test -c 'select count(*) from "Employee";'
+  sudo -u postgres dropdb restore_test
+  ```
+  ودوّن التاريخ والنتيجة.
+
+### 3.5 مستأجر جديد
+```bash
+sudo /opt/radeef/src/ops/new-tenant.sh --email ops@company.sa acme acme.radeef-sa.com 3003
+sudo -iu radeef /opt/radeef/src/ops/deploy.sh acme                     # الترحيلات + التشغيل
+sudo -u radeef node --env-file=/etc/radeef/acme.env /opt/radeef/src/scripts/create-admin.mjs owner@acme.sa
+```
+يجب أن يشير DNS النطاق إلى السيرفر قبل التشغيل (لشهادة Let's Encrypt)، أو استخدم `--skip-certbot` ثم أعد تشغيله بـ `--nginx-only` لاحقًا. في مسار Docker أضف خدمة للمستأجر في `docker-compose.yml` أولًا.
+
+### 3.6 إيقاف مستأجر أو حذفه
+1. نسخة أخيرة: `ops/backup.sh <tenant>` وانقلها خارج السيرفر.
+2. `pm2 delete <tenant> && pm2 save` (أو احذف خدمته من compose ثم `docker compose up -d --remove-orphans`).
+3. عطّل موقع Nginx: `rm /etc/nginx/sites-enabled/<domain>.conf && nginx -t && systemctl reload nginx`.
+4. فقط بعد انتهاء مدة الاحتفاظ المتفق عليها تعاقديًا: `DROP DATABASE` و`DROP ROLE` وحذف `/var/lib/radeef/<tenant>` و`/etc/radeef/<tenant>.env`.
+
+### 3.7 مهام دورية
+| المهمة | الوتيرة |
+|---|---|
+| مراجعة `backup.log` ووصول النسخ للمخزن الخارجي | أسبوعيًا |
+| اختبار استعادة (3.4) | شهريًا |
+| `certbot renew --dry-run` | شهريًا (التجديد نفسه تلقائي عبر مؤقت certbot) |
+| `apt upgrade` وإعادة الإقلاع عند الحاجة (`unattended-upgrades` للأمنية) | أسبوعيًا |
+| `npm audit --omit=dev` في المستودع وتحديث التبعيات | شهريًا |
+| مراجعة المستخدمين النشطين وسجل التدقيق | شهريًا |
+
+### 3.8 تدوير الأسرار
+- **كلمة مرور مستخدم:** `node --env-file=/etc/radeef/<t>.env scripts/create-admin.mjs <email>` (يطبع كلمة مرور جديدة).
+- **كلمة مرور قاعدة مستأجر:** `ALTER ROLE <t>_app PASSWORD '<new>';` ← حدّث `DATABASE_URL` ← أعد النشر (`deploy.sh --release <current> --skip-migrate <t>`) أو `pm2 reload <t> --update-env` / `docker compose up -d <t>`.
+- **SESSION_SECRET:** غيّره ثم أعد التشغيل؛ كل المستخدمين يسجلون الدخول من جديد.
+- **DATA_ENCRYPTION_KEY:** لا يُدوَّر بتغيير القيمة فقط (البيانات المشفرة القديمة ستصبح غير مقروءة)؛ يحتاج سكربت إعادة تشفير مخصصًا.
+
+### 3.9 عند توقف الخدمة
+1. `curl -i http://127.0.0.1:<port>/api/health` على السيرفر: لا رد ← التطبيق متوقف (`pm2 status` / `docker ps -a`، ثم السجلات). 503 ← قاعدة البيانات (`systemctl status postgresql`، `df -h`).
+2. الزوار يرون صفحة الصيانة العامة من Nginx أثناء التوقف (وليست صفحة "الاشتراك غير نشط").
+3. إن بدأ العطل بعد نشر: الرجوع (3.2) أولًا ثم التحقيق.
+
+---
+
+## 4. المهام الخلفية، النشر متعدد المستأجرين، وحدود قاعدة البيانات (DEC-004 / DEC-007 / DEC-009)
+
+### 4.1 المهام الخلفية: `scripts/jobs.mjs`
+سكربت سطر أوامر داخل الإصدار، **وليس** مسار HTTP (Nginx يمرر كل الطلبات من 127.0.0.1، فلا يمكن تمييز
+"الطلب المحلي"). كل تشغيل يكتب صفاً في `JobRun` (`RUNNING` ← `SUCCEEDED`/`FAILED`)، ويرفض التشغيل إن
+كان للمهمة نفسها تشغيل `RUNNING` على القاعدة نفسها (ويعلّم ما بقي `RUNNING` أكثر من ساعتين `FAILED`)،
+وحوض الاتصالات فيه `connection_limit=2`.
+
+| المهمة | ما تفعله | الافتراضي الآمن |
+|---|---|---|
+| `expiry-digest` | يحسب أعداد المستندات المنتهية والتي تقترب من الانتهاء لكل فئة (نفس العتبات ومفاتيح `alert_*` في `src/lib/alerts.ts`)، ويضيف **صفاً واحداً لكل مستخدم مدير في اليوم** إلى `NotificationOutbox` بمفتاح `expiry-digest:<userId>:<YYYY-MM-DD>`. النص **أعداد فقط + رابط تسجيل الدخول**: لا أسماء ولا أرقام هوية. لا يُرسل لمستخدم غير نشط أو مرتبط بموظف منتهية خدمته. لا شيء يُضاف في يوم بلا تنبيهات. | الأدوار من `SystemSetting.expiry_digest_roles` (افتراضي `SUPER_ADMIN,COMPANY_ADMIN`، ولا يُقبل `EMPLOYEE`). الرابط من `APP_URL`. |
+| `deactivate-terminated` | يعطّل دخول الموظفين المنتهية خدمتهم (`isActive=false`، `sessionVersion+1` لإبطال الجلسات، وسطر تدقيق) بعد مضي `terminated_access_days` يوماً من تاريخ الإنهاء. | `terminated_access_days` غير مضبوط = 0 = فوراً (نفس `src/lib/access.ts`). |
+| `outbox-dispatch` | يرسل صفوف `NotificationOutbox` بالبريد: `PENDING` ← `SENDING` (مع lease) ← `SENT` / `FAILED` / `UNKNOWN`. انتهاء المهلة أو انقطاع الاتصال أثناء الإرسال = `UNKNOWN` ولا يُعاد تلقائياً (قد يكون وصل). `FAILED` (رفض مؤكد) يُعاد حتى `OUTBOX_MAX_ATTEMPTS` (3). يعيد التحقق من أن مستلم الملخص ما زال نشطاً قبل الإرسال. | **تشغيل تجريبي (dry run)** لا يغيّر أي صف، إلا إذا `OUTBOX_SEND="true"` **و** `SMTP_HOST/USER/PASS/FROM` مضبوطة. |
+
+```bash
+# تجربة يدوية لمستأجر واحد (--dry-run لا يكتب شيئاً في expiry-digest و deactivate-terminated)
+cd /opt/radeef/src && sudo -u radeef node --env-file=/etc/radeef/dar.env scripts/jobs.mjs expiry-digest --dry-run
+cd /opt/radeef/src && sudo -u radeef node --env-file=/etc/radeef/dar.env scripts/jobs.mjs deactivate-terminated
+# كل المستأجرين (مع تأخير عشوائي حتى 10 دقائق)
+sudo -u radeef /opt/radeef/src/ops/run-jobs.sh --jitter 600 deactivate-terminated
+```
+`ops/run-jobs.sh` يمر على كل `/etc/radeef/<tenant>.env` وعلى كل مسار مذكور في `/etc/radeef/jobs-extra.list`
+(سطر لكل ملف؛ للنسخ التي أنشأتها لوحة radeef-manage وملفها في `<TENANTS_ROOT>/<name>/.env`)، ويتخطى أي مستأجر
+في ملفه `RADEEF_JOBS="off"` (ضعه للمستأجرين الموقوفين)، ويكمل بعد فشل مستأجر ويخرج بـ 1 إن فشل أي منهم.
+في وضع PM2 يشغّل المهمة من `/opt/radeef/src` (فيه `node_modules` وعميل Prisma المولَّد، مثل seed النشر)؛
+`--mode docker` يستخدم `radeef:live-<tenant>`.
+
+**الجدولة: بين 03:30 و05:00 بتوقيت الرياض مع تأخير عشوائي** (خارج نافذة النسخ الاحتياطي: `ops/backup.sh` 02:15،
+ونسخ اللوحة 02:30). systemd (مفضّل):
+```ini
+# /etc/systemd/system/radeef-jobs@.service
+[Unit]
+Description=Radeef background job %i (all tenants)
+After=network-online.target postgresql.service
+
+[Service]
+Type=oneshot
+User=radeef
+Group=radeef
+Environment=RADEEF_ROOT=/opt/radeef
+ExecStart=/opt/radeef/src/ops/run-jobs.sh %i
+Nice=10
+IOSchedulingClass=idle
+TimeoutStartSec=90min
+```
+```ini
+# /etc/systemd/system/radeef-jobs@deactivate-terminated.timer   (03:30 + حتى 20 دقيقة)
+[Timer]
+OnCalendar=*-*-* 03:30:00 Asia/Riyadh
+RandomizedDelaySec=20min
+Persistent=true
+[Install]
+WantedBy=timers.target
+
+# /etc/systemd/system/radeef-jobs@expiry-digest.timer           (03:55 + حتى 30 دقيقة)
+[Timer]
+OnCalendar=*-*-* 03:55:00 Asia/Riyadh
+RandomizedDelaySec=30min
+Persistent=true
+[Install]
+WantedBy=timers.target
+
+# /etc/systemd/system/radeef-jobs@outbox-dispatch.timer         (04:30 + حتى 25 دقيقة، بعد الملخص)
+[Timer]
+OnCalendar=*-*-* 04:30:00 Asia/Riyadh
+RandomizedDelaySec=25min
+Persistent=true
+[Install]
+WantedBy=timers.target
+```
+```bash
+sudo systemctl daemon-reload
+sudo systemctl enable --now radeef-jobs@deactivate-terminated.timer radeef-jobs@expiry-digest.timer radeef-jobs@outbox-dispatch.timer
+systemctl list-timers 'radeef-jobs@*'; journalctl -u 'radeef-jobs@*' --since today
+```
+(المنطقة الزمنية في `OnCalendar` تحتاج systemd 245 أو أحدث. نسخ اللوحة تحت `/root` لا يقرؤها المستخدم `radeef`:
+شغّل لها نسخة خدمة بـ `User=root`.) بديل cron في `/etc/cron.d/radeef-jobs` (cron في Debian/Ubuntu يتجاهل
+`CRON_TZ`، فحوّل الأوقات إلى توقيت السيرفر؛ المثال للسيرفر على توقيت الرياض):
+```
+30 3 * * * radeef /opt/radeef/src/ops/run-jobs.sh --jitter 1200 deactivate-terminated >>/var/log/radeef/jobs.log 2>&1
+55 3 * * * radeef /opt/radeef/src/ops/run-jobs.sh --jitter 1800 expiry-digest        >>/var/log/radeef/jobs.log 2>&1
+30 4 * * * radeef /opt/radeef/src/ops/run-jobs.sh --jitter 1500 outbox-dispatch      >>/var/log/radeef/jobs.log 2>&1
+```
+
+**تفعيل الإرسال الفعلي (يحتاج موافقة المالك، DEC-009):** اختيار مزود بريد معاملات مع SPF وDKIM وDMARC، وإدراجه في
+`docs/processors.md`، ثم ملء `SMTP_*` في ملف المستأجر و`OUTBOX_SEND="true"`. قبل ذلك تبقى `outbox-dispatch`
+تجريبية وتكتفي بالتقرير.
+
+**المتابعة:**
+```sql
+SELECT job, status, "startedAt", "finishedAt", left(details, 200) FROM "JobRun" ORDER BY "startedAt" DESC LIMIT 20;
+SELECT status, count(*) FROM "NotificationOutbox" GROUP BY 1;
+SELECT id, recipient, attempts, "lastError", "updatedAt" FROM "NotificationOutbox" WHERE status = 'UNKNOWN';
+```
+صفوف `UNKNOWN` تُراجع يدوياً في سجل مزود البريد؛ إن تأكد أنها لم تصل:
+`UPDATE "NotificationOutbox" SET status = 'PENDING' WHERE id = '<id>';` (يدوياً فقط، واحداً واحداً).
+
+### 4.2 النشر: الإكمال بعد فشل مستأجر ومصفوفة الإصدارات
+`ops/deploy.sh` ينشر كل مستأجر في subshell مستقل: فشل مستأجر لا يوقف الباقين، وفي النهاية تُطبع مصفوفة
+`TENANT / BEFORE / AFTER / RESULT / STAGE` (وتُضاف إلى `/opt/radeef/deploy-matrix.log`)، ويخرج السكربت بقيمة غير صفرية
+إن فشل أو تُخطّي أي مستأجر. `STAGE` تبين أين توقف: `backup`، `migrate`، `canary`، `switch`، `health` (أو
+`health (rolled back to …)`)، `done`.
+- فشل في مرحلة **migrate** يعني غالباً أن الإصدار نفسه معطوب؛ لذلك بعد `--max-migrate-failures` فشلاً من هذا النوع
+  (افتراضي 1) تُعلَّم بقية المستأجرين `SKIPPED` بدل تجربة الترحيل نفسه على قواعدهم. `--max-migrate-failures 0`
+  يكمل دائماً (لانحراف خاص بمستأجر بعينه بعد التحقق).
+- الموجات: انشر أولاً على مستأجر واحد، ثم `--release <id>` للبقية على دفعات:
+  ```bash
+  sudo -iu radeef /opt/radeef/src/ops/deploy.sh --ref v1.5.0 dar                 # الموجة 1
+  sudo -iu radeef /opt/radeef/src/ops/deploy.sh --release <release-id> rakan acme   # الموجة 2 (نفس البناء)
+  ```
+- الـcanary يعمل بـ `connection_limit=2`، و`prisma migrate deploy` برابط فيه
+  `options=-c lock_timeout=10s -c statement_timeout=15min`. الرابط المعدّل يُكتب في ملف env مؤقت خاص (600) ويُحذف
+  بعد الاستخدام؛ لا يظهر في سطر الأوامر.
+- `ecosystem.config.js` صار **يتخطى** المستأجر ذا الإعداد الفاسد (اسم أو منفذ غير صالح، ملف env غير مقروء، بلا
+  `PORT` أو `DATABASE_URL`) مع تحذير في stderr بدل إيقاف كل المستأجرين. راجع `pm2 logs` بعد كل نشر.
+
+### 4.3 حدود الاتصالات ومهلات Postgres
+| من | `connection_limit` |
+|---|---|
+| عملية التطبيق (PM2/Docker) | 5 (`DATABASE_URL` في ملف المستأجر) |
+| canary النشر | 2 |
+| `scripts/jobs.mjs` | 2 |
+| `scripts/tenant-stats.mjs` | 1 |
+
+الميزانية: `عدد المستأجرين × (5 + 2 + 2)` + النسخ الاحتياطي + الترحيل < `max_connections` (افتراضي Postgres 100).
+قبل تجاوزها أضف PgBouncer (DEC-004) بدل رفع `max_connections`.
+
+`ops/new-tenant.sh` واللوحة يضبطان لكل دور جديد:
+`statement_timeout = '30s'` و`idle_in_transaction_session_timeout = '60s'`. **للمستأجرين الحاليين** (مرة واحدة،
+كمستخدم postgres؛ تسري على الاتصالات الجديدة فقط):
+```bash
+for r in $(sudo -u postgres psql -tAc "select rolname from pg_roles where rolname like '%\_app'"); do
+  sudo -u postgres psql -c "ALTER ROLE \"$r\" SET statement_timeout = '30s'" \
+                        -c "ALTER ROLE \"$r\" SET idle_in_transaction_session_timeout = '60s'"
+done
+```
+ثم عدّل `connection_limit=10` إلى `5` في كل `/etc/radeef/<t>.env` وأعد التحميل (`deploy.sh --release <current> --skip-migrate <t>`
+أو `pm2 reload <t> --update-env`). `pg_dump` يضبط مهلاته بنفسه (0) فلا يتأثر. أي ترحيل يدوي: أضف
+`&options=-c%20lock_timeout%3D10s%20-c%20statement_timeout%3D15min` إلى `DATABASE_URL` لتلك العملية فقط.
+
+### 4.4 النسخ الاحتياطي للوحة radeef-manage
+كل تشغيل نسخ احتياطي من اللوحة (`BACKUP_CRON` 02:30، زر "نسخ احتياطي الآن"، `node cli.js backup`) يبدأ بنسخة
+متسقة من سجل المستأجرين `database.sqlite` (`VACUUM INTO`) ومن ملف `.env` الخاص باللوحة، بصلاحية 600، في
+`PANEL_BACKUP_DIR` (افتراضي `radeef-manage/backups`)، ويرفعهما إلى `/var/backups/radeef/panel/` على السيرفر ليشحنهما
+`ops/backup.sh` خارجياً (RCLONE). فشلها يظهر باسم `panel-registry` في قائمة الفاشلة. استعادة السجل: أوقف اللوحة،
+انسخ `registry_<ts>.sqlite` إلى `database.sqlite`، ثم شغّلها.
+
+### 4.5 ترخيص اللوحة: الإيقاف بعد تاريخ الانتهاء فقط، وتذكير يومي واحد
+تاريخ الانتهاء هو **آخر يوم مدفوع**: الإيقاف في أول فحص بعده (days < 0). تذكير بريدي يومي خلال آخر
+`LICENSE_REMINDER_DAYS` (افتراضي 14) يوماً، **مرة واحدة لكل مستأجر في اليوم** (جدول `license_notices` في SQLite،
+يُحجز قبل الإرسال، فإعادة تشغيل اللوحة لا تكرر). `node cli.js notices` يعرض آخر الرسائل ونتيجتها. لم يُنفذ بعد
+(يحتاج قرار المالك): مهلة "قراءة فقط" بدل الإيقاف، وتأكيد المشغّل في نافذة الرواتب، وشريط داخل التطبيق.
+
+### 4.6 إحصاءات الاستخدام لكل مستأجر (قراءة فقط)
+```bash
+cd /opt/radeef/src && sudo -u radeef node scripts/tenant-stats.mjs --env-dir /etc/radeef > /tmp/tenant-stats.json
+cd /opt/radeef/src && sudo -u radeef node --env-file=/etc/radeef/dar.env scripts/tenant-stats.mjs
+```
+JSON لكل مستأجر: الشركات، الفروع، الموظفون النشطون والمنتهية خدمتهم، المستخدمون النشطون، العقود القانونية، القضايا،
+المركبات، شرائح الاتصالات، المنصات الحكومية، أرشيف التجديدات، ومسيرات آخر 3 أشهر. **أعداد فقط**، داخل معاملة
+`READ ONLY` مع `statement_timeout=15s` واتصال واحد. في اللوحة: عمود "موظفون نشطون" (psql للقراءة فقط) والحقول
+التجارية الاختيارية (فارغة افتراضياً) لقرارات DEC-007.
+
+### 4.7 حظر `/api/internal/` في Nginx
+القالب `ops/nginx/tenant.conf.template` ومولّد اللوحة (`radeef-manage/lib/nginx.js`) يضيفان
+`location ^~ /api/internal/ { return 404; }`. للمواقع الحالية: `sudo ops/new-tenant.sh --nginx-only <t> <domain> <port>`
+(يعيد توليد الموقع ويختبره بـ `nginx -t`). مواقع اللوحة الحالية لا يُعاد توليدها إلا عند الإنشاء أو الإيقاف أو إعادة
+التفعيل بعد إيقاف؛ حتى ذلك أضف الكتلة يدوياً قبل `location /` في `/etc/nginx/sites-available/<domain>.conf` ثم
+`nginx -t && systemctl reload nginx`. تحقق:
+`curl -s -o /dev/null -w '%{http_code}\n' https://<domain>/api/internal/x` ← `404`.
+
+### 4.8 فحوص CI الجديدة
+- **Migrations on empty Postgres 16:** `prisma migrate deploy` على قاعدة فارغة، ثم
+  `prisma migrate diff --from-url … --to-schema-datamodel prisma/schema.prisma --exit-code` (أي انحراف = فشل)، ثم
+  `node prisma/seed.mjs` مرتين مع مقارنة عدد الصفوف في كل الجداول (يجب ألا يتغير شيء في المرة الثانية)، ثم تشغيل
+  تجريبي للمهام و`tenant-stats`.
+- **AI/OCR SDKs must be approved sub-processors:** يفشل إن أُضيفت إلى `package.json` حزمة ذكاء اصطناعي أو OCR
+  (`openai`، `@anthropic-ai/sdk`، `@google/generative-ai`، `tesseract.js`، `@aws-sdk/client-textract`، …) غير مدرجة في
+  جدول "Approved AI / OCR packages" في `docs/processors.md` (فارغ حالياً، DEC-006).

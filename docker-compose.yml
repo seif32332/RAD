@@ -1,0 +1,123 @@
+# =============================================================================
+# Radeef HRMS - one container per tenant, all from the same image tag.
+#
+# Normal path: ops/deploy.sh --mode docker --all   (backup -> migrate -> canary -> switch)
+#
+# Each tenant runs the local tag radeef:live-<tenant>. ops/deploy.sh points that tag at the
+# release image (radeef:<git-sha> or a registry image) only after the migration and a canary
+# health check succeeded, so a plain `docker compose up -d` never changes a tenant's version.
+# Manual equivalent for one tenant:
+#   docker tag radeef:<git-sha> radeef:live-dar
+#   RADEEF_IMAGE=radeef:<git-sha> docker compose --profile migrate run --rm migrate-dar  # after ops/backup.sh
+#   docker compose up -d --no-deps dar
+#
+# PostgreSQL stays on the HOST (not in compose). Each tenant has its own role + database
+# (ops/new-tenant.sh). Inside the container the host is reachable as `host.docker.internal`
+# (mapped below to the Docker bridge gateway), so DATABASE_URL in /etc/radeef/<tenant>.env
+# must use host.docker.internal instead of localhost, and Postgres must listen on the
+# bridge address (listen_addresses) with a pg_hba.conf rule for 172.16.0.0/12 (scram-sha-256).
+#
+# Secrets live in /etc/radeef/<tenant>.env (chmod 600, see ops/new-tenant.sh), never in this file.
+# Host upload dirs must be writable by uid 1001 (the image user `nextjs`).
+# Nginx on the host proxies https://<domain> -> 127.0.0.1:<port> (ops/nginx/tenant.conf.template).
+# =============================================================================
+
+x-app: &app
+  # Tags are local only (created by ops/deploy.sh); never try to pull them.
+  pull_policy: never
+  restart: unless-stopped
+  init: true
+  read_only: true
+  # Root filesystem is read-only; only these paths (and the uploads volume) are writable.
+  tmpfs:
+    - /tmp
+    - /app/.next/cache
+  security_opt:
+    - no-new-privileges:true
+  cap_drop:
+    - ALL
+  extra_hosts:
+    - "host.docker.internal:host-gateway"
+  environment:
+    NODE_ENV: production
+    PORT: "3000"
+    HOSTNAME: 0.0.0.0
+    UPLOAD_DIR: /app/uploads
+  healthcheck:
+    test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:3000/api/health || exit 1"]
+    interval: 30s
+    timeout: 5s
+    retries: 3
+    start_period: 30s
+  logging:
+    driver: json-file
+    options:
+      max-size: "20m"
+      max-file: "5"
+  deploy:
+    resources:
+      limits:
+        memory: 1g
+
+x-migrate: &migrate
+  image: ${RADEEF_IMAGE:-radeef:latest}
+  profiles: ["migrate"]
+  restart: "no"
+  security_opt:
+    - no-new-privileges:true
+  extra_hosts:
+    - "host.docker.internal:host-gateway"
+  environment:
+    NODE_ENV: production
+  # Apply pending migrations, then run the idempotent seed (inserts missing rows only).
+  command: ["sh", "-c", "npx prisma migrate deploy && node prisma/seed.mjs"]
+  logging:
+    driver: json-file
+    options:
+      max-size: "10m"
+      max-file: "2"
+
+services:
+  # ---------------- tenants ----------------
+  radeef:
+    <<: *app
+    image: radeef:live-radeef
+    container_name: radeef
+    env_file: /etc/radeef/radeef.env
+    ports:
+      - "127.0.0.1:3000:3000"
+    volumes:
+      - /var/lib/radeef/radeef/uploads:/app/uploads
+
+  rakan:
+    <<: *app
+    image: radeef:live-rakan
+    container_name: rakan
+    env_file: /etc/radeef/rakan.env
+    ports:
+      - "127.0.0.1:3001:3000"
+    volumes:
+      - /var/lib/radeef/rakan/uploads:/app/uploads
+
+  dar:
+    <<: *app
+    image: radeef:live-dar
+    container_name: dar
+    env_file: /etc/radeef/dar.env
+    ports:
+      - "127.0.0.1:3002:3000"
+    volumes:
+      - /var/lib/radeef/dar/uploads:/app/uploads
+
+  # ---------------- one-shot migrations (docker compose --profile migrate run --rm migrate-<tenant>) ----------------
+  migrate-radeef:
+    <<: *migrate
+    env_file: /etc/radeef/radeef.env
+
+  migrate-rakan:
+    <<: *migrate
+    env_file: /etc/radeef/rakan.env
+
+  migrate-dar:
+    <<: *migrate
+    env_file: /etc/radeef/dar.env

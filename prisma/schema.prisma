@@ -1,0 +1,1878 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ---------------------------------------------------------
+// 1. Core Structure: Users, Roles, Companies & Branches
+// ---------------------------------------------------------
+
+// --- الجنسيات ---
+model Nationality {
+  id        String   @id @default(uuid())
+  label     String   @unique // الاسم بالعربية
+  createdAt DateTime @default(now())
+  updatedAt DateTime @default(now()) @updatedAt
+}
+
+enum Role {
+  SUPER_ADMIN
+  COMPANY_ADMIN
+  HR_MANAGER
+  FINANCE_MANAGER
+  PAYROLL_ADMIN
+  GOV_RELATIONS
+  LEGAL_ADMIN
+  BRANCH_MANAGER
+  EMPLOYEE
+  DEPT_MANAGER
+  PURCHASING_AGENT
+}
+
+model RolePermission {
+  id           String   @id @default(uuid())
+  role         Role     @unique
+  allowedPages String[]
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+}
+
+model User {
+  id           String  @id @default(uuid())
+  email        String  @unique
+  passwordHash String
+  role         Role    @default(EMPLOYEE)
+  isActive     Boolean @default(true)
+  name         String? // اسم العرض
+  avatarUrl    String? // صورة الملف الشخصي
+
+  // 2FA Security (التحقق بخطوتين)
+  twoFactorEnabled Boolean @default(false)
+  twoFactorSecret  String?
+  /// Incremented on logout / password change / deactivation: revokes older sessions
+  sessionVersion   Int     @default(0)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  employeeProfile Employee?
+  auditLogs       AuditLog[]
+  uploadedFiles   UploadedFile[]
+}
+
+// --- وحدة التدقيق (Audit Logs) ---
+model AuditLog {
+  id         String  @id @default(uuid())
+  userId     String?
+  action     String // CREATE, UPDATE, DELETE, LOGIN, APPROVE, VIEW
+  entityType String // e.g., Employee, Payroll, PromissoryNote
+  entityId   String?
+  details    String? // JSON string containing changes
+  ipAddress  String?
+
+  createdAt DateTime @default(now())
+
+  user User? @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  @@index([userId])
+  @@index([entityType, entityId])
+  @@index([createdAt])
+}
+
+// --- ادارة الشركات ---
+model Company {
+  id          String  @id @default(uuid())
+  nameArabic  String
+  nameEnglish String?
+
+  unifiedNumber String? // الرقم الموحد
+
+  commercialRegNum  String    @unique
+  commercialRegUrl  String? // إضافة المرفق للسجل التجاري
+  commercialRegDate DateTime? // تاريخ بداية السجل/النشاط
+  commercialRegExp  DateTime // تاريخ الانتهاء/التأكيد السنوي
+  commercialRegCost Float?    @default(0) // تكلفة تجديد السجل التجاري
+
+  taxNumber               String? // الرقم الضريبي
+  molEstablishmentNumber  String? // رقم المنشأة في وزارة الموارد البشرية
+  gosiEstablishmentNumber String? // رقم المنشأة في التأمينات الاجتماعية
+  taxCertificateUrl       String? // مرفق الشهادة الضريبية
+  nationalAddress         String? // العنوان الوطني (الرقم المختصر)
+  nationalAddressUrl      String? // مرفق العنوان الوطني
+
+  establishmentDeedUrl String? // عقد التأسيس
+
+  // العلامة التجارية
+  trademarkNumber  String?
+  trademarkRegDate DateTime?
+  trademarkExpDate DateTime?
+  trademarkCertUrl String?
+  trademarkCost    Float?    @default(0) // تكلفة العلامة التجارية
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  branches  Branch[]
+  documents CompanyDocument[]
+
+  legalEmployees  Employee[] @relation("LegalCompany")
+  actualEmployees Employee[] @relation("ActualCompany")
+
+  telecomSims    TelecomSim[]
+  legalMeters    UtilityMeter[] @relation("LegalMeterOwner")
+  actualMeters   UtilityMeter[] @relation("ActualMeterUser")
+  legalVehicles  Vehicle[]      @relation("LegalVehicleOwner")
+  actualVehicles Vehicle[]      @relation("ActualVehicleUser")
+
+  violations        ComplianceViolation[]
+  medicalInsurances MedicalInsurance[]
+  administrations   Administration[]
+
+  @@index([commercialRegExp])
+  @@index([trademarkExpDate])
+}
+
+// --- الادارات (تحت الشركة وقبل الفروع) ---
+model Administration {
+  id          String  @id @default(uuid())
+  companyId   String
+  nameArabic  String
+  nameEnglish String?
+
+  company   Company    @relation(fields: [companyId], references: [id], onDelete: Restrict)
+  branches  Branch[]
+  employees Employee[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([companyId])
+}
+
+// --- ادارة الفروع ---
+model Branch {
+  id               String  @id @default(uuid())
+  companyId        String
+  administrationId String?
+  nameArabic       String
+  nameEnglish      String?
+
+  administration Administration? @relation(fields: [administrationId], references: [id], onDelete: SetNull)
+
+  // العنوان
+  city       String?
+  district   String?
+  street     String?
+  branchCode String?
+
+  // رخصة البلدية
+  munLicenseNum   String?
+  munLicenseStart DateTime?
+  munLicenseExp   DateTime?
+  munLicenseUrl   String?   @db.Text // مرفق رخصة البلدية
+  munLicenseCost  Float?    @default(0) // تكلفة رخصة البلدية
+
+  // رخصة الدفاع المدني
+  civilDefenseNum   String?
+  civilDefenseStart DateTime?
+  civilDefenseExp   DateTime?
+  civilDefenseUrl   String?   @db.Text // مرفق شهادة الدفاع المدني
+  civilDefenseCost  Float?    @default(0) // تكلفة رخصة الدفاع المدني
+
+  // عقد الايجار
+  rentContractNum   String?
+  rentContractStart DateTime?
+  rentContractExp   DateTime?
+  rentOwnerName     String?
+  rentOwnerPhone    String?
+
+  // تفاصيل سداد الإيجار
+  rentContractAmount Float?
+  rentPaymentType    String? // ANNUAL, SEMI_ANNUAL, QUARTERLY, MONTHLY
+  rentPaymentCount   Int?
+  rentContractUrl    String? @db.Text
+  rentContractType   String?
+
+  // عقد النفايات
+  wasteContractNum   String?
+  wasteContractStart DateTime?
+  wasteContractExp   DateTime?
+  wasteCompanyName   String?
+  wasteCompanyPhone  String?
+  wasteContractUrl   String?
+
+  // عقد صيانة سلامة
+  safetyContractNum   String?
+  safetyContractStart DateTime?
+  safetyContractExp   DateTime?
+  safetyCompanyName   String?
+  safetyCompanyPhone  String?
+  safetyContractUrl   String?   @db.Text
+
+  // عقد صيانة الكاميرات
+  cameraContractNum   String?
+  cameraContractStart DateTime?
+  cameraContractExp   DateTime?
+  cameraCompanyName   String?
+  cameraCompanyPhone  String?
+  cameraContractUrl   String?   @db.Text
+
+  // المرفقات
+  buildingLicenseUrl      String? // رخصة البناء
+  blueprintsUrl           String? // المخططات
+  engineeringHandoverUrl  String? // شهادة الاستلام الهندسي
+  installationCompleteUrl String? // شهادة انهاء التركيبات
+  externalPhotosUrls      String? // صور المحل من الخارج
+  locationUrl             String? // رابط النقر لموقع خرائط جوجل
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  company     Company      @relation(fields: [companyId], references: [id], onDelete: Restrict)
+  departments Department[]
+  employees   Employee[]
+
+  telecomSims   TelecomSim[]
+  utilityMeters UtilityMeter[]
+  workSchedules WorkSchedule[]
+  violations    ComplianceViolation[]
+
+  @@index([companyId])
+  @@index([administrationId])
+  @@index([munLicenseExp])
+  @@index([civilDefenseExp])
+  @@index([rentContractExp])
+}
+
+model WorkSchedule {
+  id       String @id @default(uuid())
+  branchId String
+  name     String // اسم جدول العمل (مثال: دوام نهاري منتظم)
+
+  shiftType  String? @default("ONE_SHIFT") // ONE_SHIFT أو TWO_SHIFTS أو FLEXIBLE
+  startTime  String? // وقت بداية الدوام
+  endTime    String? // وقت نهاية الدوام
+  startTime2 String? // وقت بداية الفترة الثانية
+  endTime2   String? // وقت نهاية الفترة الثانية
+
+  flexibleHours          Int? // عدد الساعات لجدول العمل المرن
+  isExemptFromAttendance Boolean? @default(false) // إعفاء من البصمة والتحضير التلقائي
+
+  workDays String? // أيام العمل (مثال: الأحد-الخميس)
+
+  branch    Branch   @relation(fields: [branchId], references: [id], onDelete: Cascade)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @default(now()) @updatedAt
+
+  @@index([branchId])
+}
+
+model Department {
+  id          String  @id @default(uuid())
+  branchId    String
+  nameArabic  String
+  nameEnglish String?
+
+  branch      Branch       @relation(fields: [branchId], references: [id], onDelete: Restrict)
+  employees   Employee[]
+  jobRequests JobRequest[]
+  createdAt   DateTime     @default(now())
+  updatedAt   DateTime     @default(now()) @updatedAt
+
+  @@index([branchId])
+}
+
+// ---------------------------------------------------------
+// 2. Employee Profile & Onboarding
+// ---------------------------------------------------------
+
+enum ContractType {
+  FULL_TIME
+  PART_TIME
+  FREELANCE
+}
+
+enum AccommodationType {
+  OUTSIDE_COMPANY
+  INSIDE_COMPANY
+}
+
+enum PaymentMethod {
+  CASH
+  BANK_TRANSFER
+  WPS
+}
+
+// --- ادارة الموظفين ---
+model Employee {
+  id          String  @id @default(uuid())
+  userId      String? @unique
+  employeeId  String  @unique // الرقم الوظيفي
+  biometricId String? @unique // رقم أو كود تعريف جهاز البصمة
+
+  // البيانات الأساسية
+  firstNameArabic  String
+  lastNameArabic   String
+  firstNameEnglish String?
+  lastNameEnglish  String?
+  nationality      String
+  dataReviewNote   String? @db.Text // بيانات ناقصة يجب على الموارد البشرية استكمالها
+
+  iqamaOrIdNumber  String   @unique
+  iqamaOrIdExp     DateTime
+  iqamaRenewalCost Float?   @default(0) // تكلفة تجديد الاقامة
+
+  passportNumber String?
+  passportExp    DateTime?
+
+  healthCertificateNum String?
+  healthCertificateExp DateTime?
+
+  dateOfBirth   DateTime
+  gender        String
+  maritalStatus String?
+
+  // التواصل
+  mobileNumber String?
+  email        String?
+
+  // البنك وطريقة الدفع
+  ibanNumber          String?
+  bankName            String?
+  salaryPaymentMethod PaymentMethod @default(BANK_TRANSFER)
+
+  // العمل والشركات
+  legalCompanyId   String?
+  actualCompanyId  String?
+  administrationId String?
+  branchId         String?
+  departmentId     String?
+
+  jobTitle        String? // المسمى الوظيفي
+  directManagerId String? // المدير المباشر
+
+  workSchedule      String? // جدول العمل
+  accommodationType AccommodationType? // محل السكن
+
+  // العقد والرواتب
+  joinDate              DateTime // تاريخ المباشرة
+  contractType          ContractType @default(FULL_TIME)
+  contractEndDate       DateTime? // تاريخ انتهاء العقد
+  probationEndDate      DateTime? // تاريخ انتهاء فترة التجربة
+  noticePeriodDays      Int?         @default(30) // فترة الإشعار بالأيام
+  leaveAccrualStartDate DateTime? // تاريخ احتساب الإجازة (يتحدث عند العودة)
+
+  basicSalary            Float // الراتب الأساسي
+  gosiDeduction          Float?     @default(0) // مبلغ خصم التأمينات الاجتماعية
+  gosiRegime             GosiRegime @default(UNKNOWN) // OLD: مشترك قبل 2024-07-03، NEW: النظام الجديد، UNKNOWN: يلزم تأكيد HR
+  gosiRegistrationSource String? // مصدر تأكيد النظام (شهادة اشتراك، قائمة GOSI للمنشأة...)
+  gosiNumber             String? // رقم الاشتراك في التأمينات
+  idType                 IdType? // نوع الهوية
+
+  isTerminated     Boolean   @default(false)
+  terminationDate  DateTime?
+  employmentStatus String    @default("ACTIVE") // ACTIVE, ON_LEAVE, EXCLUDED 
+
+  // مرفقات وثائق الموظف
+  workContractUrl      String? // عقد العمل
+  iqamaCopyUrl         String? // صورة الإقامة
+  healthCertificateUrl String? // صورة الشهادة الصحية
+  passportCopyUrl      String? // صورة الجواز
+  ibanCertificateUrl   String? // شهادة الآيبان
+  resumeUrl            String? // السيرة الذاتية
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // العلاقات
+  user       User?       @relation(fields: [userId], references: [id], onDelete: SetNull)
+  branch     Branch?     @relation(fields: [branchId], references: [id], onDelete: SetNull)
+  department Department? @relation(fields: [departmentId], references: [id], onDelete: SetNull)
+
+  directManager Employee?  @relation("ManagerToEmployee", fields: [directManagerId], references: [id])
+  subordinates  Employee[] @relation("ManagerToEmployee")
+
+  legalCompany   Company?        @relation("LegalCompany", fields: [legalCompanyId], references: [id], onDelete: SetNull)
+  actualCompany  Company?        @relation("ActualCompany", fields: [actualCompanyId], references: [id], onDelete: SetNull)
+  administration Administration? @relation(fields: [administrationId], references: [id], onDelete: SetNull)
+
+  attendances            Attendance[]
+  leaves                 Leave[]
+  visas                  Visa[]
+  payrolls               Payroll[]
+  allowances             Allowance[]
+  assets                 Asset[]
+  loans                  Loan[]
+  telecomSims            TelecomSim[]
+  vehicles               Vehicle[]
+  settlements            Settlement[]
+  overtimeRequests       OvertimeRequest[]
+  workAssignments        WorkAssignment[]
+  attendanceCorrections  AttendanceCorrection[]
+  deductions             Deduction[]
+  jobRequestsMade        JobRequest[]           @relation("RequesterToJobRequest")
+  terminationRequests    TerminationRequest[]
+  evaluations            EmployeeEvaluation[]
+  transferRequests       TransferRequest[]
+  investigations         Investigation[]
+  onboardingRequestsMade OnboardingRequest[]    @relation("RequesterToOnboarding")
+  assetRequestsMade      AssetRequest[]         @relation("RequesterToAssetRequest")
+  assetRequestsFor       AssetRequest[]         @relation("RequestedForToAssetRequest")
+
+  @@index([legalCompanyId])
+  @@index([actualCompanyId])
+  @@index([administrationId])
+  @@index([branchId])
+  @@index([departmentId])
+  @@index([directManagerId])
+  @@index([isTerminated, employmentStatus])
+  @@index([iqamaOrIdExp])
+  @@index([passportExp])
+  @@index([healthCertificateExp])
+  @@index([contractEndDate])
+}
+
+// --- طلبات النقل الداخلي ---
+model TransferRequest {
+  id          String  @id @default(uuid())
+  employeeId  String
+  requesterId String? // المدير الذي رفع الطلب
+
+  fromBranchId   String?
+  toBranchId     String
+  toWorkSchedule String? // جدول العمل الجديد
+
+  reason      String? // سبب النقل
+  assetAction String? @default("RETAIN") // RETAIN أو CLEAR
+
+  status String  @default("PENDING") // PENDING, APPROVED, REJECTED
+  hrNote String? // ملاحظة الموارد البشرية
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  employee Employee @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+
+  @@index([employeeId])
+  @@index([status])
+}
+
+// ---------------------------------------------------------
+// 3. Documents
+// ---------------------------------------------------------
+
+model CompanyDocument {
+  id             String   @id @default(uuid())
+  companyId      String
+  documentType   String
+  documentUrl    String
+  expirationDate DateTime
+  isAlertSent    Boolean  @default(false)
+  createdAt      DateTime @default(now())
+
+  company   Company  @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  updatedAt DateTime @default(now()) @updatedAt
+
+  @@index([companyId])
+  @@index([expirationDate])
+}
+
+// ---------------------------------------------------------
+// 4. Time & Attendance
+// ---------------------------------------------------------
+
+// --- محفظة الدوام والحضور ---
+model Attendance {
+  id            String    @id @default(uuid())
+  employeeId    String
+  date          DateTime  @db.Date
+  checkIn       DateTime?
+  checkOut      DateTime?
+  status        String    @default("PRESENT")
+  lateMinutes   Int       @default(0)
+  earlyMinutes  Int       @default(0)
+  earlyLeaveMin Int       @default(0) // keeping this for back-compatibility
+  overtimeMin   Int       @default(0)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  employee Employee @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+
+  @@unique([employeeId, date])
+  @@index([date])
+}
+
+// ---------------------------------------------------------
+// 5. Leaves & Visas
+// ---------------------------------------------------------
+
+enum LeaveStatus {
+  PENDING
+  APPROVED
+  REJECTED
+  CANCELLED
+  COMPLETED
+}
+
+enum LeaveType {
+  ANNUAL // سنوية
+  DEDUCTED // مستقطعة من الرصيد السنوي
+  SICK // مرضية
+  EMERGENCY // طارئة
+  UNPAID // بدون أجر
+  MATERNITY // وضع
+  PATERNITY // مولود للأب
+  BEREAVEMENT // وفاة قريب
+  MARRIAGE // زواج
+  HAJJ // حج
+}
+
+// --- ادارة الاجازات ---
+model Leave {
+  id         String      @id @default(uuid())
+  employeeId String
+  leaveType  LeaveType   @default(ANNUAL)
+  startDate  DateTime
+  endDate    DateTime
+  totalDays  Int
+  status     LeaveStatus @default(PENDING)
+  notes      String?
+
+  // --- مسار الموافقات (Approval Workflow) ---
+  isManagerApproved Boolean   @default(false)
+  managerApprovedAt DateTime?
+  isHrApproved      Boolean   @default(false)
+  hrApprovedAt      DateTime?
+
+  // الرصيد
+  availableBalance Float? // رصيد الإجازة المتاح وقت الطلب
+  paidDays         Int? // الأيام المدفوعة (من الرصيد)
+  unpaidDays       Int? // الأيام الإضافية بدون أجر
+
+  // الخصومات
+  dailyDeductionRate Float? @default(30) // تكلفة اليوم الإضافي (900/30 = 30 ر.س/يوم)
+  totalDeduction     Float? // إجمالي الخصم على الموظف
+
+  // هل الإجازة خارج المملكة
+  isOutsideKSA        Boolean @default(false)
+  exitReentryVisaCost Float?  @default(0) // تأشيرة خروج وعودة (200 ر.س)
+
+  // تذكرة الطيران
+  flightTicketOption String? // "company_provided" أو "amount"
+  flightTicketAmount Float? // مبلغ التذكرة إن وجد
+
+  // أيام العمل حتى بداية الإجازة (للطارئة)
+  workingDaysBeforeLeave Int?
+
+  // العودة وتمديد الإجازة
+  isReturned       Boolean   @default(false)
+  actualReturnDate DateTime?
+  extensionFileUrl String?
+  extensionReason  String?
+
+  createdAt DateTime @default(now())
+  employee  Employee @relation(fields: [employeeId], references: [id], onDelete: Restrict)
+  updatedAt DateTime @default(now()) @updatedAt
+
+  @@index([employeeId, status])
+  @@index([status])
+  @@index([startDate, endDate])
+}
+
+enum VisaStatus {
+  PENDING_PAYMENT // بانتظار الدفع
+  PAID // تم الدفع
+  ISSUED // تم الاصدار
+  CANCELLED // أُلغيت (مثلاً عند إلغاء الإجازة)
+}
+
+// --- ادارة التاشيرات ---
+model Visa {
+  id         String     @id @default(uuid())
+  employeeId String
+  visaType   String // خروج وعودة، خروج نهائي
+  status     VisaStatus @default(PENDING_PAYMENT)
+
+  deductedFrom  String? // خصم من اجازة او تصفية
+  attachmentUrl String? // مرفق أو رابط الإيصال
+
+  // حقول حجز تذكرة الطيران
+  ticketStatus        String? // BOOKED, PENDING
+  airline             String? // شركة الطيران
+  bookingRef          String? // رقم الحجز
+  flightFrom          String? // من (المدينة)
+  flightTo            String? // إلى (المدينة)
+  departureDate       DateTime? // تاريخ المغادرة
+  returnDate          DateTime? // تاريخ العودة
+  ticketAttachmentUrl String? // مرفق تذكرة الطيران
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  employee Employee @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+
+  @@index([employeeId])
+  @@index([status])
+}
+
+// ---------------------------------------------------------
+// 6. Payroll, Allowances & Loans
+// ---------------------------------------------------------
+
+model Allowance {
+  id               String   @id @default(uuid())
+  employeeId       String
+  name             String
+  amount           Float
+  isMonthly        Boolean  @default(true)
+  countsTowardGosi Boolean  @default(false) // يدخل في وعاء اشتراك التأمينات (مثل بدل السكن)
+  // المكافآت لمرة واحدة (isMonthly=false) تُصرف في مسير شهر محدد ثم تُعلَّم مصروفة
+  payrollMonth     Int?
+  payrollYear      Int?
+  isPaid           Boolean  @default(false)
+  paidInPayrollId  String?
+  createdAt        DateTime @default(now())
+  employee         Employee @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+  updatedAt        DateTime @default(now()) @updatedAt
+
+  @@index([employeeId])
+  @@index([payrollYear, payrollMonth])
+  @@index([paidInPayrollId])
+}
+
+enum PayrollStatus {
+  DRAFT
+  APPROVED
+  PAID
+}
+
+// --- مسير الرواتب وتصفية المستحقات ---
+model Payroll {
+  id         String @id @default(uuid())
+  employeeId String
+  month      Int
+  year       Int
+
+  basicSalary     Float
+  totalAllowances Float @default(0)
+  totalDeductions Float @default(0)
+  overtimeCost    Float @default(0)
+
+  netSalary           Float
+  gosiEmployee        Float   @default(0) // حصة الموظف في التأمينات
+  gosiEmployer        Float   @default(0) // حصة صاحب العمل (تكلفة، لا تُخصم من الموظف)
+  loansDeduction      Float   @default(0)
+  violationsDeduction Float   @default(0)
+  leaveDeduction      Float   @default(0)
+  otherDeductions     Float   @default(0)
+  bonusAmount         Float   @default(0)
+  needsReview         Boolean @default(false) // سطر يحتاج مراجعة (مثلاً نظام التأمينات غير مؤكد)
+  reviewNote          String?
+
+  status PayrollStatus @default(DRAFT)
+  paidAt DateTime?
+
+  isFinalSettlement Boolean @default(false)
+  settlementReason  String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  employee         Employee          @relation(fields: [employeeId], references: [id], onDelete: Restrict)
+  loanInstallments LoanInstallment[]
+
+  @@unique([employeeId, month, year])
+  @@index([year, month])
+  @@index([status])
+}
+
+// ==========================================
+// --- الإدارة القانونية: السندات لأمر ---
+// ==========================================
+
+model PromissoryNote {
+  id     String @id @default(uuid())
+  amount Float // مبلغ السند النقدية
+
+  // أطراف السند
+  creditorName String // اسم الدائن (المستفيد)
+  debtorName   String // اسم المدين (محرر السند المتعهد بالدفع)
+
+  // صفة الشركة (هل الشركة هي الدائن أم المدين؟)
+  companyRole String @default("CREDITOR") // CREDITOR, DEBTOR
+
+  // تفاصيل الاستحقاق (متى يدفع؟)
+  isOnDemand Boolean   @default(false) // مستحق لدى الاطلاع (بدون تاريخ)
+  dueDate    DateTime? // تاريخ الاستحقاق (في حال لم يكن لدى الاطلاع)
+
+  notes String? // ملاحظات ومبررات السند
+
+  // مسارات المرفقات والأوراق الرسمية الواردة
+  idAttachment    String? // صورة الهوية
+  noteAttachment  String? // أصل السند المكتوب
+  otherAttachment String? // ملفات أخرى
+
+  // حالة السند الجارية والسداد
+  status            String    @default("ACTIVE") // ACTIVE (فعال), PAID (مسدد), CANCELLED (ملغي)
+  paymentAttachment String? // مرفق التحويل أو السداد
+  paymentDate       DateTime? // تاريخ استلام أو دفع المبلغ
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([status])
+  @@index([dueDate])
+}
+
+// ==========================================
+// --- الإدارة القانونية: العقود والاتفاقيات ---
+// ==========================================
+
+model LegalContract {
+  id    String @id @default(uuid())
+  title String // مسمى أو موضوع العقد
+
+  // أطراف العقد
+  firstParty  String // الطرف الأول (غالبًا الشركة)
+  secondParty String // الطرف الثاني (مورد، مقاول، عميل...)
+
+  // تفاصيل التواريخ
+  startDate DateTime // تاريخ بداية العقد
+  endDate   DateTime? // تاريخ نهايته أو تجديده
+
+  notes String? // بنود مختصرة أو ملاحظات
+
+  // المرفقات
+  contractAttachment String? // ملف العقد الموثق والمتفق عليه
+  otherAttachment    String? // مستندات مساندة (سجل تجاري للطرف الآخر، تفويض..)
+
+  status String @default("ACTIVE") // ACTIVE (معتمد وساري), EXPIRED (منتهي), TERMINATED (مفسوخ)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([status])
+  @@index([endDate])
+}
+
+// ==========================================
+// --- الإدارة القانونية: المنازعات القضائية ---
+// ==========================================
+
+model Lawsuit {
+  id String @id @default(uuid())
+
+  // التصنيف
+  caseType String // LABOR (عمالية), COMMERCIAL (تجارية), REAL_ESTATE (عقارية), OTHER (أخرى)
+
+  // أطراف الدعوى
+  plaintiff String // المدعي
+  defendant String // المدعى عليه
+
+  // الموضوع
+  subject String // تفاصيل وموضوع النزاع باختصار
+
+  // حالة الدعوى والمكتب المفوض
+  status         String  @default("REFERRED") // REFERRED (تمت الإحالة للمكتب), CLOSED (تم الانتهاء وإغلاقها)
+  lawFirmName    String? // المكتب المحامي المفوض بالدعوى
+  lawFirmContact String? // رقم التواصل للمكتب
+
+  judgmentAttachment String? // إرفاق صك الحكم أو قرار الدائرة
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([status])
+}
+
+// --- طلبات العمل الإضافي (الأوفرتايم) ---
+model OvertimeRequest {
+  id                 String   @id @default(uuid())
+  employeeId         String
+  supervisorId       String? // المشرف الذي رفع الطلب
+  date               DateTime // تاريخ العمل الاضافي أو التكليف
+  type               String   @default("HOURS") // HOURS, LUMP_SUM, BIOMETRIC
+  hours              Float?   @default(0) // عدد الساعات 
+  amount             Float?   @default(0) // مبلغ مقطوع
+  reason             String? // السبب
+  status             String   @default("PENDING") // PENDING, APPROVED, REJECTED
+  paidInPayrollId    String? // المسير الذي صُرف فيه
+  paidInSettlementId String? // التصفية التي صُرف فيها
+
+  createdAt DateTime @default(now())
+  employee  Employee @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+  updatedAt DateTime @default(now()) @updatedAt
+
+  @@index([employeeId])
+  @@index([status])
+  @@index([date])
+  @@index([paidInPayrollId])
+}
+
+// --- تكاليف المهام الخارجية (انتداب / عمل خارجي) ---
+model WorkAssignment {
+  id           String   @id @default(uuid())
+  employeeId   String
+  supervisorId String? // المشرف أو المدير المباشر
+  destination  String // الجهة
+  details      String // كتابة التفاصيل
+  startDate    DateTime // تاريخ البداية
+  endDate      DateTime // تاريخ النهاية
+
+  // سلسلة الموافقات
+  status String @default("PENDING_EMPLOYEE") // PENDING_EMPLOYEE, PENDING_HR, APPROVED, REJECTED
+
+  employeeApprovedAt DateTime?
+  hrApprovedAt       DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  employee Employee @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+
+  @@index([employeeId])
+  @@index([status])
+}
+
+// --- الخصومات والمخالفات (نظام متقدم) ---
+model Deduction {
+  id         String   @id @default(uuid())
+  employeeId String
+  date       DateTime
+  amount     Float
+  reason     String // سبب الخصم (تأخير، مخالفة، الخ)
+  status     String   @default("DEDUCTED")
+  // DEDUCTED, PENDING_AMOUNT_APPROVAL, PENDING_WAIVE_APPROVAL, WAIVED,
+  // PENDING_INVESTIGATION, UNDER_INVESTIGATION, OBJECTION_SUBMITTED, OBJECTION_REJECTED
+
+  // --- نظام تصنيف المخالفات ---
+  category         String? @default("ATTENDANCE") // ATTENDANCE, BEHAVIORAL, SERIOUS, PERFORMANCE
+  violationType    String? // النوع الفرعي للمخالفة
+  occurrenceNumber Int?    @default(1) // رقم تكرار المخالفة
+  severity         String? @default("LOW") // LOW, MEDIUM, HIGH, CRITICAL
+  lawArticle       String? // رقم أو نص المادة النظامية
+
+  // --- إحالة للتحقيق ---
+  isReferredToInvestigation Boolean @default(false)
+  investigationId           String? // ربط بملف التحقيق
+
+  // --- اعتراض الموظف ---
+  hasObjection    Boolean   @default(false)
+  objectionText   String? // نص اعتراض الموظف
+  objectionDate   DateTime?
+  objectionStatus String? // PENDING, ACCEPTED, REJECTED
+
+  // --- الأثر المالي والربط بالرواتب ---
+  hasFinancialImpact Boolean @default(true)
+  deductionDays      Int?    @default(0) // عدد أيام الخصم (0 = إنذار فقط)
+  dailySalary        Float? // الراتب اليومي المحتسب
+  isLinkedToPayroll  Boolean @default(false) // هل تم ربطه بمسير الراتب
+  payrollMonth       String? // شهر المسير المرتبط (مثلاً: 2026-04)
+
+  // --- مسار الاعتماد ---
+  issuedBy   String? // من أصدر المخالفة (اسم أو ID)
+  approvedBy String? // من اعتمدها
+  approvedAt DateTime?
+
+  createdAt     DateTime       @default(now())
+  employee      Employee       @relation(fields: [employeeId], references: [id], onDelete: Restrict)
+  investigation Investigation? @relation(fields: [investigationId], references: [id])
+  updatedAt     DateTime       @default(now()) @updatedAt
+
+  @@index([employeeId, date])
+  @@index([investigationId])
+  @@index([status])
+  @@index([payrollMonth])
+}
+
+// --- التحقيقات الإدارية (الإدارة القانونية) ---
+model Investigation {
+  id String @id @default(uuid())
+
+  // الموظف المحال للتحقيق
+  employeeId String
+  employee   Employee @relation(fields: [employeeId], references: [id], onDelete: Restrict)
+
+  // تفاصيل التحقيق
+  subject     String // موضوع التحقيق
+  description String? // وصف تفصيلي
+  category    String? // ATTENDANCE, BEHAVIORAL, SERIOUS, PERFORMANCE
+  severity    String  @default("HIGH") // HIGH, CRITICAL
+
+  // حالة التحقيق
+  status String @default("OPENED")
+  // OPENED (تم الفتح), IN_PROGRESS (جاري التحقيق), 
+  // COMPLETED_GUILTY (ثبتت الإدانة), COMPLETED_INNOCENT (ثبتت البراءة), 
+  // CLOSED (مغلق), SUSPENDED (موقوف مؤقتاً)
+
+  // نتائج التحقيق
+  findings       String? // نتائج التحقيق
+  recommendation String? // التوصية (إنذار، فصل، إحالة...)
+  finalDecision  String? // القرار النهائي
+
+  // الأثر المالي
+  penaltyAmount Float? // قيمة الجزاء المالي إن وجد
+  penaltyDays   Int? // عدد أيام الخصم
+
+  // إيقاف عن العمل
+  isSuspended         Boolean   @default(false)
+  suspensionStartDate DateTime?
+  suspensionEndDate   DateTime?
+
+  // المحقق المسؤول
+  investigatorName String? // اسم المحقق
+  investigatorRole String? // منصب المحقق
+
+  // المرفقات والسجل
+  attachmentUrl String? // مرفقات التحقيق
+
+  // الملاحظات
+  notes String?
+
+  // المخالفات المرتبطة
+  deductions Deduction[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([employeeId])
+  @@index([status])
+}
+
+// --- ادارة السلف ---
+model Loan {
+  id                 String  @id @default(uuid())
+  employeeId         String
+  amount             Float
+  reason             String?
+  monthlyInstallment Float
+
+  remainingAmount Float
+  isForgiven      Boolean @default(false)
+
+  // --- حالة الطلب ومسار الموافقات ---
+  status String @default("PENDING") // PENDING, MANAGER_APPROVED, HR_APPROVED, FINANCE_APPROVED, REJECTED
+
+  isManagerApproved Boolean   @default(false)
+  managerApprovedAt DateTime?
+
+  isHrApproved Boolean   @default(false)
+  hrApprovedAt DateTime?
+
+  isFinanceApproved Boolean   @default(false)
+  financeApprovedAt DateTime?
+
+  receiptUrl           String? // إيصال تحويل المالية
+  isFinanceTransferred Boolean   @default(false)
+  financeTransferredAt DateTime?
+
+  createdAt    DateTime          @default(now())
+  employee     Employee          @relation(fields: [employeeId], references: [id], onDelete: Restrict)
+  installments LoanInstallment[]
+  updatedAt    DateTime          @default(now()) @updatedAt
+
+  @@index([employeeId])
+  @@index([status])
+}
+
+// --- أقساط السلف المخصومة في مسيرات الرواتب ---
+model LoanInstallment {
+  id        String   @id @default(uuid())
+  loanId    String
+  payrollId String?
+  month     Int
+  year      Int
+  amount    Float
+  createdAt DateTime @default(now())
+  updatedAt DateTime @default(now()) @updatedAt
+  loan      Loan     @relation(fields: [loanId], references: [id], onDelete: Restrict)
+  payroll   Payroll? @relation(fields: [payrollId], references: [id], onDelete: SetNull)
+
+  @@unique([loanId, month, year])
+  @@index([payrollId])
+  @@index([year, month])
+}
+
+// ---------------------------------------------------------
+// 7. Compliance & Government Violations
+// ---------------------------------------------------------
+model ComplianceViolation {
+  id String @id @default(uuid())
+
+  // Relation to Entity (Either Company or Branch)
+  companyId String?
+  branchId  String?
+
+  authority String // جهة المخالفة (مكتب العمل، التجارة، البلدية...)
+  amount    Float // قيمة المخالفة
+
+  correctivePeriod Int? // فترة السماح للتصحيح (أيام)
+  canObject        Boolean @default(false) // قابلة للاعتراض
+
+  status String  @default("PENDING_PAYMENT") // PENDING_PAYMENT, CORRECTED, PAID
+  notes  String? // تفاصيل المخالفة
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  company Company? @relation(fields: [companyId], references: [id], onDelete: SetNull)
+  branch  Branch?  @relation(fields: [branchId], references: [id], onDelete: SetNull)
+
+  @@index([companyId])
+  @@index([branchId])
+  @@index([status])
+}
+
+model AttendanceCorrection {
+  id             String   @id @default(uuid())
+  employeeId     String
+  date           DateTime
+  reason         String
+  correctionType String?  @default("GENERAL") // LATE, EARLY_LEAVE, ABSENT, GENERAL
+  attachmentUrl  String?  @db.Text
+
+  status String @default("PENDING") // PENDING, APPROVED, REJECTED
+
+  // مسار الموافقات
+  isManagerApproved Boolean   @default(false)
+  managerApprovedAt DateTime?
+  managerComment    String?
+
+  isHrApproved Boolean   @default(false)
+  hrApprovedAt DateTime?
+  hrComment    String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  employee Employee @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+
+  @@index([employeeId])
+  @@index([status])
+}
+
+// ---------------------------------------------------------
+// 3. مسير الرواتب (Payrolls)، السلف والتصفيات
+// ---------------------------------------------------------
+// 8. Recruitment Management (إدارة التوظيف)
+// ---------------------------------------------------------
+model JobRequest {
+  id String @id @default(uuid())
+
+  departmentId String? // القسم الطالب للوظيفة
+  requesterId  String // المدير الذي رفع الطلب
+
+  jobTitle    String // المسمى الوظيفي
+  jobType     String // كامل، جزئي، عن بعد
+  nationality String // الجنسية المطلوبة أو "غير محدد"
+  description String // المهام والوصف
+  status      String @default("PENDING") // PENDING (معلق), APPROVED (موافق عليه), REJECTED (مرفوض), FULFILLED (تم التوظيف)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  requester    Employee         @relation("RequesterToJobRequest", fields: [requesterId], references: [id], onDelete: Cascade)
+  department   Department?      @relation(fields: [departmentId], references: [id], onDelete: SetNull)
+  applications JobApplication[]
+
+  @@index([departmentId])
+  @@index([requesterId])
+  @@index([status])
+}
+
+model JobApplication {
+  id String @id @default(uuid())
+
+  jobRequestId String
+  jobRequest   JobRequest @relation(fields: [jobRequestId], references: [id], onDelete: Cascade)
+
+  candidateName  String // اسم المرشح
+  candidatePhone String // هاتف المرشح
+  candidateEmail String? // ايميل المرشح
+  resumeUrl      String? // رابط السيرة الذاتية 
+
+  status        String    @default("APPLIED") // APPLIED (تحت الفرز), INTERVIEW (مقابلة), OFFERED (عرض وظيفي), HIRED (تم التوظيف), REJECTED (مرفوض)
+  interviewDate DateTime? // موعد المقابلة إن وجد
+  notes         String? // ملاحظات التقييم أو العرض المالي
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([jobRequestId])
+  @@index([status])
+  @@index([jobRequestId, candidatePhone])
+}
+
+// --- طلبات المباشرة الجديدة (Onboarding) ---
+model OnboardingRequest {
+  id          String @id @default(uuid())
+  requesterId String // المدير الذي رفع الطلب
+
+  // البيانات الشخصية للموظف
+  fullNameArabic   String
+  lastNameArabic   String?
+  firstNameEnglish String?
+  lastNameEnglish  String?
+  nationality      String?
+  dateOfBirth      DateTime?
+  gender           String?
+  maritalStatus    String?
+
+  // الهوية والجواز
+  iqamaOrIdNumber String
+  iqamaOrIdExp    DateTime?
+  passportNumber  String?
+  passportExp     DateTime?
+
+  // التواصل
+  mobileNumber String
+  email        String?
+
+  // التعيين والعمل
+  branchId         String?
+  administrationId String?
+  departmentId     String?
+  directManagerId  String?
+  jobTitle         String?
+  joinDate         DateTime?
+  contractType     String?
+
+  // المالية
+  bankName    String?
+  ibanNumber  String?
+  basicSalary Float?
+
+  // المرفقات
+  iqamaCopyUrl         String?
+  passportCopyUrl      String?
+  ibanCertificateUrl   String?
+  resumeUrl            String?
+  workContractUrl      String?
+  healthCertificateUrl String?
+
+  status String  @default("PENDING") // PENDING, APPROVED, REJECTED
+  hrNote String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  requester Employee @relation("RequesterToOnboarding", fields: [requesterId], references: [id], onDelete: Cascade)
+
+  @@index([requesterId])
+  @@index([status])
+}
+
+// ---------------------------------------------------------
+// 9. Assets / Custody
+// ---------------------------------------------------------
+
+// --- ادارة العهد ---
+model Asset {
+  id          String    @id @default(uuid())
+  employeeId  String?
+  assetType   String // سيارة، كمبيوتر
+  description String?
+  receiveDate DateTime?
+  returnDate  DateTime?
+  status      String    @default("ACTIVE") // ACTIVE, RETURNED, DAMAGED, TRANSFERRED
+
+  createdAt DateTime  @default(now())
+  employee  Employee? @relation(fields: [employeeId], references: [id], onDelete: SetNull)
+  updatedAt DateTime  @default(now()) @updatedAt
+
+  @@index([employeeId])
+  @@index([status])
+}
+
+// ---------------------------------------------------------
+// 10. Medical Insurance (إدارة التأمين الطبي)
+// ---------------------------------------------------------
+
+model MedicalInsurance {
+  id        String @id @default(uuid())
+  companyId String // يربط المنشأة (Company) المرتبطة بالتأمين
+
+  insuranceIssuer String // اسم شركة التأمين
+  policyNumber    String // رقم الوثيقة
+  policyCost      Float // تكلفة الوثيقة
+  expiryDate      DateTime // تاريخ انتهاء الوثيقة
+
+  // حقول إضافية للموظفين
+  medicalNetwork String? // الشبكة الطبية (مثل: VIP، A، B، C)
+  coverageType   String? // نوع التغطية (فردي، عائلي، أفراد+عائلة)
+  insuranceClass String? // فئة التأمين (Gold، Silver، Bronze)
+
+  benefitsUrl String? @db.Text // ملف بطاقات وتفاصيل المنافع
+  coverageUrl String? @db.Text // ملف التغطية
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  company Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
+
+  @@index([companyId])
+  @@index([expiryDate])
+}
+
+// ---------------------------------------------------------
+// 8. Services & Vehicles
+// ---------------------------------------------------------
+
+// --- شرائح الجوال والانترنت ---
+model TelecomSim {
+  id            String  @id @default(uuid())
+  simNumber     String // رقم الشريحة
+  accountNumber String? // رقم السداد
+  provider      String? // مزود الخدمة
+  plan          String? // الباقة
+  serviceType   String? // نوع الخدمة (جوال، ارضي، نت، الياف)
+
+  companyId String?
+  company   Company? @relation(fields: [companyId], references: [id], onDelete: SetNull)
+
+  branchId String?
+  branch   Branch? @relation(fields: [branchId], references: [id], onDelete: SetNull)
+
+  employeeId String?
+  employee   Employee? @relation(fields: [employeeId], references: [id], onDelete: SetNull)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @default(now()) @updatedAt
+
+  @@index([companyId])
+  @@index([branchId])
+  @@index([employeeId])
+}
+
+// --- عدادات الكهرباء والمياه ---
+model UtilityMeter {
+  id            String  @id @default(uuid())
+  meterCode     String? // كود العداد تلقائي
+  meterNumber   String? // رقم العداد
+  accountNumber String? // رقم السداد
+  meterPhotoUrl String? // صور العداد (مرفق)
+
+  branchId String?
+  branch   Branch? @relation(fields: [branchId], references: [id], onDelete: SetNull)
+
+  legalCompanyId String?
+  legalCompany   Company? @relation("LegalMeterOwner", fields: [legalCompanyId], references: [id], onDelete: SetNull)
+
+  actualCompanyId String?
+  actualCompany   Company? @relation("ActualMeterUser", fields: [actualCompanyId], references: [id], onDelete: SetNull)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @default(now()) @updatedAt
+
+  @@index([branchId])
+  @@index([legalCompanyId])
+  @@index([actualCompanyId])
+}
+
+// --- ادارة المركبات (اللوجستي) ---
+model Vehicle {
+  id             String  @id @default(uuid())
+  vehicleCode    String? // كود السيارة تلقائي
+  category       String // الفئة: خصوصي / نقل خاص / نقل عام
+  brand          String // النوع: كيا، هونداي...
+  modelYear      String // الموديل
+  color          String // اللون
+  sequenceNumber String // الرقم التسلسلي
+  plateNumber    String // رقم اللوحة
+
+  // المالك القانوني
+  legalCompanyId String?
+  legalCompany   Company? @relation("LegalVehicleOwner", fields: [legalCompanyId], references: [id], onDelete: SetNull)
+
+  // المستفيد الفعلي
+  actualCompanyId String?
+  actualCompany   Company? @relation("ActualVehicleUser", fields: [actualCompanyId], references: [id], onDelete: SetNull)
+
+  // التواريخ والتكاليف
+  licenseExpDate       DateTime? // تاريخ انتهاء رخصة السير
+  insuranceExpDate     DateTime? // تاريخ انتهاء التأمين
+  insuranceCost        Float?    @default(0) // مبلغ وثيقة التأمين للمركبة
+  inspectionExpDate    DateTime? // تاريخ انتهاء الفحص
+  operatingCardExpDate DateTime? // تاريخ انتهاء كارت التشغيل
+  operatingCardUrl     String? // مرفق كارت التشغيل
+
+  // السائق
+  driverId          String?
+  driver            Employee? @relation(fields: [driverId], references: [id], onDelete: SetNull)
+  driverCardNumber  String? // بطاقة السائق
+  driverCardExpDate DateTime? // تاريخ انتهاء بطاقة السائق
+
+  // المرفقات
+  drivingAuthorizationUrl String? // تفويض القيادة
+  drivingAuthExpDate      DateTime? // تاريخ انتهاء التفويض
+  vehiclePhotosUrl        String? // صور المركبة
+  registrationFormUrl     String? // الاستمارة
+  otherAttachmentsUrl     String? // أخرى
+
+  isArchived Boolean @default(false)
+
+  createdAt DateTime        @default(now())
+  claims    AccidentClaim[]
+  updatedAt DateTime        @default(now()) @updatedAt
+
+  @@index([legalCompanyId])
+  @@index([actualCompanyId])
+  @@index([driverId])
+  @@index([isArchived])
+  @@index([licenseExpDate])
+  @@index([insuranceExpDate])
+  @@index([inspectionExpDate])
+  @@index([operatingCardExpDate])
+  @@index([driverCardExpDate])
+  @@index([drivingAuthExpDate])
+}
+
+// --- حالات المطالبة ---
+enum ClaimStatus {
+  PENDING_SUBMISSION // بانتظار تقديم المطالبة
+  SUBMITTED // تم تقديم المطالبة
+  TRANSFERRED // تم التحويل
+}
+
+// --- مطالبات الحوادث ---
+model AccidentClaim {
+  id String @id @default(uuid())
+
+  vehicleId String
+  vehicle   Vehicle @relation(fields: [vehicleId], references: [id], onDelete: Restrict)
+
+  // تفاصيل المطالبة
+  faultPercentageAgainst Float? // نسبة الخطأ على الشركة
+  faultPercentageFor     Float? // نسبة الخطأ لصالح الشركة
+  claimAmount            Float? // مبلغ المطالبة
+  insuranceCompany       String? // شركة التأمين المسؤولة
+  status                 ClaimStatus @default(PENDING_SUBMISSION)
+
+  // المرفقات
+  najmReportUrl       String? // تقرير نجم
+  estimatesUrl        String? // التقديرات
+  accidentPhotosUrl   String? // صور السيارة
+  ibanUrl             String? // الايبان
+  otherAttachmentsUrl String? // أخرى
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([vehicleId])
+  @@index([status])
+}
+
+// --- نوع التصفية ---
+enum SettlementType {
+  LEAVE_SETTLEMENT // تصفية بغرض الاجازة
+  END_OF_SERVICE // تصفية بغرض انتهاء الخدمة
+}
+
+// --- سبب انهاء العقد ---
+enum TerminationReason {
+  COMPANY_TERMINATION // إنهاء من قبل الشركة (عادي)
+  RESIGNATION // استقالة
+  PROBATION // إنهاء بموجب فترة التجربة
+  ARTICLE_80 // إنهاء على المادة 80
+  ARTICLE_81 // ترك العمل لإخلال صاحب العمل (المادة 81)
+  ARTICLE_87 // حالات المادة 87 (قوة قاهرة، الزواج/الوضع للعاملة)
+  CONTRACT_EXPIRY // انتهاء العقد محدد المدة
+}
+
+// --- تصفية مستحقات الموظفين ---
+model Settlement {
+  id String @id @default(uuid())
+
+  employeeId String
+  employee   Employee @relation(fields: [employeeId], references: [id], onDelete: Restrict)
+
+  type              SettlementType
+  terminationReason TerminationReason?
+
+  // حقول الاحتساب
+  salaryBasis        String? // basic أو total
+  lastWorkingDate    DateTime? // آخر يوم عمل
+  workingDaysInMonth Int? // عدد أيام العمل خلال الشهر
+  workingDaysSalary  Float? // راتب أيام العمل
+
+  // نهاية الخدمة
+  yearsOfService     Float? // سنوات الخدمة
+  endOfServiceAmount Float? // مبلغ نهاية الخدمة
+
+  // بدل الاجازة
+  unusedLeaveDays   Float? // أيام الإجازة غير المستخدمة
+  leaveCompensation Float? // بدل الاجازة السنوية
+
+  // إضافات وخصومات
+  additionalEntitlements Float?  @default(0)
+  additionalDeductions   Float?  @default(0)
+  additionalNotes        String? // ملاحظات
+
+  // الإجمالي
+  totalSettlement Float? // صافي التصفية
+  loansDeduction  Float? // خصم السلف المحتسب عند إنشاء التصفية
+  overtimeAmount  Float? // عمل إضافي مستحق مدرج في التصفية
+
+  // الحالة
+  status             String  @default("PENDING_APPROVAL") // PENDING_APPROVAL, OWNER_APPROVED, PAID, REJECTED
+  transferReceiptUrl String? // إيصال التحويل
+  ownerNotes         String? // سبب الرفض أو ملاحظات صاحب العمل
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @default(now()) @updatedAt
+
+  @@index([employeeId])
+  @@index([status])
+}
+
+// ---------------------------------------------------------
+// 9. Renewals & Archives
+// ---------------------------------------------------------
+
+enum RenewalAction {
+  RENEWED
+  TERMINATED
+  PENDING_PAYMENT
+}
+
+model RenewalArchive {
+  id           String @id @default(uuid())
+  entityType   String // "EMPLOYEE", "BRANCH", "COMPANY", "VEHICLE"
+  entityId     String // ID of the entity
+  documentType String // "IQAMA", "PASSPORT", "RENT_CONTRACT", etc.
+
+  action RenewalAction // "RENEWED" أو "TERMINATED"
+
+  oldExpDate DateTime? // تاريخ الانتهاء القديم
+  newExpDate DateTime? // تاريخ الانتهاء الجديد (في حال التجديد)
+
+  attachmentUrl String? // مرفق التجديد أو الانتهاء
+  notes         String? // ملاحظات الانتهاء
+
+  createdAt DateTime @default(now())
+
+  @@index([entityId, documentType])
+  @@index([action, documentType])
+  @@index([entityType, entityId])
+}
+
+// ---------------------------------------------------------
+// 10. System Settings (إعدادات النظام)
+// ---------------------------------------------------------
+model SystemSetting {
+  id        String   @id @default(uuid())
+  key       String   @unique // مفتاح الإعداد
+  value     String // قيمة الإعداد (JSON string)
+  updatedAt DateTime @updatedAt
+  createdAt DateTime @default(now())
+}
+
+// ---------------------------------------------------------
+// 12. Employee Portal Requests (طلبات بوابة الموظف)
+// ---------------------------------------------------------
+model TerminationRequest {
+  id         String @id @default(uuid())
+  employeeId String
+
+  terminationType String // END_OF_CONTRACT, RESIGNATION, MUTUAL_AGREEMENT
+  reasonDetails   String? @db.Text
+
+  status String @default("PENDING") // PENDING, APPROVED, REJECTED
+
+  // --- مسار الموافقات ---
+  isManagerApproved Boolean   @default(false)
+  managerApprovedAt DateTime?
+  isHrApproved      Boolean   @default(false)
+  hrApprovedAt      DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  employee Employee @relation(fields: [employeeId], references: [id], onDelete: Restrict)
+
+  @@index([employeeId])
+  @@index([status])
+}
+
+// ==========================================
+// --- الإدارة القانونية: الوكالات الموثقة ---
+// ==========================================
+
+model CertifiedAgency {
+  id           String @id @default(uuid())
+  agencyNumber String // رقم الوكالة
+
+  // الأطراف
+  principalName String // اسم الموكل
+  principalId   String // هوية الموكل
+  agentName     String // اسم الوكيل
+  agentId       String // هوية الوكيل
+
+  // التواريخ
+  startDate DateTime // تاريخ بداية الوكالة
+  endDate   DateTime // تاريخ الانتهاء
+
+  // المرفقات
+  attachmentUrl String? // مرفق الوكالة
+
+  status String @default("ACTIVE") // ACTIVE, EXPIRED, CANCELLED
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([status])
+  @@index([endDate])
+}
+
+// ==========================================
+// --- الإدارة المالية: المدفوعات والاعتمادات ---
+// ==========================================
+
+enum PaymentStatus {
+  PENDING_OWNER // بانتظار اعتماد صاحب العمل
+  PENDING_FINANCE // بانتظار الدفع (للمالية)
+  PAID // تم التحويل والسداد
+  COMPLETED // تم التأكيد والإقفال
+  RETURNED // مسترجع من المالية (لم يتم السداد) أو مرفوض
+}
+
+model PaymentRequest {
+  id String @id @default(uuid())
+
+  title         String // اسم السداد
+  reason        String? // السبب
+  amount        Float // المبلغ المستحق
+  accountNumber String? // رقم الحساب أو المفوتر
+
+  status       PaymentStatus @default(PENDING_OWNER)
+  receiptUrl   String? // إيصال أو صورة التحويل من قبل المحاسب
+  returnReason String? // سبب الاسترجاع (مثلاً: انتهاء صلاحية رقم السداد)
+
+  // لربط الدفعة بكيان معين في التجديدات أو غيرها
+  entityId      String?
+  entityType    String?
+  documentType  String?
+  requestedById String? // منشئ الطلب
+  approvedById  String? // معتمد الطلب (لا يساوي المنشئ)
+  paidById      String? // مسجِّل الدفع
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([status])
+  @@index([entityId, documentType])
+  @@index([entityType, entityId])
+}
+
+// ==========================================
+// --- بوابة صاحب العمل والتعاميم ---
+// ==========================================
+
+model Circular {
+  id            String   @id @default(uuid())
+  title         String // عنوان القرار أو التعميم
+  content       String // تفاصيل القرار
+  issuedBy      String // مُصدر القرار (عادة صاحب العمل أو المدير العام)
+  status        String   @default("PUBLISHED") // أو DRAFT
+  attachmentUrl String? // اختياري، صورة للقرار
+  datePublished DateTime @default(now())
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @default(now()) @updatedAt
+
+  @@index([status, datePublished])
+}
+
+model OwnerRequest {
+  id            String   @id @default(uuid())
+  title         String // عنوان الطلب 
+  details       String // تفاصيل التوجيه أو الطلب
+  status        String   @default("PENDING") // PENDING, IN_PROGRESS, COMPLETED
+  assignedTo    String? // موجه إلى (قسم أو شخص)
+  attachmentUrl String?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  @@index([status])
+}
+
+// ==========================================
+// --- نظام تقييم الأداء ---
+// ==========================================
+
+// --- نموذج التقييم (القالب) ---
+model EvaluationTemplate {
+  id          String   @id @default(uuid())
+  name        String // اسم النموذج
+  description String? // وصف النموذج
+  targetType  String   @default("GENERAL") // GENERAL, OPERATIONAL, LEADERSHIP, CUSTOM
+  evalType    String   @default("QUARTERLY") // MONTHLY, QUARTERLY, ANNUAL, PROBATION
+  isActive    Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  sections EvaluationTemplateSection[]
+  cycles   EvaluationCycle[]
+}
+
+// --- محاور التقييم ---
+model EvaluationTemplateSection {
+  id         String   @id @default(uuid())
+  templateId String
+  title      String // مثل: الأداء الوظيفي
+  weight     Float // الوزن النسبي (مثل 40)
+  sortOrder  Int      @default(0)
+  createdAt  DateTime @default(now())
+
+  template  EvaluationTemplate       @relation(fields: [templateId], references: [id], onDelete: Cascade)
+  items     EvaluationTemplateItem[]
+  updatedAt DateTime                 @default(now()) @updatedAt
+
+  @@index([templateId])
+}
+
+// --- عناصر كل محور ---
+model EvaluationTemplateItem {
+  id          String   @id @default(uuid())
+  sectionId   String
+  title       String // مثل: إنجاز المهام المطلوبة
+  description String? // شرح اختياري
+  isRequired  Boolean  @default(true)
+  sortOrder   Int      @default(0)
+  createdAt   DateTime @default(now())
+
+  section   EvaluationTemplateSection @relation(fields: [sectionId], references: [id], onDelete: Cascade)
+  scores    EvaluationItemScore[]
+  updatedAt DateTime                  @default(now()) @updatedAt
+
+  @@index([sectionId])
+}
+
+// --- دورات التقييم ---
+model EvaluationCycle {
+  id         String   @id @default(uuid())
+  title      String // مثل: تقييم الربع الأول 2026
+  templateId String
+  cycleType  String   @default("QUARTERLY") // MONTHLY, QUARTERLY, ANNUAL, PROBATION
+  startDate  DateTime
+  endDate    DateTime
+  status     String   @default("OPEN") // OPEN, IN_PROGRESS, CLOSED
+  createdBy  String? // من أنشأ الدورة
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  template    EvaluationTemplate   @relation(fields: [templateId], references: [id])
+  evaluations EmployeeEvaluation[]
+
+  @@index([templateId])
+  @@index([status])
+}
+
+// --- تقييمات الموظفين ---
+model EmployeeEvaluation {
+  id         String  @id @default(uuid())
+  cycleId    String
+  employeeId String
+  managerId  String? // المدير المباشر المُقيّم
+
+  status String @default("DRAFT")
+  // DRAFT, PENDING_MANAGER, PENDING_APPROVAL, RETURNED, PENDING_EMPLOYEE_ACK, CLOSED, CANCELLED
+
+  totalScore  Float? // النتيجة النهائية من 100
+  finalRating String? // ممتاز، جيد جداً، جيد، مقبول، ضعيف
+
+  // التوصيات
+  recommendation       String? // NO_ACTION, BONUS, PROMOTION, RAISE, TRAINING, WARNING, NOTICE, EXTEND_MONITORING, NO_RENEWAL, TERMINATION, OTHER
+  recommendationReason String? // سبب التوصية
+
+  // الملاحظات النصية
+  strengths    String? @db.Text // نقاط القوة
+  improvements String? @db.Text // نقاط التحسين
+  finalNotes   String? @db.Text // ملاحظات ختامية (إلزامي)
+
+  // إقرار الموظف
+  employeeAcknowledgedAt DateTime?
+  employeeComment        String?   @db.Text
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  cycle      EvaluationCycle       @relation(fields: [cycleId], references: [id], onDelete: Cascade)
+  employee   Employee              @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+  itemScores EvaluationItemScore[]
+  approvals  EvaluationApproval[]
+
+  @@index([cycleId])
+  @@index([employeeId])
+  @@index([managerId])
+  @@index([status])
+  @@index([employeeId, status])
+}
+
+// --- درجات عناصر التقييم ---
+model EvaluationItemScore {
+  id           String  @id @default(uuid())
+  evaluationId String
+  itemId       String
+  score        Int     @default(0) // 1-5
+  note         String? // ملاحظة اختيارية على العنصر
+
+  evaluation EmployeeEvaluation     @relation(fields: [evaluationId], references: [id], onDelete: Cascade)
+  item       EvaluationTemplateItem @relation(fields: [itemId], references: [id], onDelete: Cascade)
+  createdAt  DateTime               @default(now())
+  updatedAt  DateTime               @default(now()) @updatedAt
+
+  @@index([evaluationId])
+  @@index([itemId])
+}
+
+// --- سجل الاعتمادات ---
+model EvaluationApproval {
+  id           String   @id @default(uuid())
+  evaluationId String
+  approverId   String? // من قام بالإجراء
+  approverName String? // اسم المعتمد
+  action       String // APPROVE, RETURN, REJECT
+  comment      String?  @db.Text
+  actionDate   DateTime @default(now())
+
+  evaluation EmployeeEvaluation @relation(fields: [evaluationId], references: [id], onDelete: Cascade)
+
+  @@index([evaluationId])
+}
+
+// ---------------------------------------------------------
+// إدارة المنصات الحكومية
+// ---------------------------------------------------------
+model GovPlatform {
+  id               String  @id @default(uuid())
+  platformName     String // اسم المنصة (مثال: أبشر، مقيم، قوى، إلخ)
+  username         String // اسم المستخدم
+  password         String // كلمة المرور
+  phoneNumber      String? // رقم الجوال المرتبط
+  authorizedPerson String? // اسم الشخص المفوض
+  notes            String? @db.Text // ملاحظات إضافية
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+// ---------------------------------------------------------
+// 13. Asset Needs Requests (طلبات احتياج العهد)
+// ---------------------------------------------------------
+model AssetRequest {
+  id             String  @id @default(uuid())
+  requesterId    String
+  requestedForId String
+  assetType      String // لابتوب، جوال، شريحة، أخرى
+  description    String? @db.Text
+
+  status String @default("PENDING_HR")
+  // PENDING_HR (بانتظار الموارد البشرية)
+  // PENDING_OWNER (بانتظار تعميد صاحب العمل)
+  // PENDING_PURCHASING (بانتظار مسؤول المشتريات)
+  // COMPLETED (تم التسليم والإقفال)
+  // REJECTED (مرفوض)
+
+  hrNotes      String?   @db.Text
+  hrApprovedAt DateTime?
+
+  ownerNotes      String?   @db.Text
+  ownerApprovedAt DateTime?
+
+  purchasingNotes String?   @db.Text
+  completedAt     DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  requester    Employee @relation("RequesterToAssetRequest", fields: [requesterId], references: [id], onDelete: Cascade)
+  requestedFor Employee @relation("RequestedForToAssetRequest", fields: [requestedForId], references: [id], onDelete: Cascade)
+
+  @@index([requesterId])
+  @@index([requestedForId])
+  @@index([status])
+}
+
+// --- سجل الملفات المرفوعة (للتحقق من صلاحية الوصول) ---
+model UploadedFile {
+  id           String   @id @default(uuid())
+  storedName   String   @unique // الاسم المخزن في UPLOAD_DIR
+  originalName String?
+  mimeType     String?
+  size         Int?
+  isPublic     Boolean  @default(false) // رُفع بدون جلسة (طلب توظيف)
+  uploadedById String?
+  employeeId   String? // الموظف المالك (إن وُجد)
+  category     String? // IDENTITY, PASSPORT, HEALTH, BANK, CONTRACT, OTHER
+  createdAt    DateTime @default(now())
+  uploadedBy   User?    @relation(fields: [uploadedById], references: [id], onDelete: SetNull)
+
+  @@index([uploadedById])
+  @@index([employeeId])
+}
+
+enum GosiRegime {
+  OLD // مشترك قبل نفاذ النظام الجديد (2024-07-03)
+  NEW // يخضع لنظام التأمينات الجديد
+  UNKNOWN // لم يُؤكد بعد
+}
+
+enum IdType {
+  NATIONAL_ID
+  IQAMA
+  BORDER_NUMBER
+  PASSPORT
+}
+
+// --- جدول معدلات التأمينات المؤرخ (يُحدَّث بالترحيلات) ---
+model GosiRate {
+  id            String     @id @default(uuid())
+  regime        GosiRegime // OLD / NEW (صفوف غير السعوديين تستخدم OLD)
+  isSaudi       Boolean
+  effectiveFrom DateTime // تاريخ السريان (بداية اليوم)
+  employeeRate  Float // نسبة مئوية، مثال 9.75
+  employerRate  Float
+  minWage       Float      @default(1500)
+  maxWage       Float      @default(45000)
+  isProvisional Boolean    @default(false) // بانتظار تأكيد مستشار/مصدر رسمي
+  source        String?
+  createdAt     DateTime   @default(now())
+
+  @@unique([regime, isSaudi, effectiveFrom])
+}
+
+// --- سجل تشغيل المهام الخلفية ---
+model JobRun {
+  id         String    @id @default(uuid())
+  job        String
+  startedAt  DateTime  @default(now())
+  finishedAt DateTime?
+  status     String    @default("RUNNING") // RUNNING, SUCCEEDED, FAILED
+  details    String?   @db.Text
+
+  @@index([job, startedAt])
+}
+
+// --- صندوق الإشعارات الصادرة (Outbox) ---
+model NotificationOutbox {
+  id             String    @id @default(uuid())
+  idempotencyKey String    @unique
+  channel        String // EMAIL, WHATSAPP, SMS, IN_APP
+  recipient      String
+  subject        String?
+  body           String    @db.Text
+  status         String    @default("PENDING") // PENDING, SENDING, SENT, FAILED, UNKNOWN
+  attempts       Int       @default(0)
+  leaseUntil     DateTime?
+  lastError      String?
+  sentAt         DateTime?
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @default(now()) @updatedAt
+
+  @@index([status, createdAt])
+}

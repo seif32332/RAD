@@ -1,0 +1,27 @@
+{
+  "name": "radeef-tenant-manager",
+  "version": "2.0.0",
+  "private": true,
+  "description": "Radeef control panel + CLI for managing tenants (bind to 127.0.0.1, run behind TLS + IP allow-list)",
+  "main": "server.js",
+  "bin": {
+    "radeef-manage": "cli.js"
+  },
+  "scripts": {
+    "start": "node server.js",
+    "cli": "node cli.js",
+    "backup": "node cli.js backup",
+    "check": "node --check server.js && node --check cli.js && node --check lib/commercial.js && node --check lib/config.js && node --check lib/dates.js && node --check lib/license.js && node --check lib/mailer.js && node --check lib/nginx.js && node --check lib/ops.js && node --check lib/ssh.js && node --check lib/store.js && node --check lib/validate.js"
+  },
+  "engines": {
+    "node": ">=18.17"
+  },
+  "dependencies": {
+    "dotenv": "^16.4.5",
+    "express": "^4.21.1",
+    "node-cron": "^3.0.3",
+    "nodemailer": "^6.9.13",
+    "sqlite3": "^5.1.7",
+    "ssh2": "^1.15.0"
+  }
+}

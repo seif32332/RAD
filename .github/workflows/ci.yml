@@ -1,0 +1,250 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Typecheck, lint, test, build
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      NEXT_TELEMETRY_DISABLED: "1"
+      CHECKPOINT_DISABLE: "1"
+      # Dummy values: nothing in CI connects to a database.
+      DATABASE_URL: postgresql://ci:ci@127.0.0.1:5432/ci?schema=public
+      SESSION_SECRET: ci-only-session-secret-not-used-anywhere-0000000000
+      DATA_ENCRYPTION_KEY: MDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDA=
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci --no-audit --no-fund
+
+      - name: Generate Prisma client
+        run: npx prisma generate
+
+      - name: Validate Prisma schema
+        run: npx prisma validate
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Unit tests
+        run: npm test
+
+      - name: Build
+        run: npm run build
+
+      - name: Shell script syntax
+        run: for f in ops/*.sh ops/lib/*.sh; do bash -n "$f"; done
+
+      - name: Node script syntax (jobs, ops tools, tenant manager)
+        run: |
+          for f in scripts/*.mjs ecosystem.config.js radeef-manage/*.js radeef-manage/lib/*.js; do
+            node --check "$f"
+          done
+
+  # DEC-004: every migration must apply to an EMPTY database, the result must match
+  # schema.prisma exactly (no drift), and the seed must be idempotent.
+  migrations:
+    name: Migrations on empty Postgres 16 (drift + idempotent seed)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: ci
+          POSTGRES_PASSWORD: ci
+          POSTGRES_DB: radeef_ci
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U ci -d radeef_ci"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    env:
+      CHECKPOINT_DISABLE: "1"
+      DATABASE_URL: postgresql://ci:ci@127.0.0.1:5432/radeef_ci?schema=public&connection_limit=5
+      # Exercise the seed's first-admin branch (CI-only throwaway credentials).
+      ADMIN_EMAIL: ci-admin@example.com
+      ADMIN_PASSWORD: ci-only-Passw0rd-not-secret
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci --no-audit --no-fund
+
+      - name: Generate Prisma client
+        run: npx prisma generate
+
+      - name: Apply all migrations to an empty database
+        run: npx prisma migrate deploy
+
+      - name: No drift between the migrated database and schema.prisma
+        run: |
+          # --exit-code: 0 = no difference, 2 = drift (fails the job), 1 = error.
+          npx prisma migrate diff \
+            --from-url "$DATABASE_URL" \
+            --to-schema-datamodel prisma/schema.prisma \
+            --exit-code --script
+
+      - name: Seed (first run)
+        run: node prisma/seed.mjs
+
+      - name: Snapshot row counts after the first seed
+        run: |
+          cat > "$RUNNER_TEMP/snapshot.cjs" <<'EOF'
+          const { PrismaClient } = require('@prisma/client');
+          const fs = require('fs');
+          const p = new PrismaClient();
+          (async () => {
+            const tables = await p.$queryRawUnsafe("SELECT tablename FROM pg_tables WHERE schemaname = 'public' AND tablename <> '_prisma_migrations' ORDER BY 1");
+            const out = {};
+            for (const { tablename } of tables) {
+              const [r] = await p.$queryRawUnsafe(`SELECT count(*)::int AS n FROM "${tablename.replace(/"/g, '""')}"`);
+              out[tablename] = r.n;
+            }
+            fs.writeFileSync(process.env.SNAPSHOT_OUT, JSON.stringify(out, null, 1) + '\n');
+            await p.$disconnect();
+          })().catch((e) => { console.error(e); process.exit(1); });
+          EOF
+          cp "$RUNNER_TEMP/snapshot.cjs" ./.ci-snapshot.cjs
+          SNAPSHOT_OUT="$RUNNER_TEMP/seed1.json" node ./.ci-snapshot.cjs
+          cat "$RUNNER_TEMP/seed1.json"
+
+      - name: Seed (second run must be a no-op)
+        run: node prisma/seed.mjs
+
+      - name: Row counts unchanged by the second seed
+        run: |
+          SNAPSHOT_OUT="$RUNNER_TEMP/seed2.json" node ./.ci-snapshot.cjs
+          node -e '
+            const a = require(process.argv[1]), b = require(process.argv[2]);
+            if (!(a.SystemSetting > 0 && a.Nationality > 0 && a.User === 1)) { console.error("first seed did not create settings/nationalities/admin", a); process.exit(1); }
+            const diff = Object.keys({ ...a, ...b }).filter((k) => a[k] !== b[k]);
+            if (diff.length) { console.error("seed is not idempotent:", diff.map((k) => `${k}: ${a[k]} -> ${b[k]}`).join(", ")); process.exit(1); }
+            console.log("seed is idempotent (" + Object.keys(a).length + " tables unchanged)");
+          ' "$RUNNER_TEMP/seed1.json" "$RUNNER_TEMP/seed2.json"
+
+      - name: Background jobs run against the migrated schema (dry runs)
+        run: |
+          node scripts/jobs.mjs expiry-digest --dry-run
+          node scripts/jobs.mjs deactivate-terminated --dry-run
+          node scripts/jobs.mjs outbox-dispatch
+          node scripts/tenant-stats.mjs
+
+  # DEC-006: no AI / OCR SDK may be added without an entry in the approved sub-processor list.
+  ai-processors:
+    name: AI/OCR SDKs must be approved sub-processors
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check package.json against docs/processors.md
+        run: |
+          node - <<'EOF'
+          const fs = require('fs');
+          const PKG = 'package.json';
+          const DOC = 'docs/processors.md';
+          const pkg = JSON.parse(fs.readFileSync(PKG, 'utf8'));
+          const deps = new Set();
+          for (const k of ['dependencies', 'devDependencies', 'optionalDependencies', 'peerDependencies']) {
+            for (const n of Object.keys(pkg[k] || {})) deps.add(n);
+          }
+          const AI_OCR = [
+            /^openai$/, /^@openai\//, /^@anthropic-ai\//, /^anthropic$/, /^@google\/generative-ai$/, /^@google\/genai$/,
+            /^@google-cloud\/(vision|documentai|aiplatform|vertexai|language|translate|speech)$/, /^@azure\/openai$/,
+            /^@azure\/ai-/, /^@azure-rest\/ai-/, /^@azure\/cognitiveservices-/,
+            /^@aws-sdk\/client-(textract|rekognition|comprehend|comprehendmedical|bedrock|bedrock-runtime|bedrock-agent-runtime|sagemaker-runtime|lex-runtime-v2|translate|transcribe)$/,
+            /^@mistralai\//, /^cohere-ai$/, /^groq-sdk$/, /^replicate$/, /^together-ai$/, /^ollama$/, /^@huggingface\//,
+            /^@xenova\/transformers$/, /^langchain$/, /^@langchain\//, /^llamaindex$/, /^ai$/, /^@ai-sdk\//, /^@vercel\/ai$/,
+            /^tesseract\.js/, /^node-tesseract-ocr$/, /^tesseract-ocr$/, /^ocrad\.js$/, /^scribe\.js-ocr$/, /^@gutenye\/ocr/, /^easyocr/, /^paddleocr/i,
+          ];
+          const flagged = [...deps].filter((n) => AI_OCR.some((re) => re.test(n))).sort();
+          let doc;
+          try {
+            doc = fs.readFileSync(DOC, 'utf8');
+          } catch {
+            console.error(`::error file=${DOC}::${DOC} is missing (approved sub-processor list)`);
+            process.exit(1);
+          }
+          const section = doc.split(/^## /m).find((s) => s.startsWith('Approved AI / OCR packages'));
+          if (!section) {
+            console.error(`::error file=${DOC}::section "## Approved AI / OCR packages" not found`);
+            process.exit(1);
+          }
+          const approved = new Set();
+          for (const line of section.split('\n')) {
+            if (!line.trim().startsWith('|')) continue;
+            const first = line.split('|')[1] || '';
+            for (const m of first.matchAll(/`([^`]+)`/g)) approved.add(m[1].trim());
+          }
+          const unapproved = flagged.filter((n) => !approved.has(n));
+          console.log(`AI/OCR SDKs in ${PKG}: ${flagged.length ? flagged.join(', ') : 'none'}; approved in ${DOC}: ${approved.size ? [...approved].join(', ') : 'none'}`);
+          if (unapproved.length) {
+            for (const n of unapproved) {
+              console.error(`::error file=${PKG}::"${n}" is an AI/OCR SDK that is not an approved sub-processor. Remove it, or get the owner's approval and list it under "Approved AI / OCR packages" in ${DOC} (DEC-006).`);
+            }
+            process.exit(1);
+          }
+          EOF
+
+  secret-scan:
+    name: Secret scan (gitleaks)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: gitleaks
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Required only for GitHub organisation accounts (free for personal accounts).
+          GITLEAKS_LICENSE: ${{ secrets.GITLEAKS_LICENSE }}
+
+  docker:
+    name: Docker image builds
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    needs: build
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - name: Build image (no push)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: false
+          tags: radeef:ci-${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

@@ -1,0 +1,12 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "radeef",
+      "runtimeExecutable": "npx",
+      "runtimeArgs": ["next", "start"],
+      "port": 3010,
+      "autoPort": true
+    }
+  ]
+}

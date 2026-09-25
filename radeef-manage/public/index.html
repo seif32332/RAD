@@ -1,0 +1,1403 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl" class="dark">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>لوحة إدارة النسخ | Radeef Tenants</title>
+  <meta name="referrer" content="no-referrer">
+  <!-- Pinned versions: never load "@latest" into an admin panel that controls production. -->
+  <script src="https://cdn.tailwindcss.com/3.4.5"></script>
+  <script src="https://unpkg.com/lucide@0.453.0/dist/umd/lucide.min.js" crossorigin="anonymous"></script>
+  <style>
+    @import url('https://fonts.googleapis.com/css2?family=Cairo:wght@300;400;500;600;700;800;900&display=swap');
+    body { font-family: 'Cairo', sans-serif; background-color: #0f172a; color: #f8fafc; }
+    .glass { background: rgba(30, 41, 59, 0.7); backdrop-filter: blur(16px); border: 1px solid rgba(255, 255, 255, 0.1); }
+    .terminal { font-family: monospace; }
+    ::-webkit-scrollbar { width: 6px; }
+    ::-webkit-scrollbar-thumb { background: #475569; border-radius: 4px; }
+    [x-cloak] { display: none !important; }
+    @keyframes pulse-slow {
+      0%, 100% { opacity: 1; }
+      50% { opacity: .3; }
+    }
+    .animate-pulse-slow {
+      animation: pulse-slow 3s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+    }
+  </style>
+  <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.14.1/dist/cdn.min.js" crossorigin="anonymous"></script>
+</head>
+<body class="antialiased min-h-screen relative overflow-x-hidden">
+  
+  <div x-data="appData()" x-init="init()" class="relative z-10 flex flex-col h-screen">
+    
+    <!-- Login Screen -->
+    <div x-show="!isLoggedIn" class="fixed inset-0 z-50 flex items-center justify-center bg-slate-900 glass">
+      <div class="w-full max-w-md p-8 glass rounded-3xl shadow-2xl relative overflow-hidden">
+        <div class="absolute top-0 left-0 right-0 h-1 bg-gradient-to-r from-blue-500 to-indigo-500"></div>
+        <div class="text-center mb-8">
+          <i data-lucide="shield" class="w-12 h-12 mx-auto text-indigo-400 mb-4"></i>
+          <h2 class="text-2xl font-black text-white">تسجيل الدخول للوحة الإدارة</h2>
+        </div>
+        <form @submit.prevent="login" class="space-y-4">
+          <div>
+            <label class="block text-sm font-bold text-slate-400 mb-1">اسم المستخدم</label>
+            <input x-model="username" type="text" class="w-full px-4 py-3 bg-slate-800 border border-slate-700 rounded-xl focus:ring-2 focus:ring-indigo-500 text-white outline-none transition-all" required>
+          </div>
+          <div>
+            <label class="block text-sm font-bold text-slate-400 mb-1">كلمة المرور</label>
+            <input x-model="password" type="password" class="w-full px-4 py-3 bg-slate-800 border border-slate-700 rounded-xl focus:ring-2 focus:ring-indigo-500 text-white outline-none transition-all" required>
+          </div>
+          <p x-show="loginError" class="text-red-400 text-sm font-bold text-center" x-text="loginError"></p>
+          <button type="submit" class="w-full py-3 mt-4 bg-indigo-600 hover:bg-indigo-500 text-white font-black rounded-xl transition-all shadow-lg shadow-indigo-500/30 flex items-center justify-center gap-2">
+            دخول <i data-lucide="log-in" class="w-5 h-5"></i>
+          </button>
+        </form>
+      </div>
+    </div>
+
+    <!-- Main Dashboard -->
+    <template x-if="isLoggedIn">
+      <div class="flex-1 flex flex-col">
+        <!-- Header -->
+        <header class="glass sticky top-0 z-40">
+          <div class="max-w-[1400px] mx-auto px-6 h-20 flex items-center justify-between">
+            <div class="flex items-center gap-4">
+              <div class="w-12 h-12 bg-indigo-500/20 text-indigo-400 rounded-xl flex items-center justify-center border border-indigo-500/30">
+                <i data-lucide="server" class="w-6 h-6"></i>
+              </div>
+              <div>
+                <h1 class="text-xl font-black text-white tracking-wide">مدير نظام النسخ (رديف)</h1>
+                <p class="text-xs text-slate-400 font-bold">لوحة التحكم السحابية المتقدمة</p>
+              </div>
+            </div>
+            
+            <!-- Server Stats -->
+            <div class="hidden md:flex gap-6">
+              <div class="flex items-center gap-3 bg-slate-800/50 px-4 py-2 rounded-xl border border-slate-700">
+                <i data-lucide="cpu" class="w-5 h-5 text-emerald-400"></i>
+                <div>
+                  <p class="text-[10px] text-slate-400 font-bold uppercase">CPU</p>
+                  <p class="text-sm font-black text-white" x-text="stats.cpu + '%'"></p>
+                </div>
+              </div>
+              <div class="flex items-center gap-3 bg-slate-800/50 px-4 py-2 rounded-xl border border-slate-700">
+                <i data-lucide="memory-stick" class="w-5 h-5 text-blue-400"></i>
+                <div>
+                  <p class="text-[10px] text-slate-400 font-bold uppercase">RAM</p>
+                  <p class="text-sm font-black text-white" x-text="stats.ram + '%'"></p>
+                </div>
+              </div>
+              <div class="flex items-center gap-3 bg-slate-800/50 px-4 py-2 rounded-xl border border-slate-700">
+                <i data-lucide="hard-drive" class="w-5 h-5 text-purple-400"></i>
+                <div>
+                  <p class="text-[10px] text-slate-400 font-bold uppercase">Disk</p>
+                  <p class="text-sm font-black text-white" x-text="stats.disk + '%'"></p>
+                </div>
+              </div>
+            </div>
+            <button @click="logout()" type="button" class="flex items-center gap-2 px-4 py-2 bg-slate-800/60 hover:bg-rose-600 text-slate-300 hover:text-white rounded-xl border border-slate-700 text-xs font-bold transition-all" title="تسجيل الخروج">
+              <i data-lucide="log-out" class="w-4 h-4"></i> خروج
+            </button>
+          </div>
+        </header>
+
+        <!-- Main Content -->
+        <main class="flex-1 max-w-[1400px] w-full mx-auto px-6 py-8">
+          
+          <div class="flex justify-between items-end mb-8">
+            <div>
+              <h2 class="text-2xl font-black text-white mb-2">النسخ الحالية (Tenants)</h2>
+              <p class="text-sm text-slate-400 font-bold">إدارة النسخ والمواقع المنصبة على السيرفر</p>
+            </div>
+            <div class="flex gap-3">
+            <button @click="runBackup()" :disabled="isBackingUp" type="button" class="px-5 py-3 bg-slate-800 hover:bg-slate-700 disabled:opacity-50 text-slate-200 font-bold rounded-xl border border-slate-700 flex items-center gap-2 transition-all" title="pg_dump لكل قواعد البيانات الآن">
+              <i data-lucide="database-backup" class="w-5 h-5"></i>
+              <span x-text="isBackingUp ? 'جاري النسخ الاحتياطي...' : 'نسخ احتياطي الآن'"></span>
+            </button>
+            <button @click="openCreateModal()" class="px-6 py-3 bg-gradient-to-r from-indigo-500 to-purple-600 hover:from-indigo-400 hover:to-purple-500 text-white font-black rounded-xl shadow-lg shadow-indigo-500/20 flex items-center gap-2 transition-all transform hover:-translate-y-0.5">
+              <i data-lucide="plus" class="w-5 h-5"></i>
+              إنشاء نسخة جديدة
+            </button>
+            </div>
+          </div>
+
+          <!-- Advanced Search and Filters -->
+          <div class="glass p-4 rounded-2xl border border-slate-800/80 mb-6 flex flex-col md:flex-row gap-4 items-center justify-between">
+            <!-- Search input -->
+            <div class="relative w-full md:w-96">
+              <i data-lucide="search" class="w-4 h-4 text-slate-400 absolute right-3.5 top-1/2 -translate-y-1/2"></i>
+              <input x-model="searchQuery" type="text" placeholder="البحث بالاسم، النطاق، البريد، أو المنفذ..." 
+                     class="w-full pr-10 pl-4 py-2 bg-slate-900 border border-slate-700/80 rounded-xl focus:ring-2 focus:ring-indigo-500 text-slate-200 text-xs outline-none transition-all placeholder:text-slate-500">
+            </div>
+
+            <!-- Filters -->
+            <div class="flex flex-wrap gap-4 w-full md:w-auto justify-end">
+              <!-- License Status Filter -->
+              <div class="flex items-center gap-2">
+                <span class="text-[11px] text-slate-400 font-bold whitespace-nowrap">حالة الترخيص:</span>
+                <select x-model="licenseFilter" class="bg-slate-900 border border-slate-700/80 px-2.5 py-1.5 rounded-xl text-xs text-slate-300 focus:ring-2 focus:ring-indigo-500 outline-none">
+                  <option value="all">الكل</option>
+                  <option value="active">نشط (أكثر من 7 أيام)</option>
+                  <option value="warning">قريب الانتهاء (أقل من 7 أيام)</option>
+                  <option value="expired">منتهي / متوقف</option>
+                  <option value="unmanaged">غير مسجلة (Unmanaged)</option>
+                  <option value="other">قيد التثبيت / فشل</option>
+                </select>
+              </div>
+
+              <!-- Running Status Filter -->
+              <div class="flex items-center gap-2">
+                <span class="text-[11px] text-slate-400 font-bold whitespace-nowrap">حالة التشغيل:</span>
+                <select x-model="statusFilter" class="bg-slate-900 border border-slate-700/80 px-2.5 py-1.5 rounded-xl text-xs text-slate-300 focus:ring-2 focus:ring-indigo-500 outline-none">
+                  <option value="all">الكل</option>
+                  <option value="online">Online</option>
+                  <option value="offline">Offline</option>
+                </select>
+              </div>
+            </div>
+          </div>
+
+          <!-- Tenants Container (Responsive) -->
+          <div class="relative">
+            <!-- Loading Overlay -->
+            <div x-show="loadingTenants" class="absolute inset-0 bg-slate-900/60 backdrop-blur-sm z-10 flex flex-col items-center justify-center rounded-2xl min-h-[200px]">
+              <div class="w-10 h-10 border-4 border-indigo-500 border-t-transparent rounded-full animate-spin"></div>
+              <p class="mt-4 text-sm font-bold text-indigo-300">جاري جلب البيانات...</p>
+            </div>
+
+            <!-- 1. Desktop View (Table) -->
+            <div class="hidden lg:block glass rounded-2xl overflow-hidden shadow-2xl border border-slate-800">
+              <div class="overflow-x-auto">
+                <table class="w-full text-right border-collapse">
+                  <thead class="bg-slate-900/60 border-b border-slate-800 text-slate-400">
+                    <tr>
+                      <th class="py-4 px-3 text-xs font-bold uppercase tracking-wider whitespace-nowrap">اسم النسخة</th>
+                      <th class="py-4 px-3 text-xs font-bold uppercase tracking-wider whitespace-nowrap">العميل والنطاق</th>
+                      <th class="py-4 px-3 text-xs font-bold uppercase tracking-wider text-center whitespace-nowrap">المنفذ / الموارد</th>
+                      <th class="py-4 px-3 text-xs font-bold uppercase tracking-wider text-center whitespace-nowrap">فترة الترخيص</th>
+                      <th class="py-4 px-3 text-xs font-bold uppercase tracking-wider text-center whitespace-nowrap">حالة الترخيص</th>
+                      <th class="py-4 px-3 text-xs font-bold uppercase tracking-wider text-center whitespace-nowrap">حالة التشغيل</th>
+                      <th class="py-4 px-3 text-xs font-bold uppercase tracking-wider text-center whitespace-nowrap">موظفون نشطون / تجاري</th>
+                      <th class="py-4 px-3 text-xs font-bold uppercase tracking-wider text-center whitespace-nowrap">الإجراءات</th>
+                    </tr>
+                  </thead>
+                  <tbody class="divide-y divide-slate-800/40">
+                    <template x-for="t in filteredTenants" :key="t.name">
+                      <tr class="hover:bg-slate-800/25 transition-all duration-200 group">
+                        <td class="py-4 px-3 whitespace-nowrap">
+                          <div class="flex items-center gap-2.5">
+                            <div class="w-9 h-9 rounded-xl bg-indigo-500/10 border border-indigo-500/20 flex items-center justify-center text-indigo-400 group-hover:scale-105 transition-transform duration-200 shrink-0">
+                              <i data-lucide="layers" class="w-4.5 h-4.5"></i>
+                            </div>
+                            <div class="min-w-0">
+                              <p class="font-black text-white text-sm truncate max-w-[120px]" x-text="t.name"></p>
+                              <p class="text-[10px] text-slate-500 font-mono select-all truncate max-w-[120px]" x-text="t.cwd"></p>
+                            </div>
+                          </div>
+                        </td>
+                        <td class="py-4 px-3 whitespace-nowrap">
+                          <div class="flex flex-col gap-1 min-w-0">
+                            <a :href="'https://' + t.domain" target="_blank" rel="noopener noreferrer" class="inline-flex items-center gap-1.5 text-xs font-bold text-blue-400 hover:text-blue-300 transition-colors py-0.5 px-2 bg-blue-500/5 hover:bg-blue-500/10 border border-blue-500/15 rounded-lg w-fit max-w-[160px] truncate">
+                              <span class="truncate" x-text="t.domain"></span>
+                              <i data-lucide="external-link" class="w-3 h-3 shrink-0"></i>
+                            </a>
+                            <div class="text-[10px] text-slate-400 font-medium flex items-center gap-1 px-1 truncate max-w-[160px]">
+                              <i data-lucide="mail" class="w-3 h-3 opacity-60 shrink-0"></i>
+                              <span class="truncate" x-text="t.client_email"></span>
+                            </div>
+                          </div>
+                        </td>
+                        <td class="py-4 px-3 text-center whitespace-nowrap">
+                          <div class="flex flex-col items-center gap-1">
+                            <span class="inline-block bg-slate-900 border border-slate-700/60 px-2 py-0.5 rounded-md text-xs font-mono text-indigo-300" x-text="t.port"></span>
+                            <div class="text-[10px] text-slate-500 font-mono flex items-center gap-1">
+                              <i data-lucide="cpu" class="w-3 h-3 opacity-60"></i>
+                              <span x-text="t.memory + ' MB'"></span>
+                            </div>
+                          </div>
+                        </td>
+                        <td class="py-4 px-3 text-center whitespace-nowrap">
+                          <div class="flex flex-col items-center justify-center gap-1">
+                            <div class="flex items-center gap-1.5 text-slate-300 font-semibold text-[10px] font-mono bg-slate-900/40 px-1.5 py-0.5 rounded border border-slate-800/30">
+                              <span class="w-1 h-1 rounded-full bg-emerald-500"></span>
+                              <span class="text-slate-500 text-[9px]">من:</span>
+                              <span x-text="t.start_date"></span>
+                            </div>
+                            <div class="flex items-center gap-1.5 text-slate-400 text-[10px] font-mono bg-slate-900/40 px-1.5 py-0.5 rounded border border-slate-800/30">
+                              <span class="w-1 h-1 rounded-full bg-rose-500"></span>
+                              <span class="text-slate-500 text-[9px]">إلى:</span>
+                              <span x-text="t.end_date"></span>
+                            </div>
+                          </div>
+                        </td>
+                        <td class="py-4 px-3 text-center whitespace-nowrap">
+                          <span class="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full border text-xs font-bold whitespace-nowrap" :class="badgeClass(t)">
+                            <span class="w-1.5 h-1.5 rounded-full" :class="dotClass(t)"></span>
+                            <span x-text="licenseLabel(t)"></span>
+                          </span>
+                        </td>
+                        <td class="py-4 px-3 text-center whitespace-nowrap">
+                          <div class="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full border whitespace-nowrap" 
+                               :class="t.status === 'online' ? 'bg-emerald-500/10 border-emerald-500/20 text-emerald-400' : 'bg-rose-500/10 border-rose-500/20 text-rose-400'">
+                            <div class="w-1.5 h-1.5 rounded-full" :class="t.status === 'online' ? 'bg-emerald-500 animate-pulse' : 'bg-rose-500'"></div>
+                            <span class="text-xs font-bold uppercase tracking-wider" x-text="t.status"></span>
+                          </div>
+                        </td>
+                        <td class="py-4 px-3 text-center whitespace-nowrap">
+                          <div class="flex flex-col items-center gap-1">
+                            <span class="inline-flex items-center gap-1 text-xs font-mono text-slate-200" :title="employeeTitle(t)">
+                              <i data-lucide="users" class="w-3 h-3 opacity-60"></i>
+                              <span x-text="employeeLabel(t)"></span>
+                            </span>
+                            <template x-if="t.managed">
+                              <button @click="openCommercialModal(t)" class="text-[10px] text-slate-400 hover:text-white underline decoration-dotted" x-text="commercialLabel(t)"></button>
+                            </template>
+                          </div>
+                        </td>
+                        <td class="py-4 px-3 text-center whitespace-nowrap">
+                          <div class="flex items-center justify-center gap-1">
+                            <template x-if="t.managed">
+                              <button @click="openRenewModal(t)" class="p-1.5 bg-indigo-500/10 hover:bg-indigo-600 text-indigo-400 hover:text-white rounded-xl border border-indigo-500/20 hover:border-indigo-600 transition-all duration-200 hover:shadow-lg hover:shadow-indigo-500/20 tooltip" title="تجديد / تعديل الترخيص">
+                                <i data-lucide="key-round" class="w-4 h-4"></i>
+                              </button>
+                            </template>
+                            <template x-if="!t.managed">
+                              <button @click="openAdoptModal(t)" class="p-1.5 bg-slate-500/10 hover:bg-slate-600 text-slate-300 hover:text-white rounded-xl border border-slate-500/20 transition-all duration-200 tooltip" title="تسجيل النسخة في اللوحة">
+                                <i data-lucide="clipboard-plus" class="w-4 h-4"></i>
+                              </button>
+                            </template>
+                            <template x-if="t.status !== 'online' && t.status !== 'missing' && (t.license_status === 'active' || t.license_status === 'unmanaged')">
+                              <button @click="doAction('start', t.name)" class="p-1.5 bg-emerald-500/10 hover:bg-emerald-500 text-emerald-400 hover:text-white rounded-xl border border-emerald-500/20 hover:border-emerald-600 transition-all duration-200 hover:shadow-lg hover:shadow-emerald-500/20 tooltip" title="تشغيل">
+                                <i data-lucide="play" class="w-4 h-4"></i>
+                              </button>
+                            </template>
+                            <template x-if="t.status === 'online'">
+                              <button @click="doAction('restart', t.name)" class="p-1.5 bg-blue-500/10 hover:bg-blue-500 text-blue-400 hover:text-white rounded-xl border border-blue-500/20 hover:border-blue-600 transition-all duration-200 hover:shadow-lg hover:shadow-blue-500/20 tooltip" title="إعادة تشغيل">
+                                <i data-lucide="refresh-cw" class="w-4 h-4"></i>
+                              </button>
+                            </template>
+                            <template x-if="t.status === 'online'">
+                              <button @click="doAction('stop', t.name)" class="p-1.5 bg-amber-500/10 hover:bg-amber-500 text-amber-400 hover:text-white rounded-xl border border-amber-500/20 hover:border-amber-600 transition-all duration-200 hover:shadow-lg hover:shadow-amber-500/20 tooltip" title="إيقاف مؤقت">
+                                <i data-lucide="pause" class="w-4 h-4"></i>
+                              </button>
+                            </template>
+                            <template x-if="t.managed">
+                              <button @click="deleteTenant(t.name)" class="p-1.5 bg-rose-500/10 hover:bg-rose-500 text-rose-400 hover:text-white rounded-xl border border-rose-500/20 hover:border-rose-600 transition-all duration-200 hover:shadow-lg hover:shadow-rose-500/20 tooltip" title="حذف نهائي (بعد نسخة احتياطية)">
+                                <i data-lucide="trash-2" class="w-4 h-4"></i>
+                              </button>
+                            </template>
+                          </div>
+                        </td>
+                      </tr>
+                    </template>
+                    <tr x-show="filteredTenants.length === 0 && !loadingTenants">
+                      <td colspan="8" class="py-12 text-center text-slate-500 font-bold" x-text="tenants.length === 0 ? 'لا توجد نسخ مسجلة حالياً.' : 'لا توجد نتائج مطابقة للبحث.'"></td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+            </div>
+
+            <!-- 2. Mobile/Tablet View (Cards Layout) -->
+            <div class="lg:hidden space-y-4">
+              <template x-for="t in filteredTenants" :key="t.name">
+                <div class="glass rounded-2xl shadow-xl border border-slate-800/85 overflow-hidden relative group">
+                  <!-- Side color badge based on status -->
+                  <div class="absolute top-0 right-0 bottom-0 w-1.5"
+                       :class="dotClass(t)"></div>
+                  
+                  <div class="p-5 pr-7 space-y-4">
+                    <!-- Title and Status Header -->
+                    <div class="flex justify-between items-start gap-2">
+                      <div class="flex items-center gap-3">
+                        <div class="w-10 h-10 rounded-xl bg-indigo-500/10 border border-indigo-500/20 flex items-center justify-center text-indigo-400">
+                          <i data-lucide="layers" class="w-5 h-5"></i>
+                        </div>
+                        <div>
+                          <h4 class="font-black text-white text-base" x-text="t.name"></h4>
+                          <p class="text-[10px] text-slate-500 font-mono truncate max-w-[150px] select-all" x-text="t.cwd"></p>
+                        </div>
+                      </div>
+                      
+                      <!-- Status Dot and State -->
+                      <div class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full border text-[10px] font-bold" 
+                           :class="t.status === 'online' ? 'bg-emerald-500/10 border-emerald-500/20 text-emerald-400' : 'bg-rose-500/10 border-rose-500/20 text-rose-400'">
+                        <div class="w-1.5 h-1.5 rounded-full" :class="t.status === 'online' ? 'bg-emerald-500 animate-pulse' : 'bg-rose-500'"></div>
+                        <span x-text="t.status"></span>
+                      </div>
+                    </div>
+
+                    <!-- Domain & Email Info -->
+                    <div class="bg-slate-900/40 p-3 rounded-xl border border-slate-800/60 space-y-2">
+                      <div class="flex items-center justify-between text-xs">
+                        <span class="text-slate-500 font-semibold">النطاق:</span>
+                        <a :href="'https://' + t.domain" target="_blank" rel="noopener noreferrer" class="font-bold text-blue-400 hover:text-blue-300 transition-colors flex items-center gap-1 bg-blue-500/5 border border-blue-500/10 px-2 py-0.5 rounded-md">
+                          <span x-text="t.domain"></span>
+                          <i data-lucide="external-link" class="w-3.5 h-3.5"></i>
+                        </a>
+                      </div>
+                      <div class="flex items-center justify-between text-xs">
+                        <span class="text-slate-500 font-semibold">بريد العميل:</span>
+                        <span class="font-medium text-slate-300 flex items-center gap-1">
+                          <i data-lucide="mail" class="w-3.5 h-3.5 opacity-60"></i>
+                          <span x-text="t.client_email"></span>
+                        </span>
+                      </div>
+                    </div>
+
+                    <!-- Details Grid -->
+                    <div class="grid grid-cols-2 gap-2 text-xs">
+                      <div class="bg-slate-800/30 p-2.5 rounded-xl border border-slate-700/20">
+                        <p class="text-[10px] text-slate-500 mb-1 flex items-center gap-1">
+                          <i data-lucide="cpu" class="w-3 h-3 text-indigo-400"></i> المنفذ / الموارد
+                        </p>
+                        <p class="font-mono text-slate-200">
+                          <span class="text-indigo-300 font-bold" x-text="t.port"></span>
+                          <span class="text-slate-500 text-[10px]"> | </span>
+                          <span class="text-slate-400 text-[10px]" x-text="t.memory + 'MB RAM'"></span>
+                        </p>
+                      </div>
+                      
+                      <div class="bg-slate-800/30 p-2.5 rounded-xl border border-slate-700/20">
+                        <p class="text-[10px] text-slate-500 mb-1 flex items-center gap-1">
+                          <i data-lucide="calendar" class="w-3 h-3 text-amber-400"></i> حالة الترخيص
+                        </p>
+                        <span class="font-bold text-[11px]" :class="textClass(t)" x-text="licenseLabel(t)"></span>
+                      </div>
+
+                      <div class="bg-slate-800/30 p-2.5 rounded-xl border border-slate-700/20">
+                        <p class="text-[10px] text-slate-500 mb-1 flex items-center gap-1">
+                          <i data-lucide="users" class="w-3 h-3 text-sky-400"></i> موظفون نشطون
+                        </p>
+                        <span class="font-mono text-slate-200" :title="employeeTitle(t)" x-text="employeeLabel(t)"></span>
+                      </div>
+
+                      <div class="bg-slate-800/30 p-2.5 rounded-xl border border-slate-700/20">
+                        <p class="text-[10px] text-slate-500 mb-1 flex items-center gap-1">
+                          <i data-lucide="receipt" class="w-3 h-3 text-emerald-400"></i> البيانات التجارية
+                        </p>
+                        <template x-if="t.managed">
+                          <button @click="openCommercialModal(t)" class="text-[11px] text-slate-300 hover:text-white underline decoration-dotted" x-text="commercialLabel(t)"></button>
+                        </template>
+                        <template x-if="!t.managed"><span class="text-[11px] text-slate-500">—</span></template>
+                      </div>
+                    </div>
+
+                    <!-- Dates Row -->
+                    <div class="bg-slate-900/20 p-2.5 rounded-xl border border-slate-800/40 text-[11px] font-mono grid grid-cols-2 text-center divide-x divide-slate-800/60 rtl:divide-x-reverse">
+                      <div>
+                        <span class="text-slate-500 block text-[9px] mb-0.5">تاريخ البداية</span>
+                        <span class="text-emerald-400/90" x-text="t.start_date"></span>
+                      </div>
+                      <div>
+                        <span class="text-slate-500 block text-[9px] mb-0.5">تاريخ النهاية</span>
+                        <span class="text-rose-400/90" x-text="t.end_date"></span>
+                      </div>
+                    </div>
+
+                    <!-- Actions Dock -->
+                    <div class="flex gap-2 border-t border-slate-800/80 pt-3 mt-1">
+                      <template x-if="t.managed">
+                        <button @click="openRenewModal(t)" class="flex-1 py-2 bg-indigo-600 hover:bg-indigo-500 text-white rounded-xl transition-all duration-200 font-bold text-xs flex items-center justify-center gap-1.5 shadow-lg shadow-indigo-600/10">
+                          <i data-lucide="key-round" class="w-4 h-4"></i> تجديد الترخيص
+                        </button>
+                      </template>
+                      <template x-if="!t.managed">
+                        <button @click="openAdoptModal(t)" class="flex-1 py-2 bg-slate-700 hover:bg-slate-600 text-white rounded-xl transition-all duration-200 font-bold text-xs flex items-center justify-center gap-1.5">
+                          <i data-lucide="clipboard-plus" class="w-4 h-4"></i> تسجيل في اللوحة
+                        </button>
+                      </template>
+
+                      <div class="flex gap-1">
+                        <template x-if="t.status !== 'online' && t.status !== 'missing' && (t.license_status === 'active' || t.license_status === 'unmanaged')">
+                          <button @click="doAction('start', t.name)" class="p-2 bg-emerald-500/10 hover:bg-emerald-500 text-emerald-400 hover:text-white rounded-xl border border-emerald-500/20 transition-all duration-200" title="تشغيل">
+                            <i data-lucide="play" class="w-4 h-4"></i>
+                          </button>
+                        </template>
+                        <template x-if="t.status === 'online'">
+                          <button @click="doAction('restart', t.name)" class="p-2 bg-blue-500/10 hover:bg-blue-500 text-blue-400 hover:text-white rounded-xl border border-blue-500/20 transition-all duration-200" title="إعادة تشغيل">
+                            <i data-lucide="refresh-cw" class="w-4 h-4"></i>
+                          </button>
+                        </template>
+                        <template x-if="t.status === 'online'">
+                          <button @click="doAction('stop', t.name)" class="p-2 bg-amber-500/10 hover:bg-amber-500 text-amber-400 hover:text-white rounded-xl border border-amber-500/20 transition-all duration-200" title="إيقاف مؤقت">
+                            <i data-lucide="pause" class="w-4 h-4"></i>
+                          </button>
+                        </template>
+                        <template x-if="t.managed">
+                          <button @click="deleteTenant(t.name)" class="p-2 bg-rose-500/10 hover:bg-rose-500 text-rose-400 hover:text-white rounded-xl border border-rose-500/20 transition-all duration-200" title="حذف نهائي (بعد نسخة احتياطية)">
+                            <i data-lucide="trash-2" class="w-4 h-4"></i>
+                          </button>
+                        </template>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </template>
+              <div x-show="filteredTenants.length === 0 && !loadingTenants" class="glass py-12 text-center text-slate-500 font-bold rounded-2xl border border-slate-800" x-text="tenants.length === 0 ? 'لا توجد نسخ مسجلة حالياً.' : 'لا توجد نتائج مطابقة للبحث.'">
+              </div>
+            </div>
+          </div>
+        </main>
+      </div>
+    </template>
+
+    <!-- Create Modal -->
+    <div x-show="showCreateModal" style="display: none;" class="fixed inset-0 z-50 flex items-center justify-center p-4">
+      <div class="absolute inset-0 bg-slate-900/80 backdrop-blur-sm" @click="if(!isDeploying) showCreateModal = false"></div>
+      
+      <div class="glass w-full max-w-4xl max-h-[90vh] rounded-3xl shadow-2xl relative z-10 flex flex-col overflow-hidden border border-slate-700"
+           x-transition:enter="transition ease-out duration-300" x-transition:enter-start="opacity-0 scale-95" x-transition:enter-end="opacity-100 scale-100">
+        
+        <div class="p-6 border-b border-slate-700 flex justify-between items-center bg-slate-800/50">
+          <h3 class="text-xl font-black text-white flex items-center gap-2">
+            <i data-lucide="rocket" class="w-5 h-5 text-indigo-400"></i> نشر نسخة جديدة (Deployment)
+          </h3>
+          <button @click="showCreateModal = false" :disabled="isDeploying" class="text-slate-400 hover:text-white disabled:opacity-50">
+            <i data-lucide="x" class="w-6 h-6"></i>
+          </button>
+        </div>
+
+        <div class="flex-1 overflow-hidden flex flex-col md:flex-row">
+          
+          <!-- Form Side -->
+          <div class="w-full md:w-1/3 p-6 border-l border-slate-700 bg-slate-800/20 overflow-y-auto">
+            <form @submit.prevent="startDeployment" class="space-y-4">
+              <div x-show="smtpMissing.length > 0" class="p-3 rounded-xl border border-amber-500/30 bg-amber-500/10 text-amber-300 text-[11px] leading-5">
+                <p class="font-black">فحص ما قبل التثبيت: إعدادات البريد للنسخة غير مكتملة</p>
+                <p>ناقص: <span class="font-mono" x-text="smtpMissing.join('، ')"></span></p>
+                <p class="text-amber-400/80">ستُكتب متغيرات SMTP_* فارغة في ملف النسخة ولن ترسل بريداً حتى يعتمد المالك مزود البريد وتُملأ قيم TENANT_SMTP_* في ملف اللوحة.</p>
+              </div>
+              <div>
+                <label class="block text-xs font-black text-slate-400 uppercase tracking-wide mb-1">معرف النسخة (الاسم)</label>
+                <input x-model="form.name" @input="form.domain = form.name ? form.name.trim().toLowerCase() + '.' + baseDomain : ''" :disabled="isDeploying" type="text" placeholder="soyan" pattern="[a-z][a-z0-9\-]{1,29}" maxlength="30" autocomplete="off" class="w-full px-4 py-2 bg-slate-900 border border-slate-700 rounded-xl focus:ring-2 focus:ring-indigo-500 text-white outline-none font-mono text-sm" required>
+                <p class="text-[10px] text-slate-500 mt-1">يبدأ بحرف إنجليزي صغير، ثم حروف صغيرة وأرقام و - فقط (2-30).</p>
+              </div>
+              
+              <div>
+                <label class="block text-xs font-black text-slate-400 uppercase tracking-wide mb-1">النطاق الفرعي (Domain)</label>
+                <input x-model="form.domain" :disabled="isDeploying" type="text" placeholder="soyan.radeef-sa.com" class="w-full px-4 py-2 bg-slate-900 border border-slate-700 rounded-xl focus:ring-2 focus:ring-indigo-500 text-white outline-none font-mono text-sm" required>
+              </div>
+
+              <div>
+                <label class="block text-xs font-black text-slate-400 uppercase tracking-wide mb-1">البريد الإلكتروني للعميل</label>
+                <input x-model="form.client_email" :disabled="isDeploying" type="email" placeholder="client@example.com" class="w-full px-4 py-2 bg-slate-900 border border-slate-700 rounded-xl focus:ring-2 focus:ring-indigo-500 text-white outline-none text-sm" required>
+              </div>
+
+              <div>
+                <label class="block text-xs font-black text-slate-400 uppercase tracking-wide mb-1">بريد مدير النظام الأولي</label>
+                <input x-model="form.admin_email" :disabled="isDeploying" type="email" placeholder="(نفس بريد العميل)" class="w-full px-4 py-2 bg-slate-900 border border-slate-700 rounded-xl focus:ring-2 focus:ring-indigo-500 text-white outline-none text-sm">
+                <p class="text-[10px] text-slate-500 mt-1">تُولَّد كلمة مرور عشوائية وتُعرض مرة واحدة فقط بعد التثبيت.</p>
+              </div>
+
+              <div>
+                <label class="block text-xs font-black text-slate-400 uppercase tracking-wide mb-1">مدة الاشتراك (بالأشهر)</label>
+                <select x-model="form.duration_months" :disabled="isDeploying" class="w-full px-4 py-2 bg-slate-900 border border-slate-700 rounded-xl focus:ring-2 focus:ring-indigo-500 text-white outline-none text-sm" required>
+                  <option value="1">شهر واحد</option>
+                  <option value="3">3 أشهر</option>
+                  <option value="6">6 أشهر</option>
+                  <option value="12">سنة (12 شهر)</option>
+                  <option value="24">سنتين (24 شهر)</option>
+                </select>
+              </div>
+
+              <div>
+                <label class="block text-xs font-black text-slate-400 uppercase tracking-wide mb-1">مجلد الإصدار (Release)</label>
+                <select x-model="form.template" :disabled="isDeploying" class="w-full px-4 py-2 bg-slate-900 border border-slate-700 rounded-xl text-slate-300 outline-none font-mono text-sm" required>
+                  <template x-for="tpl in templates" :key="tpl">
+                    <option :value="tpl" x-text="tpl"></option>
+                  </template>
+                </select>
+                <p class="text-[10px] text-slate-500 mt-1">نسخة نظيفة من الكود (بدون .env أو ملفات مرفوعة) — RELEASE_DIRS.</p>
+              </div>
+
+              <!-- Progress Bar -->
+              <div x-show="isDeploying" class="p-4 bg-slate-900/60 border border-slate-700/50 rounded-2xl space-y-2 mt-2">
+                <div class="flex justify-between items-center text-xs font-black text-slate-300">
+                  <span class="text-indigo-400 flex items-center gap-1.5">
+                    <div class="w-3 h-3 border-2 border-indigo-400 border-t-transparent rounded-full animate-spin"></div>
+                    جاري التثبيت...
+                  </span>
+                  <span class="text-white font-black font-mono" x-text="progress + '%'"></span>
+                </div>
+                <div class="w-full bg-slate-950 rounded-full h-2.5 overflow-hidden border border-slate-800">
+                  <div class="bg-indigo-500 h-full rounded-full transition-all duration-300 ease-out" :style="'width: ' + progress + '%'"></div>
+                </div>
+              </div>
+
+              <button type="submit" :disabled="isDeploying" class="w-full py-3 bg-indigo-600 hover:bg-indigo-500 disabled:bg-slate-700 disabled:text-slate-500 text-white font-black rounded-xl transition-all shadow-lg flex items-center justify-center gap-2 mt-2">
+                <span x-show="!isDeploying">بدء الإنشاء والتثبيت</span>
+                <span x-show="isDeploying">جاري التثبيت...</span>
+                <i x-show="!isDeploying" data-lucide="play-circle" class="w-5 h-5"></i>
+                <div x-show="isDeploying" class="w-5 h-5 border-2 border-white border-t-transparent rounded-full animate-spin"></div>
+              </button>
+            </form>
+          </div>
+
+          <!-- Terminal Side -->
+          <div class="w-full md:w-2/3 bg-black flex flex-col relative">
+            <div class="h-8 bg-slate-800 flex items-center px-4 gap-2">
+              <div class="w-3 h-3 rounded-full bg-red-500"></div>
+              <div class="w-3 h-3 rounded-full bg-amber-500"></div>
+              <div class="w-3 h-3 rounded-full bg-emerald-500"></div>
+              <span class="ml-2 text-xs font-mono text-slate-400">root@radeef-server:~#</span>
+            </div>
+            <div class="flex-1 p-4 overflow-y-auto terminal text-[13px] leading-relaxed" id="terminal-container">
+              <template x-for="log in logs" :key="log.id">
+                <div class="mb-1 flex items-start break-words" :class="{
+                  'text-slate-300': log.type === 'info',
+                  'text-emerald-400 font-bold': log.type === 'success',
+                  'text-red-400 font-bold': log.type === 'error',
+                  'text-amber-400': log.type === 'warning',
+                  'text-blue-400 font-black text-sm mt-4 mb-2': log.type === 'done'
+                }">
+                  <span class="mr-2 opacity-50 text-[10px] mt-1 shrink-0" x-text="log.time"></span>
+                  <span class="whitespace-pre-wrap" x-text="log.msg"></span>
+                </div>
+              </template>
+              <div x-show="isDeploying" class="flex items-center text-slate-500 mt-2">
+                <span class="animate-pulse">_</span>
+              </div>
+            </div>
+          </div>
+
+        </div>
+    </div>
+    </div>
+
+    <!-- Success Modal -->
+    <div x-show="showSuccessModal" style="display: none;" class="fixed inset-0 z-50 flex items-center justify-center p-4">
+      <div class="absolute inset-0 bg-slate-950/90 backdrop-blur-md"></div>
+      
+      <div class="glass w-full max-w-md rounded-3xl shadow-2xl relative z-10 flex flex-col border border-emerald-500/30 overflow-hidden animate-in fade-in zoom-in-95 duration-300">
+        <!-- Green Accent Bar -->
+        <div class="h-1.5 bg-gradient-to-r from-emerald-500 to-teal-500"></div>
+        
+        <!-- Content -->
+        <div class="p-8 text-center space-y-6">
+          <!-- Success animated check icon -->
+          <div class="w-16 h-16 bg-emerald-500/10 text-emerald-400 rounded-2xl mx-auto flex items-center justify-center border border-emerald-500/20 shadow-lg shadow-emerald-500/5">
+            <i data-lucide="party-popper" class="w-8 h-8"></i>
+          </div>
+          
+          <div>
+            <h3 class="text-xl font-black text-white">تم التثبيت بنجاح!</h3>
+            <p class="text-xs text-slate-400 mt-1">نسختك الجديدة جاهزة للعمل والاستخدام الآن.</p>
+          </div>
+
+          <!-- Domain & Link -->
+          <div class="bg-slate-900/85 border border-slate-800 rounded-2xl p-4 text-right space-y-3">
+            <div>
+              <span class="text-[10px] font-black text-slate-500 block mb-1">رابط الدخول المباشر</span>
+              <a :href="successTenant.url" target="_blank" rel="noopener noreferrer" class="text-sm font-bold text-indigo-400 hover:text-indigo-300 flex items-center gap-1.5 justify-end break-all">
+                <span x-text="successTenant.url"></span>
+                <i data-lucide="external-link" class="w-3.5 h-3.5 shrink-0"></i>
+              </a>
+            </div>
+
+            <div class="border-t border-slate-800/80 pt-2.5">
+              <span class="text-[10px] font-black text-slate-500 block mb-1">بيانات دخول المدير الأولية</span>
+              <p class="text-[10px] font-bold text-amber-400 mb-2" x-show="successTenant.password">تُعرض كلمة المرور هذه مرة واحدة فقط. انسخها الآن وسلّمها للعميل بقناة آمنة واطلب تغييرها.</p>
+              <p class="text-[10px] font-bold text-rose-400 mb-2" x-show="!successTenant.password">لم تُستلم كلمة المرور (انقطع الاتصال). أعد تعيينها على السيرفر: npm run admin:create</p>
+              <div class="space-y-1.5 text-xs text-slate-300 font-mono">
+                <div class="flex justify-between items-center">
+                  <button @click="navigator.clipboard.writeText(successTenant.email); showToast('تم نسخ البريد الإلكتروني', 'success')" class="text-[10px] text-slate-500 hover:text-white transition-colors flex items-center gap-1" type="button">
+                    <i data-lucide="copy" class="w-3 h-3"></i> نسخ
+                  </button>
+                  <div class="flex items-center gap-1">
+                    <span class="text-white font-bold" x-text="successTenant.email"></span>
+                    <span class="text-slate-500">:البريد الإلكتروني</span>
+                  </div>
+                </div>
+                <div class="flex justify-between items-center">
+                  <button @click="navigator.clipboard.writeText(successTenant.password); showToast('تم نسخ كلمة المرور', 'success')" class="text-[10px] text-slate-500 hover:text-white transition-colors flex items-center gap-1" type="button">
+                    <i data-lucide="copy" class="w-3 h-3"></i> نسخ
+                  </button>
+                  <div class="flex items-center gap-1">
+                    <span class="text-white font-bold" x-text="successTenant.password"></span>
+                    <span class="text-slate-500">:كلمة المرور</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Done Button -->
+          <button @click="closeSuccessModal()" class="w-full py-3 bg-emerald-600 hover:bg-emerald-500 text-white font-black rounded-xl transition-all shadow-lg flex items-center justify-center gap-2" type="button">
+            <span>إغلاق</span>
+            <i data-lucide="check" class="w-5 h-5"></i>
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Renew Modal -->
+    <div x-show="showRenewModal" style="display: none;" class="fixed inset-0 z-50 flex items-center justify-center p-4">
+      <div class="absolute inset-0 bg-slate-900/80 backdrop-blur-sm" @click="if(!isRenewing) showRenewModal = false"></div>
+      
+      <div class="glass w-full max-w-md rounded-3xl shadow-2xl relative z-10 flex flex-col border border-slate-700 animate-in fade-in zoom-in-95 duration-200"
+           x-transition:enter="transition ease-out duration-300" x-transition:enter-start="opacity-0 scale-95" x-transition:enter-end="opacity-100 scale-100">
+        
+        <div class="p-6 border-b border-slate-700 flex justify-between items-center bg-slate-800/50">
+          <h3 class="text-lg font-black text-white flex items-center gap-2">
+            <i data-lucide="key-round" class="w-5 h-5 text-indigo-400"></i> تجديد ترخيص النسخة
+          </h3>
+          <button @click="showRenewModal = false" :disabled="isRenewing" class="text-slate-400 hover:text-white disabled:opacity-50">
+            <i data-lucide="x" class="w-6 h-6"></i>
+          </button>
+        </div>
+
+        <form @submit.prevent="renewLicense" class="p-6 space-y-4">
+          <div>
+            <p class="text-sm font-bold text-slate-300 mb-2">اسم النسخة: <span class="text-white font-mono" x-text="renewForm.name"></span></p>
+          </div>
+          
+          <div>
+            <label class="block text-xs font-black text-slate-400 uppercase tracking-wide mb-2">مدة التمديد (بالأشهر)</label>
+            <select x-model="renewForm.duration_months" :disabled="isRenewing" class="w-full px-4 py-2.5 bg-slate-900 border border-slate-700 rounded-xl focus:ring-2 focus:ring-indigo-500 text-white outline-none text-sm" required>
+              <option value="1">شهر واحد</option>
+              <option value="3">3 أشهر</option>
+              <option value="6">6 أشهر</option>
+              <option value="12">سنة (12 شهر)</option>
+              <option value="24">سنتين (24 شهر)</option>
+            </select>
+          </div>
+
+          <p x-show="renewError" class="text-red-400 text-sm font-bold text-center" x-text="renewError"></p>
+          <p x-show="renewSuccess" class="text-emerald-400 text-sm font-bold text-center" x-text="renewSuccess"></p>
+
+          <button type="submit" :disabled="isRenewing" class="w-full py-3 bg-indigo-600 hover:bg-indigo-500 disabled:bg-slate-700 disabled:text-slate-500 text-white font-black rounded-xl transition-all shadow-lg flex items-center justify-center gap-2 mt-4">
+            <span x-show="!isRenewing">تجديد الآن</span>
+            <span x-show="isRenewing">جاري التجديد...</span>
+            <div x-show="isRenewing" class="w-5 h-5 border-2 border-white border-t-transparent rounded-full animate-spin"></div>
+          </button>
+        </form>
+
+        <!-- Explicit end date (or no automatic suspension) -->
+        <form @submit.prevent="saveLicense" class="px-6 pb-6 space-y-3 border-t border-slate-700 pt-4">
+          <p class="text-xs font-black text-slate-400">تعديل تاريخ الانتهاء يدوياً</p>
+          <p class="text-[10px] text-slate-500">الإيقاف التلقائي يحدث فقط للنسخ التي لها تاريخ انتهاء حدده المسؤول. اترك الحقل فارغاً لإلغاء الإيقاف التلقائي.</p>
+          <input x-model="renewForm.end_date" :disabled="isRenewing" type="date" class="w-full px-4 py-2.5 bg-slate-900 border border-slate-700 rounded-xl focus:ring-2 focus:ring-indigo-500 text-white outline-none text-sm font-mono">
+          <button type="submit" :disabled="isRenewing" class="w-full py-2.5 bg-slate-700 hover:bg-slate-600 disabled:opacity-50 text-white font-bold rounded-xl transition-all text-sm">
+            <span x-text="renewForm.end_date ? 'حفظ تاريخ الانتهاء' : 'بدون انتهاء تلقائي'"></span>
+          </button>
+        </form>
+      </div>
+    </div>
+
+    <!-- Commercial fields (DEC-007): optional, empty by default, informational only -->
+    <div x-show="showCommercialModal" style="display: none;" class="fixed inset-0 z-50 flex items-center justify-center p-4">
+      <div class="absolute inset-0 bg-slate-900/80 backdrop-blur-sm" @click="if(!isSavingCommercial) showCommercialModal = false"></div>
+      <div class="glass w-full max-w-md rounded-3xl shadow-2xl relative z-10 flex flex-col border border-slate-700 max-h-[90vh] overflow-y-auto">
+        <div class="p-6 border-b border-slate-700 flex justify-between items-center bg-slate-800/50">
+          <h3 class="text-lg font-black text-white flex items-center gap-2">
+            <i data-lucide="receipt" class="w-5 h-5 text-emerald-400"></i> البيانات التجارية
+          </h3>
+          <button @click="showCommercialModal = false" :disabled="isSavingCommercial" class="text-slate-400 hover:text-white disabled:opacity-50">
+            <i data-lucide="x" class="w-6 h-6"></i>
+          </button>
+        </div>
+        <form @submit.prevent="saveCommercial" class="p-6 space-y-3">
+          <p class="text-sm font-bold text-slate-300">النسخة: <span class="text-white font-mono" x-text="commercialForm.name"></span></p>
+          <p class="text-[10px] text-slate-500">حقول اختيارية للتسجيل فقط — لا تُصدر فواتير ولا تؤثر على الترخيص أو الإيقاف. اترك الحقل فارغاً إن لم تكن القيمة مؤكدة. لا تُفترض نسبة ضريبة: أدخلها فقط بعد التحقق من التسجيل الضريبي.</p>
+          <div class="grid grid-cols-2 gap-3">
+            <div>
+              <label class="block text-xs font-black text-slate-400 mb-1">السعر لكل دورة</label>
+              <input x-model="commercialForm.price" :disabled="isSavingCommercial" type="number" min="0" step="0.01" inputmode="decimal" class="w-full px-3 py-2 bg-slate-900 border border-slate-700 rounded-xl text-white outline-none text-sm font-mono">
+            </div>
+            <div>
+              <label class="block text-xs font-black text-slate-400 mb-1">العملة</label>
+              <input x-model="commercialForm.currency" :disabled="isSavingCommercial" type="text" maxlength="3" placeholder="SAR" class="w-full px-3 py-2 bg-slate-900 border border-slate-700 rounded-xl text-white outline-none text-sm font-mono uppercase">
+            </div>
+            <div>
+              <label class="block text-xs font-black text-slate-400 mb-1">دورة الفوترة</label>
+              <select x-model="commercialForm.billing_cycle" :disabled="isSavingCommercial" class="w-full px-3 py-2 bg-slate-900 border border-slate-700 rounded-xl text-white outline-none text-sm">
+                <option value="">—</option>
+                <option value="monthly">شهري</option>
+                <option value="quarterly">ربع سنوي</option>
+                <option value="semiannual">نصف سنوي</option>
+                <option value="annual">سنوي</option>
+                <option value="biennial">سنتان</option>
+                <option value="custom">أخرى</option>
+              </select>
+            </div>
+            <div>
+              <label class="block text-xs font-black text-slate-400 mb-1">مدفوع حتى</label>
+              <input x-model="commercialForm.paid_until" :disabled="isSavingCommercial" type="date" class="w-full px-3 py-2 bg-slate-900 border border-slate-700 rounded-xl text-white outline-none text-sm font-mono">
+            </div>
+            <div>
+              <label class="block text-xs font-black text-slate-400 mb-1">نسبة الضريبة %</label>
+              <input x-model="commercialForm.vat_rate" :disabled="isSavingCommercial" type="number" min="0" max="100" step="0.01" class="w-full px-3 py-2 bg-slate-900 border border-slate-700 rounded-xl text-white outline-none text-sm font-mono">
+            </div>
+            <div>
+              <label class="block text-xs font-black text-slate-400 mb-1">السعر شامل الضريبة؟</label>
+              <select x-model="commercialForm.price_includes_vat" :disabled="isSavingCommercial" class="w-full px-3 py-2 bg-slate-900 border border-slate-700 rounded-xl text-white outline-none text-sm">
+                <option value="">غير محدد</option>
+                <option value="true">نعم</option>
+                <option value="false">لا</option>
+              </select>
+            </div>
+          </div>
+          <p class="text-[11px] text-slate-400">الموظفون النشطون الآن: <span class="font-mono text-white" x-text="commercialForm.employees"></span></p>
+          <p x-show="commercialError" class="text-red-400 text-sm font-bold text-center" x-text="commercialError"></p>
+          <button type="submit" :disabled="isSavingCommercial" class="w-full py-3 bg-emerald-600 hover:bg-emerald-500 disabled:bg-slate-700 text-white font-black rounded-xl transition-all">
+            <span x-text="isSavingCommercial ? 'جاري الحفظ...' : 'حفظ'"></span>
+          </button>
+        </form>
+      </div>
+    </div>
+
+    <!-- Adopt (register an existing, unmanaged PM2 process) -->
+    <div x-show="showAdoptModal" style="display: none;" class="fixed inset-0 z-50 flex items-center justify-center p-4">
+      <div class="absolute inset-0 bg-slate-900/80 backdrop-blur-sm" @click="if(!isAdopting) showAdoptModal = false"></div>
+      <div class="glass w-full max-w-md rounded-3xl shadow-2xl relative z-10 flex flex-col border border-slate-700">
+        <div class="p-6 border-b border-slate-700 flex justify-between items-center bg-slate-800/50">
+          <h3 class="text-lg font-black text-white flex items-center gap-2">
+            <i data-lucide="clipboard-plus" class="w-5 h-5 text-indigo-400"></i> تسجيل نسخة قائمة
+          </h3>
+          <button @click="showAdoptModal = false" :disabled="isAdopting" class="text-slate-400 hover:text-white disabled:opacity-50">
+            <i data-lucide="x" class="w-6 h-6"></i>
+          </button>
+        </div>
+        <form @submit.prevent="adoptTenant" class="p-6 space-y-4">
+          <p class="text-sm font-bold text-slate-300">اسم العملية: <span class="text-white font-mono" x-text="adoptForm.name"></span></p>
+          <p class="text-[10px] text-slate-500">لا يتم تعديل أي شيء على السيرفر. النسخ غير المسجلة لا تُوقف تلقائياً أبداً.</p>
+          <div>
+            <label class="block text-xs font-black text-slate-400 mb-1">النطاق</label>
+            <input x-model="adoptForm.domain" :disabled="isAdopting" type="text" class="w-full px-4 py-2 bg-slate-900 border border-slate-700 rounded-xl text-white outline-none font-mono text-sm" required>
+          </div>
+          <div>
+            <label class="block text-xs font-black text-slate-400 mb-1">بريد العميل</label>
+            <input x-model="adoptForm.client_email" :disabled="isAdopting" type="email" class="w-full px-4 py-2 bg-slate-900 border border-slate-700 rounded-xl text-white outline-none text-sm">
+          </div>
+          <div>
+            <label class="block text-xs font-black text-slate-400 mb-1">تاريخ انتهاء الترخيص (اختياري)</label>
+            <input x-model="adoptForm.end_date" :disabled="isAdopting" type="date" class="w-full px-4 py-2 bg-slate-900 border border-slate-700 rounded-xl text-white outline-none text-sm font-mono">
+            <p class="text-[10px] text-slate-500 mt-1">فارغ = بدون إيقاف تلقائي.</p>
+          </div>
+          <button type="submit" :disabled="isAdopting" class="w-full py-3 bg-indigo-600 hover:bg-indigo-500 disabled:bg-slate-700 text-white font-black rounded-xl transition-all">
+            <span x-text="isAdopting ? 'جاري التسجيل...' : 'تسجيل'"></span>
+          </button>
+        </form>
+      </div>
+    </div>
+
+    <!-- Beautiful Glassmorphic Toast Notifications -->
+    <div x-show="toast.show" 
+         x-transition:enter="transition ease-out duration-300 transform"
+         x-transition:enter-start="translate-y-[-100px] opacity-0 scale-95"
+         x-transition:enter-end="translate-y-0 opacity-100 scale-100"
+         x-transition:leave="transition ease-in duration-200 transform"
+         x-transition:leave-start="translate-y-0 opacity-100 scale-100"
+         x-transition:leave-end="translate-y-[-100px] opacity-0 scale-95"
+         style="display: none;"
+         class="fixed top-6 left-1/2 -translate-x-1/2 z-50 max-w-sm w-full px-4">
+      <div class="glass p-4 rounded-2xl flex items-center gap-3 shadow-2xl border relative overflow-hidden"
+           :class="{
+             'border-indigo-500/30 bg-slate-900/95': toast.type === 'info',
+             'border-emerald-500/30 bg-slate-900/95': toast.type === 'success',
+             'border-rose-500/30 bg-slate-900/95': toast.type === 'error'
+           }">
+        <!-- Side color accent line -->
+        <div class="absolute top-0 bottom-0 right-0 w-1.5"
+             :class="{
+               'bg-indigo-500': toast.type === 'info',
+               'bg-emerald-500': toast.type === 'success',
+               'bg-rose-500': toast.type === 'error'
+             }"></div>
+        
+        <!-- Status Icon -->
+        <div class="w-10 h-10 rounded-xl flex items-center justify-center shrink-0"
+             :class="{
+               'bg-indigo-500/10 text-indigo-400': toast.type === 'info',
+               'bg-emerald-500/10 text-emerald-400': toast.type === 'success',
+               'bg-rose-500/10 text-rose-400': toast.type === 'error'
+             }">
+          <template x-if="toast.type === 'info'">
+            <div class="w-5 h-5 border-2 border-indigo-400 border-t-transparent rounded-full animate-spin"></div>
+          </template>
+          <template x-if="toast.type === 'success'">
+            <i data-lucide="check-circle" class="w-6 h-6"></i>
+          </template>
+          <template x-if="toast.type === 'error'">
+            <i data-lucide="x-circle" class="w-6 h-6"></i>
+          </template>
+        </div>
+        
+        <!-- Message -->
+        <div class="text-right">
+          <p class="font-bold text-white text-sm text-ellipsis overflow-hidden" x-text="toast.message"></p>
+          <p class="text-[10px] text-slate-500 font-bold" x-text="toast.type === 'info' ? 'جاري المعالجة...' : 'اكتمل'"></p>
+        </div>
+        
+        <!-- Close Button -->
+        <button @click="toast.show = false" class="mr-auto text-slate-500 hover:text-slate-300">
+          <i data-lucide="x" class="w-4 h-4"></i>
+        </button>
+      </div>
+    </div>
+
+  </div>
+
+  <script>
+    // Session = httpOnly cookie set by the server. Nothing sensitive is stored in the browser.
+    async function api(url, options = {}) {
+      const opts = { credentials: 'same-origin', ...options, headers: { ...(options.headers || {}) } };
+      if (opts.body !== undefined && typeof opts.body !== 'string') {
+        opts.body = JSON.stringify(opts.body);
+        opts.headers['Content-Type'] = 'application/json';
+      }
+      const res = await fetch(url, opts);
+      let data = {};
+      try { data = await res.json(); } catch (e) { data = {}; }
+      return { res, data };
+    }
+
+    function appData() {
+      return {
+        isLoggedIn: false,
+        username: '',
+        password: '',
+        loginError: '',
+        statsTimer: null,
+
+        toast: { show: false, message: '', type: 'info' },
+        showToast(message, type = 'info', duration = 3000) {
+          this.toast.message = message;
+          this.toast.type = type;
+          this.toast.show = true;
+          setTimeout(() => lucide.createIcons(), 50);
+          if (duration > 0) {
+            setTimeout(() => {
+              if (this.toast.message === message) {
+                this.toast.show = false;
+              }
+            }, duration);
+          }
+        },
+
+        stats: { cpu: 0, ram: 0, disk: 0 },
+        tenants: [],
+        loadingTenants: false,
+        templates: [],
+        baseDomain: 'radeef-sa.com',
+        defaultClientEmail: '',
+        isBackingUp: false,
+
+        showCreateModal: false,
+        isDeploying: false,
+        progress: 0,
+        showSuccessModal: false,
+        successTenant: { url: '', email: '', password: '' },
+        form: { name: '', domain: '', template: '', client_email: '', admin_email: '', duration_months: '1' },
+        logs: [],
+        logCounter: 0,
+
+        showRenewModal: false,
+        isRenewing: false,
+        renewForm: { name: '', duration_months: '1', end_date: '' },
+        renewError: '',
+        renewSuccess: '',
+
+        showAdoptModal: false,
+        isAdopting: false,
+
+        // DEC-007 / DEC-009
+        smtpMissing: [],
+        reminderDays: 14,
+        employeeCounts: {},
+        employeeCountsAt: '',
+        showCommercialModal: false,
+        isSavingCommercial: false,
+        commercialError: '',
+        commercialForm: { name: '', price: '', currency: '', billing_cycle: '', paid_until: '', vat_rate: '', price_includes_vat: '', employees: '' },
+        adoptForm: { name: '', domain: '', client_email: '', end_date: '' },
+
+        searchQuery: '',
+        statusFilter: 'all',
+        licenseFilter: 'all',
+
+        // ---- license presentation
+        licenseState(t) {
+          if (t.license_status === 'unmanaged') return 'unmanaged';
+          if (t.license_status === 'provisioning' || t.license_status === 'failed') return 'other';
+          if (t.license_status === 'suspended') return 'expired';
+          // days_remaining 0 = the end date is today = last paid day (still active).
+          if (t.auto_suspend && t.days_remaining !== null && t.days_remaining < 0) return 'expired';
+          if (t.auto_suspend && t.days_remaining !== null && t.days_remaining <= this.reminderDays) return 'warning';
+          return 'active';
+        },
+        licenseLabel(t) {
+          switch (t.license_status) {
+            case 'unmanaged': return 'غير مسجلة — لا إيقاف تلقائي';
+            case 'provisioning': return 'قيد التثبيت';
+            case 'failed': return 'فشل التثبيت';
+            case 'suspended': return 'موقوفة (انتهى الترخيص)';
+          }
+          const s = this.licenseState(t);
+          if (s === 'expired') return 'منتهي';
+          if (s === 'warning') return t.days_remaining === 0 ? 'آخر يوم في الترخيص' : 'متبقي ' + t.days_remaining + ' يوم';
+          if (!t.auto_suspend) return 'نشط — بدون انتهاء تلقائي';
+          return 'نشط (' + t.days_remaining + ' يوم)';
+        },
+        badgeClass(t) {
+          return {
+            expired: 'bg-rose-500/10 border-rose-500/20 text-rose-400',
+            warning: 'bg-amber-500/10 border-amber-500/20 text-amber-400',
+            active: 'bg-emerald-500/10 border-emerald-500/20 text-emerald-400',
+            unmanaged: 'bg-slate-500/10 border-slate-500/20 text-slate-300',
+            other: 'bg-sky-500/10 border-sky-500/20 text-sky-300',
+          }[this.licenseState(t)];
+        },
+        dotClass(t) {
+          return { expired: 'bg-rose-500', warning: 'bg-amber-500', active: 'bg-emerald-500', unmanaged: 'bg-slate-500', other: 'bg-sky-500' }[this.licenseState(t)];
+        },
+        textClass(t) {
+          return { expired: 'text-rose-400', warning: 'text-amber-400', active: 'text-emerald-400', unmanaged: 'text-slate-300', other: 'text-sky-300' }[this.licenseState(t)];
+        },
+
+        employeeLabel(t) {
+          const r = this.employeeCounts[t.name];
+          if (!r) return '…';
+          return r.active === null ? 'تعذر' : String(r.active);
+        },
+        employeeTitle(t) {
+          const r = this.employeeCounts[t.name];
+          if (!r) return 'لم يُحسب بعد';
+          if (r.active === null) return 'تعذر العد: ' + (r.error || '');
+          return 'عدد الموظفين غير المنتهية خدمتهم (قراءة فقط) — ' + this.employeeCountsAt;
+        },
+        commercialLabel(t) {
+          const c = t.commercial || {};
+          if (c.price === null || c.price === undefined) return 'بيانات تجارية: —';
+          const cycles = { monthly: 'شهري', quarterly: 'ربع سنوي', semiannual: 'نصف سنوي', annual: 'سنوي', biennial: 'سنتان', custom: 'أخرى' };
+          return c.price + ' ' + (c.currency || '') + (c.billing_cycle ? ' / ' + (cycles[c.billing_cycle] || c.billing_cycle) : '');
+        },
+
+        get filteredTenants() {
+          return this.tenants.filter(t => {
+            const query = this.searchQuery.trim().toLowerCase();
+            const matchesText = !query ||
+              (t.name && t.name.toLowerCase().includes(query)) ||
+              (t.domain && t.domain.toLowerCase().includes(query)) ||
+              (t.client_email && t.client_email.toLowerCase().includes(query)) ||
+              (t.port && String(t.port).includes(query));
+
+            const matchesStatus = this.statusFilter === 'all' ||
+              (this.statusFilter === 'online' ? t.status === 'online' : t.status !== 'online');
+
+            const matchesLicense = this.licenseFilter === 'all' || this.licenseState(t) === this.licenseFilter;
+
+            return matchesText && matchesStatus && matchesLicense;
+          });
+        },
+
+        async init() {
+          lucide.createIcons();
+          this.$watch('searchQuery', () => setTimeout(() => lucide.createIcons(), 50));
+          this.$watch('statusFilter', () => setTimeout(() => lucide.createIcons(), 50));
+          this.$watch('licenseFilter', () => setTimeout(() => lucide.createIcons(), 50));
+          try {
+            const { res } = await api('/api/session');
+            if (res.ok) this.onLoggedIn();
+          } catch (e) { /* stay on the login screen */ }
+        },
+
+        onLoggedIn() {
+          this.isLoggedIn = true;
+          this.password = '';
+          this.fetchConfig();
+          this.fetchData();
+          if (!this.statsTimer) {
+            this.statsTimer = setInterval(() => { if (this.isLoggedIn) this.fetchStats(); }, 10000);
+          }
+          setTimeout(() => lucide.createIcons(), 100);
+        },
+
+        handleUnauthorized(res) {
+          if (res.status === 401) {
+            this.isLoggedIn = false;
+            this.showToast('انتهت الجلسة — سجّل الدخول مجدداً', 'error', 4000);
+            return true;
+          }
+          return false;
+        },
+
+        async login() {
+          try {
+            const { res, data } = await api('/api/login', { method: 'POST', body: { username: this.username, password: this.password } });
+            if (res.ok && data.success) {
+              this.loginError = '';
+              this.onLoggedIn();
+            } else {
+              this.loginError = data.error || 'خطأ في اسم المستخدم أو كلمة المرور';
+            }
+          } catch (e) {
+            this.loginError = 'فشل الاتصال بالخادم.';
+          }
+        },
+
+        async logout() {
+          try { await api('/api/logout', { method: 'POST', body: {} }); } catch (e) { /* ignore */ }
+          this.isLoggedIn = false;
+          this.tenants = [];
+          if (this.statsTimer) { clearInterval(this.statsTimer); this.statsTimer = null; }
+        },
+
+        async fetchConfig() {
+          try {
+            const { res, data } = await api('/api/config');
+            if (res.ok && data.success) {
+              this.templates = data.templates || [];
+              this.baseDomain = data.base_domain || this.baseDomain;
+              this.defaultClientEmail = data.default_client_email || '';
+              this.smtpMissing = Array.isArray(data.tenant_smtp_missing) ? data.tenant_smtp_missing : [];
+              if (Number.isFinite(data.license_reminder_days)) this.reminderDays = data.license_reminder_days;
+            }
+          } catch (e) { /* ignore */ }
+        },
+
+        async fetchData() {
+          this.fetchStats();
+          this.fetchTenants();
+        },
+
+        async fetchStats() {
+          try {
+            const { res, data } = await api('/api/system/stats');
+            if (res.ok && data.success) this.stats = { cpu: data.cpu, ram: data.ram, disk: data.disk };
+            else this.handleUnauthorized(res);
+          } catch (e) { /* ignore */ }
+        },
+
+        async fetchTenants() {
+          this.loadingTenants = true;
+          try {
+            const { res, data } = await api('/api/tenants');
+            if (res.ok && data.success) {
+              this.tenants = data.tenants;
+              this.fetchEmployeeCounts(false);
+              setTimeout(() => lucide.createIcons(), 100);
+            } else if (!this.handleUnauthorized(res)) {
+              this.showToast(data.error || 'تعذر جلب قائمة النسخ', 'error', 4000);
+            }
+          } catch (e) {
+            this.showToast('حدث خطأ في الاتصال بالخادم', 'error', 4000);
+          }
+          this.loadingTenants = false;
+        },
+
+        async fetchEmployeeCounts(refresh) {
+          try {
+            const { res, data } = await api('/api/tenants/employees' + (refresh ? '?refresh=1' : ''));
+            if (res.ok && data.success) {
+              this.employeeCounts = data.counts || {};
+              this.employeeCountsAt = data.checked_at ? new Date(data.checked_at).toLocaleString('ar-SA') : '';
+            } else {
+              this.handleUnauthorized(res);
+            }
+          } catch (e) { /* counts are optional */ }
+        },
+
+        openCommercialModal(t) {
+          const c = t.commercial || {};
+          const r = this.employeeCounts[t.name];
+          this.commercialForm = {
+            name: t.name,
+            price: c.price ?? '',
+            currency: c.currency ?? '',
+            billing_cycle: c.billing_cycle ?? '',
+            paid_until: c.paid_until ?? '',
+            vat_rate: c.vat_rate ?? '',
+            price_includes_vat: c.price_includes_vat === null || c.price_includes_vat === undefined ? '' : String(c.price_includes_vat),
+            employees: r && r.active !== null ? String(r.active) : '—',
+          };
+          this.commercialError = '';
+          this.showCommercialModal = true;
+          setTimeout(() => lucide.createIcons(), 100);
+        },
+
+        async saveCommercial() {
+          this.isSavingCommercial = true;
+          this.commercialError = '';
+          const f = this.commercialForm;
+          try {
+            const { res, data } = await api('/api/tenants/commercial', {
+              method: 'POST',
+              body: {
+                name: f.name,
+                price: f.price === '' ? null : f.price,
+                currency: f.currency || null,
+                billing_cycle: f.billing_cycle || null,
+                paid_until: f.paid_until || null,
+                vat_rate: f.vat_rate === '' ? null : f.vat_rate,
+                price_includes_vat: f.price_includes_vat === '' ? null : f.price_includes_vat === 'true'
+              }
+            });
+            if (res.ok && data.success) {
+              this.showToast('تم حفظ البيانات التجارية', 'success', 3000);
+              this.showCommercialModal = false;
+              this.fetchTenants();
+            } else if (!this.handleUnauthorized(res)) {
+              this.commercialError = data.error || 'فشل الحفظ';
+            }
+          } catch (e) {
+            this.commercialError = 'خطأ في الاتصال بالخادم';
+          }
+          this.isSavingCommercial = false;
+        },
+
+        async doAction(action, name, confirm) {
+          const actionLabels = {
+            'start': 'جاري تشغيل النسخة...',
+            'stop': 'جاري إيقاف النسخة مؤقتاً...',
+            'restart': 'جاري إعادة تشغيل النسخة...',
+            'delete': 'جاري أخذ نسخة احتياطية ثم حذف النسخة...'
+          };
+          const successLabels = {
+            'start': 'تم تشغيل النسخة بنجاح',
+            'stop': 'تم إيقاف النسخة بنجاح',
+            'restart': 'تم إعادة تشغيل النسخة بنجاح',
+            'delete': 'تم حذف النسخة (النسخة الاحتياطية محفوظة على السيرفر)'
+          };
+          this.showToast(actionLabels[action] || 'جاري تنفيذ الإجراء...', 'info', 0);
+          try {
+            const body = { action, name };
+            if (confirm !== undefined) body.confirm = confirm;
+            const { res, data } = await api('/api/tenants/action', { method: 'POST', body });
+            if (res.ok && data.success) {
+              this.showToast(successLabels[action] || 'تم تنفيذ الإجراء بنجاح', 'success', 4000);
+            } else if (!this.handleUnauthorized(res)) {
+              this.showToast(data.error || 'فشل تنفيذ الإجراء', 'error', 5000);
+            }
+            this.fetchTenants();
+          } catch (e) {
+            this.showToast('حدث خطأ في الاتصال بالخادم', 'error', 4000);
+          }
+        },
+
+        async deleteTenant(name) {
+          if (!confirm(`هل أنت متأكد من حذف النسخة ${name} نهائياً؟\nسيتم أخذ نسخة احتياطية من قاعدة البيانات والملفات أولاً، ثم حذفها من السيرفر.`)) return;
+          const confName = prompt(`تأكيد الحذف: اكتب اسم النسخة "${name}" بالضبط`);
+          if (confName === null) return;
+          if (confName !== name) {
+            this.showToast('الاسم غير مطابق — تم إلغاء الحذف', 'error', 4000);
+            return;
+          }
+          this.loadingTenants = true;
+          await this.doAction('delete', name, confName);
+        },
+
+        async runBackup() {
+          this.isBackingUp = true;
+          this.showToast('جاري أخذ نسخة احتياطية لكل قواعد البيانات...', 'info', 0);
+          try {
+            const { res, data } = await api('/api/backups/run', { method: 'POST', body: {} });
+            if (res.ok && data.success) {
+              this.showToast(`تم النسخ الاحتياطي (${(data.ok || []).length} قاعدة بيانات)`, 'success', 4000);
+            } else if (!this.handleUnauthorized(res)) {
+              const failed = (data.failed || []).join('، ');
+              this.showToast(data.error || ('فشل النسخ الاحتياطي لـ: ' + failed), 'error', 6000);
+            }
+          } catch (e) {
+            this.showToast('حدث خطأ في الاتصال بالخادم', 'error', 4000);
+          }
+          this.isBackingUp = false;
+        },
+
+        openCreateModal() {
+          if (!this.form.template && this.templates.length) this.form.template = this.templates[0];
+          if (!this.form.client_email && this.defaultClientEmail) this.form.client_email = this.defaultClientEmail;
+          this.showCreateModal = true;
+          setTimeout(() => lucide.createIcons(), 100);
+        },
+
+        closeSuccessModal() {
+          this.showSuccessModal = false;
+          this.showCreateModal = false;
+          // Forget the one-time password as soon as the operator closes the dialog.
+          this.successTenant = { url: '', email: '', password: '' };
+        },
+
+        pushLog(type, msg) {
+          this.logs.push({ id: ++this.logCounter, type, msg, time: new Date().toLocaleTimeString('ar-SA') });
+          setTimeout(() => {
+            const c = document.getElementById('terminal-container');
+            if (c) c.scrollTop = c.scrollHeight;
+          }, 50);
+        },
+
+        async startDeployment() {
+          this.logs = [];
+          this.isDeploying = true;
+          this.progress = 0;
+          this.showSuccessModal = false;
+
+          let jobId;
+          try {
+            const { res, data } = await api('/api/tenants/create', {
+              method: 'POST',
+              body: {
+                name: this.form.name.trim(),
+                domain: this.form.domain.trim(),
+                template: this.form.template,
+                client_email: this.form.client_email.trim(),
+                admin_email: (this.form.admin_email || this.form.client_email).trim(),
+                duration_months: this.form.duration_months
+              }
+            });
+            if (!res.ok || !data.success) {
+              this.handleUnauthorized(res);
+              this.pushLog('error', data.error || 'تعذر بدء التثبيت');
+              this.isDeploying = false;
+              return;
+            }
+            jobId = data.jobId;
+          } catch (e) {
+            this.pushLog('error', 'فشل الاتصال بالخادم.');
+            this.isDeploying = false;
+            return;
+          }
+
+          // Same-origin EventSource sends the session cookie automatically.
+          const source = new EventSource(`/api/tenants/create-stream?job=${encodeURIComponent(jobId)}`);
+          let finished = false;
+
+          source.onmessage = (event) => {
+            let data;
+            try { data = JSON.parse(event.data); } catch (e) { return; }
+            this.pushLog(data.type, data.msg);
+            if (data.progress !== undefined && data.progress !== null) this.progress = data.progress;
+
+            if (data.type === 'done') {
+              finished = true;
+              source.close();
+              this.isDeploying = false;
+              this.progress = 100;
+              const cred = data.credentials || {};
+              this.successTenant = {
+                url: cred.url || ('https://' + this.form.domain),
+                email: cred.email || '',
+                password: cred.password || ''
+              };
+              this.showSuccessModal = true;
+              this.showToast('تم اكتمال تثبيت النسخة بنجاح!', 'success');
+              this.form.name = '';
+              this.form.domain = '';
+              this.form.admin_email = '';
+              this.fetchTenants();
+              setTimeout(() => lucide.createIcons(), 100);
+            } else if (data.type === 'error') {
+              finished = true;
+              source.close();
+              this.isDeploying = false;
+              this.progress = 0;
+              this.fetchTenants();
+            }
+          };
+
+          source.onerror = () => {
+            if (finished) return;
+            source.close();
+            this.isDeploying = false;
+            this.progress = 0;
+            this.pushLog('error', 'انقطع الاتصال بسجل التثبيت. قد يكون التثبيت ما زال يعمل على الخادم — حدّث القائمة بعد قليل.');
+            this.fetchTenants();
+          };
+        },
+
+        openRenewModal(t) {
+          this.renewForm.name = t.name;
+          this.renewForm.duration_months = '1';
+          this.renewForm.end_date = t.auto_suspend && t.end_date ? t.end_date : '';
+          this.renewError = '';
+          this.renewSuccess = '';
+          this.showRenewModal = true;
+          setTimeout(() => lucide.createIcons(), 100);
+        },
+
+        async renewLicense() {
+          this.isRenewing = true;
+          this.renewError = '';
+          this.renewSuccess = '';
+          this.showToast('جاري تجديد ترخيص النسخة...', 'info', 0);
+          try {
+            const { res, data } = await api('/api/tenants/renew', {
+              method: 'POST',
+              body: { name: this.renewForm.name, duration_months: this.renewForm.duration_months }
+            });
+            if (res.ok && data.success) {
+              this.renewSuccess = `تم تجديد الترخيص بنجاح حتى تاريخ ${data.end_date}`;
+              this.showToast('تم تجديد ترخيص النسخة بنجاح', 'success', 3000);
+              this.fetchTenants();
+              setTimeout(() => { this.showRenewModal = false; }, 1500);
+            } else {
+              this.handleUnauthorized(res);
+              this.renewError = data.error || 'فشل تجديد الاشتراك، يرجى المحاولة لاحقاً';
+              this.showToast(this.renewError, 'error', 4000);
+            }
+          } catch (e) {
+            this.renewError = 'خطأ في الاتصال بالخادم';
+            this.showToast(this.renewError, 'error', 4000);
+          }
+          this.isRenewing = false;
+        },
+
+        async saveLicense() {
+          this.isRenewing = true;
+          this.renewError = '';
+          this.renewSuccess = '';
+          try {
+            const { res, data } = await api('/api/tenants/license', {
+              method: 'POST',
+              body: { name: this.renewForm.name, end_date: this.renewForm.end_date || null }
+            });
+            if (res.ok && data.success) {
+              this.renewSuccess = data.end_date ? `تاريخ الانتهاء: ${data.end_date}` : 'تم إلغاء الإيقاف التلقائي لهذه النسخة';
+              this.showToast('تم حفظ الترخيص', 'success', 3000);
+              this.fetchTenants();
+            } else {
+              this.handleUnauthorized(res);
+              this.renewError = data.error || 'فشل حفظ الترخيص';
+            }
+          } catch (e) {
+            this.renewError = 'خطأ في الاتصال بالخادم';
+          }
+          this.isRenewing = false;
+        },
+
+        openAdoptModal(t) {
+          this.adoptForm = { name: t.name, domain: t.domain || '', client_email: this.defaultClientEmail || '', end_date: '' };
+          this.showAdoptModal = true;
+          setTimeout(() => lucide.createIcons(), 100);
+        },
+
+        async adoptTenant() {
+          this.isAdopting = true;
+          try {
+            const { res, data } = await api('/api/tenants/adopt', {
+              method: 'POST',
+              body: {
+                name: this.adoptForm.name,
+                domain: this.adoptForm.domain.trim(),
+                client_email: this.adoptForm.client_email.trim() || undefined,
+                end_date: this.adoptForm.end_date || null
+              }
+            });
+            if (res.ok && data.success) {
+              this.showToast('تم تسجيل النسخة', 'success', 3000);
+              this.showAdoptModal = false;
+              this.fetchTenants();
+            } else if (!this.handleUnauthorized(res)) {
+              this.showToast(data.error || 'فشل تسجيل النسخة', 'error', 5000);
+            }
+          } catch (e) {
+            this.showToast('حدث خطأ في الاتصال بالخادم', 'error', 4000);
+          }
+          this.isAdopting = false;
+        }
+      };
+    }
+  </script>
+</body>
+</html>

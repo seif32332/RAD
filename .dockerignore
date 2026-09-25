@@ -1,0 +1,31 @@
+# Keep the build context small and free of secrets / tenant data.
+.git
+.github
+node_modules
+.next
+out
+build
+coverage
+*.tsbuildinfo
+npm-debug.log*
+
+# secrets and runtime data (never baked into the image)
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.dump
+backups
+uploads
+public/uploads
+
+# not part of the app
+docs
+ops
+radeef-manage
+Dockerfile
+docker-compose.yml
+ecosystem.config.js
+README.md
+PRODUCTION_READINESS_PLAN.md
