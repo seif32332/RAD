@@ -3,8 +3,9 @@ import { z } from 'zod';
 import { prisma } from '@/lib/prisma';
 import { getClientIp, requireEmployeeId, requireUser } from '@/lib/auth';
 import { ROLE_GROUPS } from '@/lib/constants';
-import { conflict, forbidden, handleApiError, parseBody } from '@/lib/http';
+import { badRequest, conflict, forbidden, handleApiError, parseBody } from '@/lib/http';
 import { zDate, zId, zOptText, zText } from '@/lib/validation';
+import { dateKey } from '@/lib/dates';
 import { logAudit } from '@/lib/audit';
 import { CORRECTION_STATUS, CORRECTION_TYPES, isHrDirectRequest } from '@/lib/hr-workflows';
 
@@ -18,6 +19,8 @@ const createSchema = z.object({
   attachmentUrl: zOptText(2000),
   /** Fingerprint corrections: LATE | EARLY_LEAVE | ABSENT | GENERAL (default GENERAL). Ignored for general requests. */
   correctionType: z.preprocess((v) => (v === '' || v === null ? undefined : v), z.enum(CORRECTION_TYPES).optional()),
+  /** Rejected / flagged self punch the request is about (its server time is used on approval). */
+  punchId: zId.optional(),
 });
 
 /**
@@ -42,6 +45,20 @@ export async function POST(req: Request) {
     const hrDirect = isHrDirectRequest(body.reason);
     const correctionType = hrDirect ? 'GENERAL' : (body.correctionType ?? 'GENERAL');
 
+    let punchId: string | null = null;
+    if (body.punchId && !hrDirect) {
+      const punch = await prisma.attendancePunch.findUnique({ where: { id: body.punchId }, select: { employeeId: true, result: true, workDate: true } });
+      if (!punch || punch.employeeId !== employeeId) throw forbidden('الحركة المرتبطة بالطلب غير موجودة');
+      if (punch.result === 'ACCEPTED') throw badRequest('هذه الحركة مقبولة ولا تحتاج إلى تصحيح');
+      if (dateKey(punch.workDate) !== dateKey(body.date)) throw badRequest('تاريخ الطلب لا يطابق تاريخ الحركة');
+      const pendingForPunch = await prisma.attendanceCorrection.findFirst({
+        where: { punchId: body.punchId, status: CORRECTION_STATUS.PENDING },
+        select: { id: true },
+      });
+      if (pendingForPunch) throw conflict('يوجد طلب تصحيح قيد الانتظار لهذه الحركة.');
+      punchId = body.punchId;
+    }
+
     const request = await prisma.attendanceCorrection.create({
       data: {
         employeeId,
@@ -50,6 +67,7 @@ export async function POST(req: Request) {
         attachmentUrl: body.attachmentUrl ?? null,
         correctionType,
         status: CORRECTION_STATUS.PENDING,
+        punchId,
       },
     });
 
@@ -58,7 +76,7 @@ export async function POST(req: Request) {
       action: 'CREATE',
       entityType: 'AttendanceCorrection',
       entityId: request.id,
-      details: { employeeId, date: body.date, correctionType, selfService: true },
+      details: { employeeId, date: body.date, correctionType, selfService: true, punchId },
       ipAddress: getClientIp(req),
     });
 

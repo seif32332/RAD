@@ -30,6 +30,7 @@ import { useRole } from '@/context/RoleContext';
 import CircularsSection from './_components/CircularsSection';
 import UnlinkedAccountCard from './_components/UnlinkedAccountCard';
 import PortalTabBar, { type PortalTab } from './_components/PortalTabBar';
+import ClockCard, { type PunchRejection } from './_components/ClockCard';
 import { cancellableLeaveId, formatLeaveDays, isUnlinkedAccount, leavePreviewQuery, parseLeavePreview, type LeavePreview } from './_lib';
 
 // ---------------------------------------------------------------------------
@@ -220,6 +221,8 @@ export default function EmployeePortalPage() {
   const [correctionReason, setCorrectionReason] = useState('');
   const [correctionAttachmentUrl, setCorrectionAttachmentUrl] = useState('');
   const [correctionType, setCorrectionType] = useState<string>('ABSENT');
+  // Rejected self punch the correction is about (its server time is used when HR approves).
+  const [correctionPunchId, setCorrectionPunchId] = useState<string | null>(null);
 
   // Leave & Loan Modal States
   const [isLeaveModalOpen, setIsLeaveModalOpen] = useState(false);
@@ -586,6 +589,7 @@ export default function EmployeePortalPage() {
           reason: correctionReason,
           correctionType,
           attachmentUrl: correctionAttachmentUrl,
+          punchId: correctionPunchId ?? undefined,
         }),
       });
       if (res.status === 401) return redirectToLogin();
@@ -599,12 +603,28 @@ export default function EmployeePortalPage() {
       setCorrectionReason('');
       setCorrectionAttachmentUrl('');
       setCorrectionType('ABSENT');
+      setCorrectionPunchId(null);
       void loadPortal({ silent: true });
     } catch {
       toast.error('تعذر الاتصال بالخادم');
     } finally {
       setSubmitting(null);
     }
+  };
+
+  /** Opens the correction form for a clock-in / clock-out rejected by the self-attendance check. */
+  const openCorrectionForPunch = (r: PunchRejection) => {
+    setCorrectionDate(r.workDate);
+    setCorrectionType('ABSENT');
+    setCorrectionReason(`تعذر تسجيل ${r.action === 'OUT' ? 'الانصراف' : 'الحضور'} من البوابة: ${r.message}\n`);
+    setCorrectionAttachmentUrl('');
+    setCorrectionPunchId(r.punchId);
+    setIsCorrectionModalOpen(true);
+  };
+
+  const openCorrection = () => {
+    setCorrectionPunchId(null);
+    setIsCorrectionModalOpen(true);
   };
 
   const handleLeaveSubmit = async (e: React.FormEvent<HTMLFormElement>) => {
@@ -861,12 +881,15 @@ ${row('إجمالي الاستقطاعات', `${formatMoney(p.totalDeductions)} 
           </div>
         </section>
 
+        {/* Self clock-in / clock-out (hidden unless enabled for this tenant) */}
+        <ClockCard onPunched={() => void loadPortal({ silent: true })} onRequestCorrection={openCorrectionForPunch} />
+
         {/* Actions first */}
         <section aria-labelledby="portal-actions-title">
           <h2 id="portal-actions-title" className="text-[13px] font-black text-slate-500 mb-3">ماذا تريد أن تفعل؟</h2>
           <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 md:gap-5">
             <ActionTile tone="blue" icon={<CalendarClock size={26} />} title="طلب إجازة" subtitle={`متاح ${balanceLabel} · قيد الاعتماد ${pendingLabel}`} onClick={() => setIsLeaveModalOpen(true)} />
-            <ActionTile tone="amber" icon={<Fingerprint size={26} />} title="تصحيح بصمة" subtitle="تعديل حضور أو انصراف" onClick={() => setIsCorrectionModalOpen(true)} />
+            <ActionTile tone="amber" icon={<Fingerprint size={26} />} title="تصحيح بصمة" subtitle="تعديل حضور أو انصراف" onClick={openCorrection} />
             <ActionTile tone="emerald" icon={<PiggyBank size={26} />} title="طلب سلفة" subtitle="يمر بمسار موافقات" onClick={() => setIsLoanModalOpen(true)} />
             <ActionTile tone="indigo" icon={<FileText size={26} />} title="شهادة أو خطاب" subtitle="راتب، تعريف، خبرة" onClick={() => openGeneralRequest('SALARY_CERT')} />
           </div>
@@ -1081,7 +1104,7 @@ ${row('إجمالي الاستقطاعات', `${formatMoney(p.totalDeductions)} 
               <h2 id="portal-attendance-title" className="text-lg md:text-xl font-extrabold text-slate-800 flex items-center gap-2">
                 <Fingerprint className="text-slate-400" size={20} aria-hidden="true" /> سجل الحضور
               </h2>
-              <button type="button" onClick={() => setIsCorrectionModalOpen(true)} className="text-[12px] font-bold text-amber-700 bg-amber-50 border border-amber-100 px-3 py-1.5 rounded-full hover:bg-amber-100 transition">تصحيح بصمة</button>
+              <button type="button" onClick={openCorrection} className="text-[12px] font-bold text-amber-700 bg-amber-50 border border-amber-100 px-3 py-1.5 rounded-full hover:bg-amber-100 transition">تصحيح بصمة</button>
             </div>
             <div className="bg-white border border-slate-200 rounded-[2rem] p-2 max-h-[410px] overflow-y-auto">
               {employee.attendances && employee.attendances.length > 0 ? (
@@ -1275,6 +1298,11 @@ ${row('إجمالي الاستقطاعات', `${formatMoney(p.totalDeductions)} 
         description="يُرسل الطلب إلى مديرك المباشر ثم إلى الموارد البشرية"
       >
         <form onSubmit={handleCorrectionSubmit} className="p-6 md:p-8 space-y-6">
+          {correctionPunchId && (
+            <p className="bg-amber-50 border border-amber-100 text-amber-900 rounded-2xl p-3 text-[12px] font-bold leading-relaxed">
+              الطلب مرتبط بمحاولة التسجيل المرفوضة، وعند الاعتماد يُستخدم وقت المحاولة الفعلي.
+            </p>
+          )}
           <div>
             <label htmlFor="portal-correction-type" className={labelClass}>نوع التصحيح</label>
             <select

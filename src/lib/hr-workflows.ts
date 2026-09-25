@@ -40,6 +40,7 @@ import {
   type StatutoryLeaveRules,
 } from '@/lib/leave';
 import {
+  ATTENDANCE_SOURCE,
   ATTENDANCE_STATUS,
   buildPunches,
   computeLateEarly,
@@ -967,6 +968,7 @@ const correctionSelect = {
   correctionType: true,
   isManagerApproved: true,
   isHrApproved: true,
+  punchId: true,
   employee: { select: employeeScopeSelect },
 } as const;
 
@@ -1038,7 +1040,10 @@ export async function approveAttendanceCorrection(
     outcome = 'GENERAL_APPROVED';
     message = 'تم اعتماد الطلب';
   } else {
-    const applied = await applyAttendanceCorrection(tx, correction.employeeId, correction.date, correction.correctionType);
+    const applied = await applyAttendanceCorrection(tx, correction.employeeId, correction.date, correction.correctionType, {
+      punchId: correction.punchId,
+      reviewerId: user.id,
+    });
     outcome = 'ATTENDANCE_UPDATED';
     message = 'تم الاعتماد وإرسال التعديل للبصمة بنجاح';
     details = { ...details, attendance: applied };
@@ -1051,24 +1056,44 @@ export async function approveAttendanceCorrection(
   return { outcome, message };
 }
 
-async function applyAttendanceCorrection(tx: Db, employeeId: string, date: Date, correctionType: string | null) {
+/**
+ * Fills the missing punches of the corrected day. A request linked to a rejected / flagged self
+ * punch uses that punch's SERVER time for the punch it was about (instead of the scheduled time),
+ * so deliberately failing the face / location check cannot erase lateness or early leave; only an
+ * explicit LATE / EARLY_LEAVE correction approved by HR zeroes those minutes.
+ */
+async function applyAttendanceCorrection(
+  tx: Db,
+  employeeId: string,
+  date: Date,
+  correctionType: string | null,
+  link: { punchId: string | null; reviewerId: string } = { punchId: null, reviewerId: '' },
+) {
   const day = dateKey(date);
   if (!day) throw badRequest('تاريخ الطلب غير صالح');
   const attendanceDate = new Date(`${day}T00:00:00.000Z`);
-  const [{ schedule }, existing] = await Promise.all([
+  const [{ schedule }, existing, punch] = await Promise.all([
     resolveEmployeeSchedule(tx, employeeId),
     tx.attendance.findUnique({ where: { employeeId_date: { employeeId, date: attendanceDate } } }),
+    link.punchId
+      ? tx.attendancePunch.findUnique({ where: { id: link.punchId }, select: { id: true, employeeId: true, type: true, createdAt: true } })
+      : Promise.resolve(null),
   ]);
+  const linked = punch && punch.employeeId === employeeId ? punch : null;
   const times = defaultPunchTimes(schedule);
   const scheduled = buildPunches(day, times.startTime, times.endTime);
-  const checkIn = existing?.checkIn ?? scheduled.checkIn;
-  const checkOut = existing?.checkOut ?? scheduled.checkOut;
+  const checkIn = existing?.checkIn ?? (linked?.type === 'IN' ? linked.createdAt : scheduled.checkIn);
+  const checkOut = existing?.checkOut ?? (linked?.type === 'OUT' ? linked.createdAt : scheduled.checkOut);
   const calc = computeLateEarly({ schedule, dayKey: day, checkIn, checkOut });
   const lateMinutes = correctionType === 'LATE' ? 0 : calc.lateMinutes;
   const earlyLeaveMin = correctionType === 'EARLY_LEAVE' ? 0 : calc.earlyLeaveMin;
   const values = {
     checkIn,
     checkOut,
+    checkInSource: existing?.checkIn ? (existing.checkInSource ?? null) : ATTENDANCE_SOURCE.CORRECTION,
+    checkOutSource: existing?.checkOut ? (existing.checkOutSource ?? null) : ATTENDANCE_SOURCE.CORRECTION,
+    // HR has looked at the day: a pending "flagged" warning is resolved by the approval.
+    flagged: false,
     status: ATTENDANCE_STATUS.PRESENT,
     lateMinutes,
     earlyLeaveMin,
@@ -1078,7 +1103,13 @@ async function applyAttendanceCorrection(tx: Db, employeeId: string, date: Date,
   const saved = existing
     ? await tx.attendance.update({ where: { id: existing.id }, data: values, select: { id: true } })
     : await tx.attendance.create({ data: { employeeId, date: attendanceDate, ...values }, select: { id: true } });
-  return { id: saved.id, date: day, lateMinutes, earlyLeaveMin, scheduleFound: !!schedule };
+  if (linked) {
+    await tx.attendancePunch.update({
+      where: { id: linked.id },
+      data: { reviewedAt: new Date(), reviewedById: link.reviewerId || null, attendanceId: saved.id },
+    });
+  }
+  return { id: saved.id, date: day, lateMinutes, earlyLeaveMin, scheduleFound: !!schedule, punchTimeUsed: !!linked };
 }
 
 export async function rejectAttendanceCorrection(tx: Db, correctionId: string, user: AuthUser, reason?: string | null, opts: WorkflowOptions = {}) {

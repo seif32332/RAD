@@ -236,10 +236,11 @@ model Branch {
   departments Department[]
   employees   Employee[]
 
-  telecomSims   TelecomSim[]
-  utilityMeters UtilityMeter[]
-  workSchedules WorkSchedule[]
-  violations    ComplianceViolation[]
+  telecomSims         TelecomSim[]
+  utilityMeters       UtilityMeter[]
+  workSchedules       WorkSchedule[]
+  violations          ComplianceViolation[]
+  attendanceLocations AttendanceLocation[]
 
   @@index([companyId])
   @@index([administrationId])
@@ -375,7 +376,12 @@ model Employee {
 
   isTerminated     Boolean   @default(false)
   terminationDate  DateTime?
-  employmentStatus String    @default("ACTIVE") // ACTIVE, ON_LEAVE, EXCLUDED 
+  employmentStatus String    @default("ACTIVE") // ACTIVE, ON_LEAVE, EXCLUDED
+
+  // الحضور الذاتي من البوابة (GPS + التحقق من الوجه)
+  attendanceGeoExempt    Boolean @default(false) // مستثنى من شرط الموقع (ميداني) — الوجه يبقى مطلوباً
+  attendanceFaceExempt   Boolean @default(false) // مستثنى من التحقق من الوجه (قرار المالك فقط) — الموقع يبقى مطلوباً
+  attendanceExemptReason String? // سبب الاستثناء (إلزامي عند تفعيل أي استثناء)
 
   // مرفقات وثائق الموظف
   workContractUrl      String? // عقد العمل
@@ -401,6 +407,8 @@ model Employee {
   administration Administration? @relation(fields: [administrationId], references: [id], onDelete: SetNull)
 
   attendances            Attendance[]
+  attendancePunches      AttendancePunch[]
+  faceProfile            FaceProfile?
   leaves                 Leave[]
   visas                  Visa[]
   payrolls               Payroll[]
@@ -498,13 +506,111 @@ model Attendance {
   earlyLeaveMin Int       @default(0) // keeping this for back-compatibility
   overtimeMin   Int       @default(0)
 
+  /// Origin of each punch: MANUAL (HR entry) | CORRECTION (approved request) | SELF (portal GPS + face). null = before 6_self_attendance.
+  checkInSource  String?
+  checkOutSource String?
+  /// A self punch was accepted with a warning (borderline face / liveness score) and awaits review.
+  flagged        Boolean @default(false)
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  employee Employee @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+  employee Employee          @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+  punches  AttendancePunch[]
 
   @@unique([employeeId, date])
   @@index([date])
+}
+
+enum PunchType {
+  IN
+  OUT
+}
+
+enum PunchResult {
+  ACCEPTED
+  FLAGGED
+  REJECTED
+}
+
+// --- مواقع الحضور الذاتي: نطاق دائري (مركز + نصف قطر) لكل موقع، وقد يكون للفرع أكثر من موقع ---
+model AttendanceLocation {
+  id        String   @id @default(uuid())
+  branchId  String
+  name      String
+  latitude  Float
+  longitude Float
+  radiusM   Int      @default(150)
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  branch Branch @relation(fields: [branchId], references: [id], onDelete: Cascade)
+
+  @@index([branchId])
+}
+
+// --- القالب المرجعي لوجه الموظف (بيانات حيوية حساسة: مشفرة، وتُحذف عند انتهاء الخدمة أو سحب الموافقة) ---
+model FaceProfile {
+  id              String   @id @default(uuid())
+  employeeId      String   @unique
+  /// encryptField(JSON array of the face-service embedding). Never sent to the client.
+  embedding       String   @db.Text
+  /// Model that produced the embedding (e.g. sface_2021dec): a model change requires re-enrollment.
+  model           String
+  /// Reference selfie under UPLOAD_DIR/.biometric/ (not reachable through /api/files).
+  photoStoredName String?
+  consentAt       DateTime
+  consentVersion  String
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  employee Employee @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+}
+
+// --- كل محاولة حضور/انصراف ذاتي (مقبولة أو مشبوهة أو مرفوضة): الدليل وسجل المراجعة ---
+model AttendancePunch {
+  id           String      @id @default(uuid())
+  employeeId   String
+  /// Attendance row written by an accepted / flagged punch (null for rejected ones).
+  attendanceId String?
+  /// Work day the punch belongs to (date-only, Riyadh). For overnight shifts it can be the previous day.
+  workDate     DateTime    @db.Date
+  type         PunchType
+  result       PunchResult
+  /// Reason codes (src/lib/self-attendance.ts PUNCH_REASONS).
+  reasons      String[]
+
+  latitude     Float?
+  longitude    Float?
+  accuracyM    Float?
+  distanceM    Float?
+  /// Snapshot of the matched / nearest location at punch time.
+  locationId   String?
+  locationName String?
+  radiusM      Int?
+
+  faceScore        Float?
+  livenessScore    Float?
+  /// Selfie kept only for REJECTED / FLAGGED punches, under UPLOAD_DIR/.biometric/, purged after the retention period.
+  selfieStoredName String?
+  selfiePurgedAt   DateTime?
+
+  reviewedAt   DateTime?
+  reviewedById String?
+
+  ipAddress String?
+  userAgent String?
+  /// Server time of the punch: the only trusted clock.
+  createdAt DateTime @default(now())
+
+  employee    Employee               @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+  attendance  Attendance?            @relation(fields: [attendanceId], references: [id], onDelete: SetNull)
+  corrections AttendanceCorrection[]
+
+  @@index([employeeId, createdAt])
+  @@index([result, createdAt])
+  @@index([workDate])
 }
 
 // ---------------------------------------------------------
@@ -1047,13 +1153,19 @@ model AttendanceCorrection {
   hrApprovedAt DateTime?
   hrComment    String?
 
+  /// Rejected / flagged self punch this request is about: on approval its SERVER time fills the
+  /// missing punch (instead of the scheduled time), so a deliberately failed punch cannot erase lateness.
+  punchId String?
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  employee Employee @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+  employee Employee         @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+  punch    AttendancePunch? @relation(fields: [punchId], references: [id], onDelete: SetNull)
 
   @@index([employeeId])
   @@index([status])
+  @@index([punchId])
 }
 
 // ---------------------------------------------------------

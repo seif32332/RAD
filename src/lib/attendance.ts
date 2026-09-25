@@ -15,6 +15,10 @@ export type ShiftType = (typeof SHIFT_TYPES)[number];
 
 export const ATTENDANCE_STATUS = { PRESENT: 'PRESENT', ABSENT: 'ABSENT' } as const;
 
+/** Origin of a punch (Attendance.checkInSource / checkOutSource). null = row written before the feature existed. */
+export const ATTENDANCE_SOURCE = { MANUAL: 'MANUAL', CORRECTION: 'CORRECTION', SELF: 'SELF' } as const;
+export type AttendanceSource = (typeof ATTENDANCE_SOURCE)[keyof typeof ATTENDANCE_SOURCE];
+
 /** Used only to fill in a missing punch when the employee has no work schedule. */
 export const FALLBACK_SHIFT = { startTime: '09:00', endTime: '17:00' } as const;
 

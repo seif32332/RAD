@@ -3,15 +3,18 @@ import { z } from 'zod';
 import { Prisma } from '@prisma/client';
 import { prisma } from '@/lib/prisma';
 import { getClientIp, requireUser } from '@/lib/auth';
-import { ROLE_GROUPS } from '@/lib/constants';
-import { badRequest, conflict, handleApiError, parseBody } from '@/lib/http';
-import { zDate, zId, zOptInt, zOptText } from '@/lib/validation';
+import { ROLE_GROUPS, roleIn } from '@/lib/constants';
+import { badRequest, conflict, forbidden, handleApiError, notFound, parseBody } from '@/lib/http';
+import { zBool, zDate, zId, zOptInt, zOptText } from '@/lib/validation';
 import { dateKey } from '@/lib/dates';
 import { logAudit } from '@/lib/audit';
-import { ATTENDANCE_STATUS, buildPunches, computeLateEarly, normalizeTimeOfDay } from '@/lib/attendance';
-import { resolveEmployeeSchedule } from '@/lib/hr-workflows';
+import { ATTENDANCE_SOURCE, ATTENDANCE_STATUS, buildPunches, computeLateEarly, normalizeTimeOfDay } from '@/lib/attendance';
+import { assertCanManageEmployee, resolveEmployeeSchedule } from '@/lib/hr-workflows';
+import { deleteBiometricImage } from '@/lib/biometric-storage';
 
 export const dynamic = 'force-dynamic';
+
+const DAY_MS = 24 * 60 * 60 * 1000;
 
 const employeeSelect = {
   id: true,
@@ -21,6 +24,10 @@ const employeeSelect = {
   biometricId: true,
   branchId: true,
   workSchedule: true,
+  attendanceGeoExempt: true,
+  attendanceFaceExempt: true,
+  attendanceExemptReason: true,
+  faceProfile: { select: { createdAt: true, model: true } },
   branch: { select: { nameArabic: true } },
   department: { select: { nameArabic: true } },
 } as const;
@@ -71,7 +78,20 @@ const bodySchema = z.discriminatedUnion('actionType', [
       overtimeMin: zOptInt,
     }),
   }),
+  z.object({
+    // Self clock-in exemptions. Field staff: no location check (face still required).
+    // Face exemption (e.g. face covering): owner decision only (location still required). Never both.
+    actionType: z.literal('SET_ATTENDANCE_EXEMPTIONS'),
+    payload: z.object({ employeeId: zId, geoExempt: zBool, faceExempt: zBool, reason: zOptText(500) }),
+  }),
+  z.object({
+    // Deletes the employee's reference face so they can enroll again (new phone camera, wrong capture...).
+    actionType: z.literal('RESET_FACE'),
+    payload: z.object({ employeeId: zId, reason: zOptText(500) }),
+  }),
 ]);
+
+const scopeSelect = { id: true, directManagerId: true, branchId: true, departmentId: true } as const;
 
 const nonNegative = (n: number | undefined) => Math.max(0, n ?? 0);
 
@@ -107,22 +127,93 @@ export async function POST(req: Request) {
       return NextResponse.json({ message: 'تم تحديث رقم البصمة للموظف', data: updated });
     }
 
+    if (body.actionType === 'SET_ATTENDANCE_EXEMPTIONS') {
+      const { employeeId, geoExempt, faceExempt } = body.payload;
+      const reason = body.payload.reason?.trim() || null;
+      const before = await prisma.employee.findUnique({
+        where: { id: employeeId },
+        select: { ...scopeSelect, attendanceGeoExempt: true, attendanceFaceExempt: true, attendanceExemptReason: true },
+      });
+      if (!before) throw notFound('الموظف غير موجود');
+      // HR cannot exempt themselves (the owner group can).
+      await assertCanManageEmployee(prisma, user, before);
+      if (geoExempt && faceExempt) throw badRequest('لا يمكن استثناء الموظف من الموقع ومن التحقق من الوجه معاً');
+      if ((geoExempt || faceExempt) && (!reason || reason.length < 3)) throw badRequest('يرجى كتابة سبب الاستثناء');
+      if (faceExempt && !before.attendanceFaceExempt && !roleIn(user.role, ROLE_GROUPS.OWNER)) {
+        throw forbidden('الاستثناء من التحقق من الوجه يعتمده مالك المنشأة فقط');
+      }
+      const updated = await prisma.employee.update({
+        where: { id: employeeId },
+        data: { attendanceGeoExempt: geoExempt, attendanceFaceExempt: faceExempt, attendanceExemptReason: geoExempt || faceExempt ? reason : null },
+        select: { id: true, attendanceGeoExempt: true, attendanceFaceExempt: true, attendanceExemptReason: true },
+      });
+      await logAudit({
+        userId: user.id,
+        action: 'UPDATE',
+        entityType: 'Employee',
+        entityId: employeeId,
+        details: {
+          event: 'ATTENDANCE_EXEMPTIONS',
+          before: { geoExempt: before.attendanceGeoExempt, faceExempt: before.attendanceFaceExempt },
+          after: { geoExempt, faceExempt },
+          reason,
+        },
+        ipAddress,
+      });
+      return NextResponse.json({ message: 'تم تحديث استثناءات الحضور', data: updated });
+    }
+
+    if (body.actionType === 'RESET_FACE') {
+      const { employeeId } = body.payload;
+      const emp = await prisma.employee.findUnique({ where: { id: employeeId }, select: { ...scopeSelect, faceProfile: { select: { id: true, photoStoredName: true } } } });
+      if (!emp) throw notFound('الموظف غير موجود');
+      await assertCanManageEmployee(prisma, user, emp);
+      if (!emp.faceProfile) throw conflict('لا توجد صورة وجه مسجلة لهذا الموظف');
+      await prisma.faceProfile.delete({ where: { id: emp.faceProfile.id } });
+      await deleteBiometricImage(emp.faceProfile.photoStoredName);
+      await logAudit({
+        userId: user.id,
+        action: 'DELETE',
+        entityType: 'FaceProfile',
+        entityId: emp.faceProfile.id,
+        details: { employeeId, event: 'FACE_RESET_BY_HR', reason: body.payload.reason?.trim() || null },
+        ipAddress,
+      });
+      return NextResponse.json({ message: 'تم حذف صورة الوجه المسجلة، ويمكن للموظف التسجيل من جديد' });
+    }
+
     // ADD_ATTENDANCE: manual attendance entry. Times are Riyadh wall-clock times.
+    // A time left empty keeps the stored punch (e.g. HR adds only the check-out of a day that
+    // already has a self check-in), instead of wiping it.
     const p = body.payload;
     const day = dateKey(p.date);
     if (!day) throw badRequest('تاريخ غير صالح');
     if (!p.checkIn && !p.checkOut) throw badRequest('يرجى إدخال وقت الحضور أو الانصراف');
-    const { schedule } = await resolveEmployeeSchedule(prisma, p.employeeId);
+    const date = new Date(`${day}T00:00:00.000Z`);
+    const [{ schedule }, existing] = await Promise.all([
+      resolveEmployeeSchedule(prisma, p.employeeId),
+      prisma.attendance.findUnique({
+        where: { employeeId_date: { employeeId: p.employeeId, date } },
+        select: { checkIn: true, checkOut: true, checkInSource: true, checkOutSource: true },
+      }),
+    ]);
 
-    const punches = buildPunches(day, p.checkIn, p.checkOut);
-    const calc = computeLateEarly({ schedule, dayKey: day, checkIn: punches.checkIn, checkOut: punches.checkOut });
+    const typed = buildPunches(day, p.checkIn, p.checkOut);
+    const checkIn = typed.checkIn ?? existing?.checkIn ?? null;
+    let checkOut = typed.checkOut ?? existing?.checkOut ?? null;
+    // A check-out typed alone that is not after the kept check-in belongs to the next day (overnight).
+    if (!p.checkIn && p.checkOut && checkIn && checkOut && checkOut.getTime() <= checkIn.getTime()) {
+      checkOut = new Date(checkOut.getTime() + DAY_MS);
+    }
+    const calc = computeLateEarly({ schedule, dayKey: day, checkIn, checkOut });
     const minutes = calc.hasSchedule
       ? { lateMinutes: calc.lateMinutes, earlyLeaveMin: calc.earlyLeaveMin, overtimeMin: calc.overtimeMin }
       : { lateMinutes: nonNegative(p.lateMinutes), earlyLeaveMin: nonNegative(p.earlyLeaveMin), overtimeMin: nonNegative(p.overtimeMin) };
-    const date = new Date(`${day}T00:00:00.000Z`);
     const values = {
-      checkIn: punches.checkIn,
-      checkOut: punches.checkOut,
+      checkIn,
+      checkOut,
+      checkInSource: p.checkIn ? ATTENDANCE_SOURCE.MANUAL : (existing?.checkInSource ?? null),
+      checkOutSource: p.checkOut ? ATTENDANCE_SOURCE.MANUAL : (existing?.checkOutSource ?? null),
       status: ATTENDANCE_STATUS.PRESENT,
       ...minutes,
       earlyMinutes: minutes.earlyLeaveMin,

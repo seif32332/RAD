@@ -15,10 +15,13 @@
 //   session_timeout_minutes         -> /api/auth/login (JWT + cookie lifetime)
 //   max_login_attempts              -> /api/auth/login (per-account rate limit)
 //   password_min_length             -> user creation / password change routes
+//   self_attendance_enabled, attendance_* -> src/lib/self-attendance.ts (parseSelfAttendanceSettings:
+//                                      /api/portal/attendance*, /api/attendance-locations, purge job)
 import { ALERT_THRESHOLD_SETTINGS } from '@/lib/alerts';
 import { DEFAULT_PAYROLL_SETTINGS, PAYROLL_SETTING_KEYS } from '@/lib/payroll-core';
 import { DEFAULT_EXIT_REENTRY_VISA_FEE } from '@/lib/constants';
 import { DEFAULT_STATUTORY_LEAVE_RULES, LEAVE_RULE_LIMITS, LEAVE_RULE_SETTING_KEYS } from '@/lib/leave';
+import { SELF_ATTENDANCE_SETTING_KEYS, SELF_ATTENDANCE_SETTING_LIMITS } from '@/lib/self-attendance';
 
 export interface SettingDef {
   /** Default value ('' = not set). */
@@ -65,6 +68,13 @@ const statutoryLeaveDefs: Record<string, SettingDef> = Object.fromEntries(
   ]),
 );
 
+const selfAttendanceDefs: Record<string, SettingDef> = Object.fromEntries(
+  (Object.keys(SELF_ATTENDANCE_SETTING_KEYS) as Array<keyof typeof SELF_ATTENDANCE_SETTING_KEYS>).map((field) => {
+    const l = SELF_ATTENDANCE_SETTING_LIMITS[field];
+    return [SELF_ATTENDANCE_SETTING_KEYS[field], int(l.defaultValue, l.min, l.max)];
+  }),
+);
+
 /** Setting keys whose defaults are provisional (pending the legal / payroll counsel's confirmation). */
 export const PROVISIONAL_SETTING_KEYS: readonly string[] = Object.values(LEAVE_RULE_SETTING_KEYS);
 
@@ -85,6 +95,9 @@ export const SETTING_DEFS: Readonly<Record<string, SettingDef>> = {
 
   // Statutory leaves (DEC-003): PROVISIONAL defaults pending counsel confirmation.
   ...statutoryLeaveDefs,
+
+  // Self clock-in from the portal (GPS geofence + face verification). Off by default.
+  ...selfAttendanceDefs,
 
   // Security
   [SECURITY_SETTING_KEYS.sessionTimeoutMinutes]: int(DEFAULT_SECURITY_POLICY.sessionTimeoutMinutes, 15, 7 * 24 * 60),
