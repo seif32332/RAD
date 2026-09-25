@@ -79,6 +79,8 @@ export default function ClockCard({ onPunched, onRequestCorrection }: { onPunche
   const [busy, setBusy] = useState(false);
   const [phase, setPhase] = useState<string | null>(null);
   const [rejection, setRejection] = useState<PunchRejection | null>(null);
+  // Short pause after a successful punch so a double tap does not immediately try the opposite punch.
+  const [coolingDown, setCoolingDown] = useState(false);
   const positionRef = useRef<Promise<Position> | null>(null);
 
   const load = useCallback(async () => {
@@ -177,6 +179,8 @@ export default function ClockCard({ onPunched, onRequestCorrection }: { onPunche
       if (res.ok) {
         toast.success(data.message || 'تم التسجيل');
         setCamera(null);
+        setCoolingDown(true);
+        window.setTimeout(() => setCoolingDown(false), 10_000);
         onPunched();
       } else if (res.status === 422 && data.punchId && data.workDate && data.action) {
         setCamera(null);
@@ -276,7 +280,7 @@ export default function ClockCard({ onPunched, onRequestCorrection }: { onPunche
         <button
           type="button"
           onClick={start}
-          disabled={actionBlocked || busy || !!phase}
+          disabled={actionBlocked || busy || !!phase || coolingDown}
           className={`w-full md:w-auto md:min-w-[220px] py-4 px-6 rounded-2xl font-black text-white text-[16px] shadow-lg transition flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed ${isOut ? 'bg-rose-600 hover:bg-rose-700 shadow-rose-900/10' : 'bg-emerald-600 hover:bg-emerald-700 shadow-emerald-900/10'}`}
         >
           {isOut ? <LogOut size={20} aria-hidden="true" /> : <LogIn size={20} aria-hidden="true" />}

@@ -191,7 +191,7 @@ export default function AttendanceLocations({ branchId, branchName, locationUrl 
       ) : (
         <ul className="divide-y divide-slate-100 border border-slate-100 rounded-2xl overflow-hidden">
           {locations.map((l) => (
-            <li key={l.id} className={`p-4 flex flex-col sm:flex-row sm:items-center gap-3 ${l.isActive ? 'bg-white' : 'bg-slate-50'}`}>
+            <li key={l.id} className={`p-4 flex flex-col xl:flex-row xl:items-center gap-3 ${l.isActive ? 'bg-white' : 'bg-slate-50'}`}>
               <div className="flex-1 min-w-0">
                 <p className="font-black text-slate-800 text-[14px] flex items-center gap-2">
                   <MapPin size={15} className="text-violet-500" aria-hidden="true" /> {l.name}
