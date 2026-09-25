@@ -60,3 +60,12 @@ next-env.d.ts
 # tenant manager runtime data
 radeef-manage/database.sqlite
 radeef-manage/.env
+
+# face verification service: local virtualenvs, caches and DOWNLOADED models (scripts/download_models.py).
+# The converted liveness models (fasnet_*.onnx) ARE committed.
+services/face/.venv*/
+__pycache__/
+.pytest_cache/
+services/face/models/face_detection_yunet_*.onnx
+services/face/models/face_recognition_sface_*.onnx
+services/face/models/*.part

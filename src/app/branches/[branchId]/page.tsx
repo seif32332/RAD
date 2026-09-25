@@ -18,6 +18,7 @@ import {
   type AdminAlert,
   type BranchDocumentAlert,
 } from '@/lib/alerts';
+import AttendanceLocations from './_components/AttendanceLocations';
 
 interface BranchDetails {
   id: string;
@@ -239,6 +240,10 @@ export default function ViewBranchPage() {
                   </div>
                 )}
               </div>
+            </DetailSection>
+
+            <DetailSection title="مواقع الحضور من البوابة" icon={<MapPin size={18} className="text-violet-500" />}>
+              <AttendanceLocations branchId={branch.id} branchName={branch.nameArabic} locationUrl={branch.locationUrl} />
             </DetailSection>
 
             <DetailSection title="رخصة البلدية" icon={<FileText size={18} className="text-emerald-500" />}>

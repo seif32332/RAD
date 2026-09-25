@@ -214,6 +214,34 @@ jobs:
             }
             process.exit(1);
           }
+
+          // On-premise face verification service (DEC-011): every Python package it installs must be
+          // listed under "Approved on-premise components" (the npm check above cannot see Python).
+          const REQ = 'services/face/requirements.txt';
+          if (fs.existsSync(REQ)) {
+            const pyPkgs = fs.readFileSync(REQ, 'utf8').split('\n')
+              .map((l) => l.replace(/#.*/, '').trim()).filter(Boolean)
+              .map((l) => l.split(/[=<>!~\[;\s]/)[0].toLowerCase());
+            const onPrem = doc.split(/^## /m).find((s) => s.startsWith('Approved on-premise components'));
+            if (!onPrem) {
+              console.error(`::error file=${DOC}::section "## Approved on-premise components" not found (${REQ} exists)`);
+              process.exit(1);
+            }
+            const listed = new Set();
+            for (const line of onPrem.split('\n')) {
+              if (!line.trim().startsWith('|')) continue;
+              const first = line.split('|')[1] || '';
+              for (const m of first.matchAll(/`([^`]+)`/g)) listed.add(m[1].trim().toLowerCase());
+            }
+            const missing = pyPkgs.filter((p) => !listed.has(p));
+            console.log(`Python packages in ${REQ}: ${pyPkgs.join(', ')}`);
+            if (missing.length) {
+              for (const p of missing) {
+                console.error(`::error file=${REQ}::"${p}" is not listed under "Approved on-premise components" in ${DOC} (DEC-011).`);
+              }
+              process.exit(1);
+            }
+          }
           EOF
 
   secret-scan:

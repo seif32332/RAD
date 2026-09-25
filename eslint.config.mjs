@@ -38,6 +38,8 @@ const eslintConfig = defineConfig([
     "prisma/migrations/**",
     "uploads/**",
     "public/uploads/**",
+    // Python face verification service (its own tests; a local .venv must not be linted).
+    "services/**",
   ]),
 ]);
 

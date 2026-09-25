@@ -24,6 +24,8 @@ public/uploads
 docs
 ops
 radeef-manage
+# face verification service: separate image (services/face/Dockerfile)
+services
 Dockerfile
 docker-compose.yml
 ecosystem.config.js

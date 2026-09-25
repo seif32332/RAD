@@ -37,3 +37,23 @@ bot, automatic CV reading, cloud OCR). No AI or OCR SDK may be added to `package
 To approve one later: add a row with the exact npm package name in backticks in the first column
 (for example `` `tesseract.js` `` for on-device OCR), the owner's approval reference and date, and
 update the processor table above if the package sends data to a third party.
+
+## Approved on-premise components
+
+Components that process tenant data **on the tenant's own server**: no third party receives
+anything. They still need the owner's written approval before the feature that uses them is
+switched on (DEC-011). CI checks that every Python package in `services/face/requirements.txt` is
+listed in the first column of this table.
+
+| Package(s) | Component | Purpose | Data processed | Leaves the server? | Status | Approved by / date |
+|---|---|---|---|---|---|---|
+| `fastapi`, `uvicorn`, `python-multipart` | `services/face` (radeef-face, 127.0.0.1:8090) | HTTP layer of the internal face verification service | Selfie image, in memory only | No | PENDING: owner approval (DEC-011); keep `self_attendance_enabled` = 0 until approved | — |
+| `numpy`, `opencv-python-headless`, `onnxruntime` | `services/face` | Face detection (YuNet, MIT), 128-d embedding (SFace, Apache-2.0), passive liveness (MiniFASNet, Apache-2.0) | Selfie image, in memory only; returns an embedding that Radeef stores encrypted | No | PENDING: owner approval (DEC-011) | — |
+
+Biometric data handling (PDPL: sensitive data):
+- **Consent:** explicit and versioned (`FaceProfile.consentVersion`).
+- **Templates:** encrypted with `DATA_ENCRYPTION_KEY`.
+- **Evidence selfies:** kept only for rejected / flagged punches, for `attendance_selfie_retention_days` (default 90), and excluded from the uploads backups.
+- **Deletion:**
+  - Templates and reference photos are deleted when the employee withdraws consent, on an HR reset, and at termination (`scripts/jobs.mjs purge-attendance-biometrics`).
+  - Pretrained models from InsightFace (buffalo_l / ArcFace) must not be used: non-commercial license.

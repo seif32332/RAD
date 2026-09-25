@@ -152,11 +152,18 @@ SQL
 }
 
 write_env_file() {
-  local host url session_secret data_key
+  local host url session_secret data_key face_token="" face_url=""
   [[ "$MODE" == "docker" ]] && host="$PG_HOST_DOCKER" || host="$PG_HOST_PM2"
   url="postgresql://${DB_ROLE}:${DB_PASSWORD}@${host}:${PG_PORT}/${DB_NAME}?schema=public&connection_limit=${APP_CONNECTION_LIMIT}&pool_timeout=20"
   session_secret="$(openssl rand -base64 48 | tr -d '\n')"
   data_key="$(openssl rand -base64 32 | tr -d '\n')"
+  # Shared face verification service (ops/face-setup.sh); left empty until it is installed.
+  if [[ -f "$ENV_DIR/services/face.env" ]]; then
+    face_token="$(env_get "$ENV_DIR/services/face.env" FACE_SERVICE_TOKEN)"
+    if [[ -n "$face_token" ]]; then
+      [[ "$MODE" == "docker" ]] && face_url="http://host.docker.internal:8090" || face_url="http://127.0.0.1:8090"
+    fi
+  fi
   (
     umask 077
     cat >"$ENV_FILE.tmp" <<EOF
@@ -178,6 +185,11 @@ SMTP_SECURE="$TENANT_SMTP_SECURE"
 SMTP_USER="$TENANT_SMTP_USER"
 SMTP_PASS="$TENANT_SMTP_PASS"
 SMTP_FROM="$TENANT_SMTP_FROM"
+
+# Self clock-in face verification service (ops/face-setup.sh). Empty = portal punches that need the
+# face check are rejected (fail closed). Add later with: sudo ops/face-setup.sh --configure-tenants
+FACE_SERVICE_URL="$face_url"
+FACE_SERVICE_TOKEN="$face_token"
 
 # First admin: prefer `npm run admin:create -- <email>` (prints a one-time password).
 # If you use the seed instead, fill these, run it once, then REMOVE ADMIN_PASSWORD.

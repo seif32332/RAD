@@ -102,7 +102,10 @@ backup_tenant() {
   updir="$(tenant_upload_dir "$t")"
   if [[ -d "$updir" ]]; then
     log "[$t] uploads $updir"
-    tar -C "$(dirname "$updir")" -czf "$daily/$base.uploads.tar.gz.partial" "$(basename "$updir")"
+    # .biometric (self clock-in selfies and reference faces) is left out on purpose: those images have
+    # a short retention (PDPL minimization) that monthly backups would silently extend. The face
+    # templates themselves are in the database dump, encrypted.
+    tar -C "$(dirname "$updir")" --exclude="$(basename "$updir")/.biometric" -czf "$daily/$base.uploads.tar.gz.partial" "$(basename "$updir")"
     mv -f "$daily/$base.uploads.tar.gz.partial" "$daily/$base.uploads.tar.gz"
   else
     warn "[$t] uploads directory $updir not found; database only"

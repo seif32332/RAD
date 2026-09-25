@@ -1,0 +1,30 @@
+# /etc/systemd/system/radeef-face.service: internal face verification service (installed by ops/face-setup.sh).
+# One instance serves every tenant; it listens on 127.0.0.1 only and is never exposed by Nginx.
+[Unit]
+Description=Radeef face verification service (127.0.0.1:8090)
+After=network.target
+
+[Service]
+Type=simple
+User=radeef
+Group=radeef
+WorkingDirectory=/opt/radeef/face/current
+# FACE_SERVICE_TOKEN (chmod 600). Kept out of /etc/radeef/*.env, which lists tenants.
+EnvironmentFile=/etc/radeef/services/face.env
+Environment=PYTHONDONTWRITEBYTECODE=1 OMP_NUM_THREADS=1
+ExecStart=/opt/radeef/face/.venv/bin/uvicorn app.main:app --host 127.0.0.1 --port 8090 --workers 2 --no-server-header
+Restart=on-failure
+RestartSec=5
+MemoryMax=1G
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+ReadOnlyPaths=/opt/radeef/face
+CapabilityBoundingSet=
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+LockPersonality=true
+
+[Install]
+WantedBy=multi-user.target

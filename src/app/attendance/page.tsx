@@ -7,6 +7,7 @@ import DashboardLayout from '@/components/DashboardLayout';
 import SearchableSelect from '@/components/SearchableSelect';
 import { toast, confirmDialog, readApiError } from '@/components/ui/feedback';
 import { dateKey, formatDate, todayKey } from '@/lib/dates';
+import SelfAttendancePanel from './_components/SelfAttendancePanel';
 
 interface HubEmployee {
   id: string;
@@ -16,6 +17,10 @@ interface HubEmployee {
   biometricId?: string | null;
   branch?: { nameArabic?: string | null } | null;
   department?: { nameArabic?: string | null } | null;
+  attendanceGeoExempt?: boolean;
+  attendanceFaceExempt?: boolean;
+  attendanceExemptReason?: string | null;
+  faceProfile?: { createdAt: string; model: string } | null;
 }
 
 interface HubAttendance {
@@ -27,8 +32,18 @@ interface HubAttendance {
   lateMinutes?: number | null;
   earlyLeaveMin?: number | null;
   overtimeMin?: number | null;
+  checkInSource?: string | null;
+  checkOutSource?: string | null;
+  flagged?: boolean;
   employee?: HubEmployee | null;
 }
+
+/** Attendance.checkInSource / checkOutSource -> short label (null = recorded before sources existed). */
+const SOURCE_LABELS: Record<string, { label: string; cls: string }> = {
+  SELF: { label: 'من البوابة', cls: 'bg-emerald-100 text-emerald-800' },
+  MANUAL: { label: 'يدوي', cls: 'bg-slate-100 text-slate-600' },
+  CORRECTION: { label: 'تصحيح', cls: 'bg-amber-100 text-amber-800' },
+};
 
 interface HubSchedule {
   id: string;
@@ -44,7 +59,7 @@ interface HubData {
   schedules: HubSchedule[];
 }
 
-type Tab = 'ARCHIVE' | 'REPORT' | 'UNREGISTERED' | 'BIOMETRIC' | 'SCHEDULES';
+type Tab = 'ARCHIVE' | 'REPORT' | 'UNREGISTERED' | 'BIOMETRIC' | 'SCHEDULES' | 'SELF';
 
 const EMPTY: HubData = { attendances: [], employees: [], schedules: [] };
 
@@ -174,9 +189,10 @@ export default function AttendanceDashboardPage() {
           <div className="text-[13px] font-bold text-blue-900 leading-relaxed">
             <p className="font-black mb-1">كيف تصل سجلات الحضور إلى النظام؟</p>
             <p>
-              لا يتصل رديف حالياً بأجهزة البصمة ولا يستورد ملفاتها آلياً. تُنشأ سجلات الحضور بطريقتين فقط:
+              لا يتصل رديف حالياً بأجهزة البصمة ولا يستورد ملفاتها آلياً. تُنشأ سجلات الحضور بثلاث طرق:
               (1) الإدخال اليدوي من الموارد البشرية في تبويب «تقرير دوام اليوم»،
-              (2) اعتماد <Link href="/attendance-corrections" className="underline font-black">طلبات تصحيح الحضور</Link> التي يرفعها الموظفون.
+              (2) اعتماد <Link href="/attendance-corrections" className="underline font-black">طلبات تصحيح الحضور</Link> التي يرفعها الموظفون،
+              (3) تسجيل الموظف حضوره من البوابة داخل مواقع فرعه مع التحقق من وجهه، إذا كان مفعلاً في الإعدادات (تبويب «الحضور من البوابة»).
               رقم الموظف في جهاز البصمة يُحفظ مرجعاً للمطابقة اليدوية فقط.
             </p>
           </div>
@@ -189,6 +205,7 @@ export default function AttendanceDashboardPage() {
           <TabButton active={activeTab === 'UNREGISTERED'} onClick={() => setActiveTab('UNREGISTERED')} label={`بدون رقم جهاز (${unregisteredEmployees.length})`} badge={unregisteredEmployees.length > 0} />
           <TabButton active={activeTab === 'BIOMETRIC'} onClick={() => setActiveTab('BIOMETRIC')} label="أرقام أجهزة البصمة" />
           <TabButton active={activeTab === 'SCHEDULES'} onClick={() => setActiveTab('SCHEDULES')} label="جداول العمل المرتبطة" />
+          <TabButton active={activeTab === 'SELF'} onClick={() => setActiveTab('SELF')} label="الحضور من البوابة" badge={data.attendances.some((a) => a.flagged)} />
         </div>
 
         {/* --- Content Area --- */}
@@ -396,6 +413,11 @@ export default function AttendanceDashboardPage() {
               </div>
             )}
 
+            {/* TAB: SELF CLOCK-IN (portal GPS + face) */}
+            {activeTab === 'SELF' && (
+              <SelfAttendancePanel employees={data.employees} onChanged={() => void fetchHubData({ silent: true })} />
+            )}
+
           </div>
         )}
       </div>
@@ -425,9 +447,18 @@ function AttendanceTable({ rows, emptyText, bare = false }: { rows: HubAttendanc
                 <p className="font-bold text-[14px] text-slate-800">{a.employee?.firstNameArabic} {a.employee?.lastNameArabic}</p>
                 <p className="text-slate-400 text-[11px] font-bold">رقم الجهاز: {a.employee?.biometricId || '—'} | {a.employee?.branch?.nameArabic || '-'}</p>
               </td>
-              <td className="p-4 font-black text-[14px] text-slate-600">{formatDate(a.date)}</td>
-              <td className="p-4 font-black text-[15px] text-emerald-700 bg-emerald-50/50">{formatTime(a.checkIn)}</td>
-              <td className="p-4 font-black text-[15px] text-rose-700 bg-rose-50/50">{formatTime(a.checkOut)}</td>
+              <td className="p-4 font-black text-[14px] text-slate-600">
+                {formatDate(a.date)}
+                {a.flagged && <span className="block mt-1 w-fit text-[10px] font-black bg-amber-100 text-amber-800 px-2 py-0.5 rounded-full">للمراجعة</span>}
+              </td>
+              <td className="p-4 font-black text-[15px] text-emerald-700 bg-emerald-50/50">
+                {formatTime(a.checkIn)}
+                <SourceBadge source={a.checkIn ? a.checkInSource : null} />
+              </td>
+              <td className="p-4 font-black text-[15px] text-rose-700 bg-rose-50/50">
+                {formatTime(a.checkOut)}
+                <SourceBadge source={a.checkOut ? a.checkOutSource : null} />
+              </td>
               <td className="p-4 font-black text-[14px] text-slate-700">{(a.lateMinutes ?? 0) > 0 ? <span className="text-rose-600">+{a.lateMinutes}</span> : '0'}</td>
               <td className="p-4 font-black text-[14px] text-slate-700">{(a.earlyLeaveMin ?? 0) > 0 ? <span className="text-amber-600">-{a.earlyLeaveMin}</span> : '0'}</td>
               <td className="p-4 font-black text-[14px] text-indigo-700">{(a.overtimeMin ?? 0) > 0 ? `+${a.overtimeMin}` : '0'}</td>
@@ -442,6 +473,12 @@ function AttendanceTable({ rows, emptyText, bare = false }: { rows: HubAttendanc
   );
   if (bare) return table;
   return <div className="bg-white border border-slate-200 rounded-[2rem] overflow-hidden shadow-sm">{table}</div>;
+}
+
+function SourceBadge({ source }: { source?: string | null }) {
+  const s = source ? SOURCE_LABELS[source] : null;
+  if (!s) return null;
+  return <span className={`block mt-1 w-fit text-[10px] font-black px-2 py-0.5 rounded-full ${s.cls}`}>{s.label}</span>;
 }
 
 function TabButton({ active, onClick, label, badge = false }: { active: boolean; onClick: () => void; label: string; badge?: boolean }) {

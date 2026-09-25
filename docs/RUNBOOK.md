@@ -515,3 +515,93 @@ JSON لكل مستأجر: الشركات، الفروع، الموظفون ال�
 - **AI/OCR SDKs must be approved sub-processors:** يفشل إن أُضيفت إلى `package.json` حزمة ذكاء اصطناعي أو OCR
   (`openai`، `@anthropic-ai/sdk`، `@google/generative-ai`، `tesseract.js`، `@aws-sdk/client-textract`، …) غير مدرجة في
   جدول "Approved AI / OCR packages" في `docs/processors.md` (فارغ حالياً، DEC-006).
+- **المكوّنات الداخلية (DEC-011):** نفس الفحص يفشل إن كانت في `services/face/requirements.txt` حزمة Python غير
+  مدرجة في جدول "Approved on-premise components" في `docs/processors.md`.
+
+## 5. الحضور الذاتي من البوابة: الموقع والتحقق من الوجه (DEC-011)
+
+**المفتاح `self_attendance_enabled` مطفأ افتراضياً. لا تفعّله قبل:**
+1. موافقة المالك المكتوبة، وتحويل حالة المكوّن في `docs/processors.md` إلى APPROVED.
+2. اعتماد نص إشعار الخصوصية الظاهر في البوابة.
+3. تشغيل خدمة الوجه.
+4. تحديد مواقع الحضور لكل فرع من صفحة الفرع.
+
+### 5.1 خدمة التحقق من الوجه `radeef-face`
+- **ما هي:** خدمة Python داخلية على `127.0.0.1:8090`، نسخة واحدة لكل المستأجرين، ولا يعرضها Nginx. لا تخزن شيئاً،
+  وكل طلب يحتاج `Authorization: Bearer` بالتوكن.
+- **مرة واحدة قبل أول نشر، على جهاز تطوير:** تحويل نماذج كشف الالتقاط المباشر إلى ONNX ورفعها إلى المستودع:
+  `services/face/tools/convert_fasnet.py`. التعليمات داخل الملف، والتراخيص في `services/face/models/MODELS.md`.
+- **التثبيت على المضيف (نمط PM2):**
+  ```bash
+  sudo apt install -y python3-venv
+  sudo ops/face-setup.sh --src /opt/radeef/src          # venv + الحزم + النماذج + /etc/radeef/services/face.env + خدمة systemd
+  sudo ops/face-setup.sh --configure-tenants            # يضيف FACE_SERVICE_URL/TOKEN لكل /etc/radeef/<tenant>.env
+  sudo -iu radeef pm2 startOrReload /opt/radeef/src/ecosystem.config.js --update-env
+  curl -s http://127.0.0.1:8090/health                   # "liveness": true مطلوبة
+  ```
+  التوكن في `/etc/radeef/services/face.env`، وليس في `/etc/radeef/face.env`، لأن كل ملف `*.env` في `/etc/radeef` يُعامل
+  مستأجراً في `ecosystem.config.js` و`deploy.sh` و`backup.sh` و`run-jobs.sh`.
+- **نمط Docker:** ابنِ الصورة من `services/face/Dockerfile` وشغّلها منشورة على عنوان جسر Docker فقط
+  (`-p 172.17.0.1:8090:8090`) مثل Postgres. بعدها `ops/face-setup.sh --configure-tenants --mode docker`، ثم أعد إنشاء
+  الحاويات.
+- **بعد إصدار غيّر `services/face`:** `sudo ops/face-setup.sh --update --src /opt/radeef/src`. السكربت يرجع للملفات
+  السابقة إن لم تصبح الخدمة سليمة. `deploy.sh` لا يلمس هذه الخدمة.
+- **السجلات:** `journalctl -u radeef-face -f`. لا تُسجَّل الصور ولا القوالب.
+- **عند توقف الخدمة:** تُرفض حركات البوابة التي تحتاج الوجه (`FACE_SERVICE_UNAVAILABLE`، fail closed)، ويرفع
+  الموظفون طلبات تصحيح. الخطوات: `systemctl status radeef-face`، ثم `curl` على `/health`، ثم التأكد من أن التوكن في
+  ملف المستأجر يطابق `/etc/radeef/services/face.env`.
+- **تدوير التوكن:**
+  1. ولّد قيمة جديدة في `/etc/radeef/services/face.env`، ثم `systemctl restart radeef-face`.
+  2. احذف سطري FACE_SERVICE_* من ملفات المستأجرين، ثم شغّل `--configure-tenants`.
+  3. أعد تحميل المستأجرين.
+
+### 5.2 الأذونات والترويسات
+`Permissions-Policy` صارت `camera=(self), geolocation=(self)` في `next.config.ts` وفي `ops/nginx/tenant.conf.template`.
+المواقع الموجودة على الخادم لا تتغير وحدها. لكل مستأجر:
+```bash
+sudo ops/new-tenant.sh --nginx-only <tenant> <domain> <port>
+curl -sI https://<domain>/login | grep -i permissions-policy
+```
+الكاميرا والموقع يعملان عبر HTTPS فقط.
+
+### 5.3 حذف البيانات الحيوية دورياً
+```ini
+# /etc/systemd/system/radeef-jobs@purge-attendance-biometrics.timer   (04:50 + حتى 20 دقيقة)
+[Timer]
+OnCalendar=*-*-* 04:50:00 Asia/Riyadh
+RandomizedDelaySec=20min
+Persistent=true
+[Install]
+WantedBy=timers.target
+```
+```bash
+sudo systemctl daemon-reload && sudo systemctl enable --now radeef-jobs@purge-attendance-biometrics.timer
+sudo -iu radeef /opt/radeef/src/ops/run-jobs.sh purge-attendance-biometrics <tenant>   # تجربة يدوية
+```
+**ماذا تحذف:**
+- صور الحركات المرفوضة والمشبوهة الأقدم من `attendance_selfie_retention_days` (افتراضياً 90).
+- قالب الوجه وصورته المرجعية لكل موظف انتهت خدمته.
+
+**متى ترفض العمل:**
+- إذا لم يكن `UPLOAD_DIR` مضبوطاً في ملف المستأجر.
+- إذا كان مجلد `UPLOAD_DIR/.biometric` غير موجود بينما القاعدة تشير إلى ملفات. `run-jobs.sh` في نمط Docker يربط
+  مجلد الملفات بالحاوية لهذا الغرض.
+
+`ops/backup.sh` يستثني `.biometric` من أرشيف الملفات. القوالب نفسها مشفرة داخل نسخة القاعدة.
+
+### 5.4 التجربة والمعايرة قبل التعميم
+1. **على مستأجر واحد:**
+   - حدّد مواقع فرع أو فرعين.
+   - فعّل `self_attendance_enabled = 1` من الإعدادات.
+   - اطلب من 5–10 موظفين التسجيل من أجهزة iPhone وAndroid مختلفة.
+2. **لمدة أسبوع إلى أسبوعين:** راجع تبويب «الحضور من البوابة» في صفحة الحضور:
+   - توزيع «التطابق» و«الالتقاط المباشر» للحركات المقبولة.
+   - الحركات المرفوضة خطأً.
+3. **اضبط العتبات في الإعدادات:**
+   - `attendance_face_accept_pct` و`attendance_face_min_pct` (المبدئي 42 و36).
+   - `attendance_liveness_*`.
+   - `attendance_gps_max_accuracy_m`.
+   - نصف قطر المواقع.
+4. **جرّب الرفض عمداً:** صورة موظف آخر، وصورة على شاشة جوال، وتسجيل من خارج النطاق. كلها يجب أن تُرفض وتظهر في السجل
+   بصورتها.
+5. **لا تسويق** بمنع التلاعب تماماً أو بالذكاء الاصطناعي (DEC-002، DEC-005، DEC-006).

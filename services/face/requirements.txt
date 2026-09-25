@@ -1,0 +1,8 @@
+# Runtime dependencies of the face verification service (pinned; CPU only).
+# Approved as an on-premise component in docs/processors.md: no data leaves the server.
+fastapi==0.115.12
+uvicorn==0.34.3
+python-multipart==0.0.20
+numpy==2.2.6
+opencv-python-headless==4.11.0.86
+onnxruntime==1.22.0

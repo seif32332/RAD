@@ -35,7 +35,7 @@ JOB=""
 TENANTS=()
 JOBS_APP_DIR="${JOBS_APP_DIR:-$RADEEF_ROOT/src}"
 JOB_TIMEOUT="${JOB_TIMEOUT:-30m}"
-JOB_RE='^(expiry-digest|deactivate-terminated|outbox-dispatch)$'
+JOB_RE='^(expiry-digest|deactivate-terminated|outbox-dispatch|purge-attendance-biometrics)$'
 
 while (($#)); do
   case "$1" in
@@ -97,7 +97,9 @@ for entry in "${TARGETS[@]}"; do
   log "[$name] $JOB"
   set +e
   if [[ "$MODE" == "docker" ]]; then
+    # The uploads volume is mounted like in docker-compose.yml (purge-attendance-biometrics deletes files there).
     timeout "$JOB_TIMEOUT" docker run --rm --env-file "$envf" -e NODE_ENV=production \
+      -v "$DATA_DIR/$name/uploads:/app/uploads" \
       --add-host host.docker.internal:host-gateway "radeef:live-$name" node scripts/jobs.mjs "$JOB"
   else
     (cd "$workdir" && timeout "$JOB_TIMEOUT" env -i PATH="$PATH" HOME="${HOME:-/tmp}" NODE_ENV=production \

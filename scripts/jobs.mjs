@@ -13,6 +13,12 @@
  *   deactivate-terminated  Deactivates (isActive=false, sessionVersion+1, audit row) the logins of
  *                          employees terminated at least `terminated_access_days` days ago
  *                          (SystemSetting, default 0 = immediately; same rule as src/lib/access.ts).
+ *   purge-attendance-biometrics
+ *                          Self clock-in (PDPL minimization): deletes the evidence selfies of rejected /
+ *                          flagged punches older than `attendance_selfie_retention_days` (default 90)
+ *                          and the face template + reference photo of terminated employees. Files live in
+ *                          UPLOAD_DIR/.biometric; refuses to run without UPLOAD_DIR or when that folder
+ *                          is missing while the database still references files (wrong mount).
  *   outbox-dispatch        DRY RUN unless OUTBOX_SEND=true AND SMTP_HOST/SMTP_USER/SMTP_PASS/SMTP_FROM
  *                          are set. State machine: PENDING -> SENDING (lease) -> SENT | FAILED | UNKNOWN.
  *                          A lease that expires, or a send that times out, becomes UNKNOWN and is never
@@ -34,8 +40,10 @@
  */
 import { PrismaClient } from '@prisma/client';
 import { pathToFileURL } from 'node:url';
+import path from 'node:path';
+import { stat, unlink } from 'node:fs/promises';
 
-export const JOB_NAMES = ['expiry-digest', 'deactivate-terminated', 'outbox-dispatch'];
+export const JOB_NAMES = ['expiry-digest', 'deactivate-terminated', 'outbox-dispatch', 'purge-attendance-biometrics'];
 export const JOB_CONNECTION_LIMIT = 2;
 const DAY_MS = 24 * 60 * 60 * 1000;
 const RIYADH_OFFSET_MS = 3 * 60 * 60 * 1000;
@@ -503,10 +511,85 @@ async function outboxDispatch(prisma, { dryRun = false, now = new Date(), env = 
   return result;
 }
 
+// ---------------------------------------------------------------------------------------------
+// purge-attendance-biometrics (same file layout as src/lib/biometric-storage.ts)
+// ---------------------------------------------------------------------------------------------
+
+const BIOMETRIC_NAME_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.(jpg|png|webp)$/;
+
+/** SystemSetting attendance_selfie_retention_days: integer 1..365, else the default 90. */
+export function parseRetentionDays(value) {
+  const n = Number(String(value ?? '').trim().replace(/^"(.*)"$/, '$1'));
+  return Number.isInteger(n) && n >= 1 && n <= 365 ? n : 90;
+}
+
+export function isBiometricName(name) {
+  return typeof name === 'string' && BIOMETRIC_NAME_RE.test(name);
+}
+
+async function purgeAttendanceBiometrics(prisma, { dryRun, now = new Date(), env = process.env }) {
+  const uploadDir = String(env.UPLOAD_DIR || '').trim();
+  if (!uploadDir) throw new Error('UPLOAD_DIR is not set in the tenant env file: refusing to guess where biometric files are');
+  const dir = path.join(path.resolve(uploadDir), '.biometric');
+  const setting = await prisma.systemSetting.findUnique({ where: { key: 'attendance_selfie_retention_days' }, select: { value: true } });
+  const retentionDays = parseRetentionDays(setting && setting.value);
+  const cutoff = new Date(now.getTime() - retentionDays * DAY_MS);
+
+  const expired = await prisma.attendancePunch.findMany({
+    where: { selfieStoredName: { not: null }, createdAt: { lt: cutoff } },
+    select: { id: true, selfieStoredName: true },
+    take: 5000,
+  });
+  const terminated = await prisma.faceProfile.findMany({
+    where: { employee: { isTerminated: true } },
+    select: { id: true, employeeId: true, photoStoredName: true },
+  });
+  const summary = { retentionDays, expiredSelfies: expired.length, terminatedFaceProfiles: terminated.length, filesDeleted: 0, missingFiles: 0 };
+  if (dryRun) return { ...summary, dryRun: true };
+
+  const referencesFiles = expired.length > 0 || terminated.some((f) => f.photoStoredName);
+  const dirExists = await stat(dir).then((s) => s.isDirectory(), () => false);
+  if (referencesFiles && !dirExists) {
+    // Clearing the database references while the files survive elsewhere would hide them for good.
+    throw new Error(`${dir} not found while the database references biometric files (is the uploads volume mounted?)`);
+  }
+  const removeFile = async (name) => {
+    if (!isBiometricName(name)) return;
+    try {
+      await unlink(path.join(dir, name));
+      summary.filesDeleted += 1;
+    } catch (err) {
+      if (err && err.code === 'ENOENT') summary.missingFiles += 1;
+      else throw err;
+    }
+  };
+
+  for (const p of expired) {
+    await removeFile(p.selfieStoredName);
+    await prisma.attendancePunch.update({ where: { id: p.id }, data: { selfieStoredName: null, selfiePurgedAt: now } });
+  }
+  for (const f of terminated) {
+    const deleted = await prisma.faceProfile.deleteMany({ where: { id: f.id } });
+    if (deleted.count === 0) continue;
+    await removeFile(f.photoStoredName);
+    await prisma.auditLog.create({
+      data: {
+        userId: null,
+        action: 'DELETE',
+        entityType: 'FaceProfile',
+        entityId: f.id,
+        details: JSON.stringify({ employeeId: f.employeeId, reason: 'employee_terminated', job: 'purge-attendance-biometrics' }),
+      },
+    });
+  }
+  return summary;
+}
+
 const JOBS = {
   'expiry-digest': expiryDigest,
   'deactivate-terminated': deactivateTerminated,
   'outbox-dispatch': outboxDispatch,
+  'purge-attendance-biometrics': purgeAttendanceBiometrics,
 };
 
 // ---------------------------------------------------------------------------------------------

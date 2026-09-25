@@ -157,6 +157,25 @@ export const PUNCH_REASON_MESSAGES: Readonly<Record<PunchReason, string>> = {
   FACE_EXEMPT: 'مستثنى من التحقق من الوجه.',
 };
 
+/** Short labels for HR tables. */
+export const PUNCH_REASON_LABELS: Readonly<Record<PunchReason, string>> = {
+  LOCATION_MISSING: 'بدون موقع',
+  NO_LOCATIONS_CONFIGURED: 'لا مواقع للفرع',
+  LOW_GPS_ACCURACY: 'دقة موقع ضعيفة',
+  OUTSIDE_GEOFENCE: 'خارج النطاق',
+  NOT_ENROLLED: 'الوجه غير مسجل',
+  FACE_SERVICE_UNAVAILABLE: 'خدمة الوجه متوقفة',
+  NO_FACE: 'لا يظهر وجه',
+  MULTIPLE_FACES: 'أكثر من وجه',
+  FACE_MISMATCH: 'وجه غير مطابق',
+  SPOOF_SUSPECTED: 'اشتباه صورة أو شاشة',
+  FACE_BORDERLINE: 'تطابق منخفض',
+  LIVENESS_BORDERLINE: 'التقاط ضعيف',
+  ON_LEAVE: 'في إجازة',
+  GEO_EXEMPT: 'مستثنى من الموقع',
+  FACE_EXEMPT: 'مستثنى من الوجه',
+};
+
 /** Conditions that prevent a punch before any location / camera step (no AttendancePunch is written). */
 export const SELF_ATTENDANCE_BLOCKERS = {
   DISABLED: 'DISABLED',
