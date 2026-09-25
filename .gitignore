@@ -69,3 +69,5 @@ __pycache__/
 services/face/models/face_detection_yunet_*.onnx
 services/face/models/face_recognition_sface_*.onnx
 services/face/models/*.part
+
+.claude/
