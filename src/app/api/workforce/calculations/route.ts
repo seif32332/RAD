@@ -1,10 +1,11 @@
 // /api/workforce/calculations — saved calculations (WorkforceCalculation snapshots, SPEC principle 5).
 // GET ?kind&take&skip: list, newest first (metadata only: no inputs / outputs).
-// POST { kind: TRUE_COST | EXIT_COST | OVERVIEW | SAUDIZATION | HIRE_SCENARIO, params, title? }: the
+// POST { kind: TRUE_COST | EXIT_COST | OVERVIEW | SAUDIZATION | HIRE_SCENARIO | WORKFORCE_PLAN, params, title? }: the
 //      calculation is RECOMPUTED on the server from `params` (validated with the same schemas as the live
 //      endpoints); outputs sent by the client are never stored. buildSnapshot() records the engine version
 //      and the exact rule versions. SAUDIZATION snapshots store the RESTRICTED view (no names, no
-//      per-category or per-line weights: disability is health data) whoever saves them.
+//      per-category or per-line weights: disability is health data) whoever saves them. WORKFORCE_PLAN
+//      ({planId}) recomputes the plan's live projection (projectPlan) from the plan tables.
 import { NextResponse } from 'next/server';
 import { prisma } from '@/lib/prisma';
 import { getClientIp, requireUser } from '@/lib/auth';
@@ -20,6 +21,8 @@ import { runHireScenario, runSaudization, runSolve } from '../_lib/saudization';
 import { limitOrThrow, runExitCost, runOverview, runTrueCost, trueCostTotals } from '../_lib/server';
 import type { RuleVersionRef } from '@/lib/workforce/types';
 import { summarizeEmployee } from '../_lib/views';
+import { planSnapshotParamsSchema } from '../plans/_lib/schemas';
+import { computePlan, loadPlanOr404, planSnapshotRecord } from '../plans/_lib/server';
 
 export const dynamic = 'force-dynamic';
 
@@ -139,6 +142,10 @@ export async function POST(req: Request) {
       for (const c of out.result.candidates) for (const r of c.rulesUsed) refs.set(`${r.key}@${r.effectiveFrom}`, r);
       const inputs = { params: { ...p, startMonth: out.result.startMonth }, company: out.result.company };
       record = buildSnapshot('HIRE_SCENARIO', { type: 'COMPANY', id: p.companyId, title: body.title ?? `سيناريو توظيف — ${out.result.company.name}` }, inputs, out.result, [...refs.values()]);
+    } else if (body.kind === 'WORKFORCE_PLAN') {
+      const p = planSnapshotParamsSchema.parse(body.params);
+      const row = await loadPlanOr404(p.planId);
+      record = planSnapshotRecord(row, await computePlan(row), 'MANUAL', body.title ?? null);
     } else {
       const p = overviewQuerySchema.parse(body.params);
       const { run, response } = await runOverview(p);

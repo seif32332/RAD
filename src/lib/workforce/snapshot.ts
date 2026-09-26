@@ -3,8 +3,8 @@
 import { ENGINE_VERSION } from '@/lib/workforce/version';
 import type { RuleVersionRef } from '@/lib/workforce/types';
 
-export type SnapshotKind = 'TRUE_COST' | 'EXIT_COST' | 'OVERVIEW' | 'SAUDIZATION' | 'HIRE_SCENARIO';
-export type SnapshotSubjectType = 'EMPLOYEE' | 'COMPANY' | 'BRANCH' | 'DEPARTMENT' | 'ALL';
+export type SnapshotKind = 'TRUE_COST' | 'EXIT_COST' | 'OVERVIEW' | 'SAUDIZATION' | 'HIRE_SCENARIO' | 'WORKFORCE_PLAN';
+export type SnapshotSubjectType = 'EMPLOYEE' | 'COMPANY' | 'BRANCH' | 'DEPARTMENT' | 'ALL' | 'PLAN';
 
 export interface SnapshotSubject {
   type: SnapshotSubjectType;

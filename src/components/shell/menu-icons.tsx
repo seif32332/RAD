@@ -43,6 +43,8 @@ import {
   SlidersHorizontal,
   BookOpenCheck,
   Archive,
+  ClipboardList,
+  ChartColumn,
 } from "lucide-react";
 import type { MenuIconName } from "@/lib/menu";
 
@@ -90,4 +92,6 @@ export const MENU_ICONS: Record<MenuIconName, LucideIcon> = {
   SlidersHorizontal,
   BookOpenCheck,
   Archive,
+  ClipboardList,
+  ChartColumn,
 };

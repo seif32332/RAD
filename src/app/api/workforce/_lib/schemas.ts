@@ -179,7 +179,7 @@ export const assumptionsPutSchema = z
 // Saved calculations
 // ---------------------------------------------------------------------------
 
-export const CALCULATION_KINDS = ['TRUE_COST', 'EXIT_COST', 'OVERVIEW', 'SAUDIZATION', 'HIRE_SCENARIO'] as const;
+export const CALCULATION_KINDS = ['TRUE_COST', 'EXIT_COST', 'OVERVIEW', 'SAUDIZATION', 'HIRE_SCENARIO', 'WORKFORCE_PLAN'] as const;
 
 export const calculationPostSchema = z
   .object({

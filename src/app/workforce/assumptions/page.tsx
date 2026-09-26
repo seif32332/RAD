@@ -8,7 +8,7 @@
 // GET/PUT /api/workforce/assumptions; read-only for HR_MANAGER (the API enforces it).
 import React, { useMemo, useState } from 'react';
 import Link from 'next/link';
-import { Building2, Lock, Save, SlidersHorizontal } from 'lucide-react';
+import { Building2, Gift, Lock, Save, SlidersHorizontal } from 'lucide-react';
 import { toast } from '@/components/ui/feedback';
 import {
   MEDICAL_PREMIUM_LABELS,
@@ -58,6 +58,8 @@ interface AssumptionsResponse {
   iqamaRule: { value: number | null; status: string; effectiveFrom: string | null };
   medicalPremiumKeys: MedicalPremiumKey[];
   companySettings: CompanySettingsRow[];
+  /** Phase 3B: portal total rewards statement toggle (global, owner decision). */
+  totalRewards?: { enabled: boolean; canEdit: boolean; updatedAt: string | null };
 }
 
 type NumField = { base: string; low: string; high: string; ranged: boolean };
@@ -135,6 +137,47 @@ function CompanySettingsPanel({ data }: { data: AssumptionsResponse }) {
           ))}
         </div>
       )}
+    </Card>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Phase 3B (SPEC §9): «بيان المكافآت الشاملة» toggle — kept apart from the assumptions form. Global
+// WorkforceAssumption TOTAL_REWARDS_ENABLED (value 1 / 0); only SUPER_ADMIN / COMPANY_ADMIN may change it.
+// ---------------------------------------------------------------------------
+function TotalRewardsToggle({ state, onSaved }: { state: NonNullable<AssumptionsResponse['totalRewards']>; onSaved: () => void }) {
+  const [saving, setSaving] = useState(false);
+  const toggle = async () => {
+    setSaving(true);
+    const res = await callApi<{ changed: string[] }>('/api/workforce/assumptions', {
+      method: 'PUT',
+      json: { companyId: '', items: [{ key: 'TOTAL_REWARDS_ENABLED', value: !state.enabled }] },
+    });
+    setSaving(false);
+    if (res.ok) {
+      toast.success(state.enabled ? 'أُخفي البيان عن الموظفين' : 'أصبح البيان ظاهراً للموظفين في البوابة');
+      onSaved();
+    } else toast.error(res.message);
+  };
+  return (
+    <Card
+      title="بيان المكافآت الشاملة للموظفين"
+      subtitle="عند التفعيل يرى كل موظف في بوابته بيانه هو فقط: الراتب والبدلات والمكافآت والإضافي المصروف، وحصة المنشأة في التأمينات، والتأمين الطبي حسب إعدادات الشركة، ونهاية الخدمة المتراكمة (تقديرية حسب المادة 84). لا يظهر فيه دعم هدف."
+    >
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <p className="flex items-center gap-2 text-[13px] font-black text-slate-800">
+          <Gift size={16} className="text-emerald-600" aria-hidden="true" />
+          {state.enabled ? 'ظاهر للموظفين' : 'مخفي عن الموظفين'}
+          {state.updatedAt && <span className="text-[11px] font-bold text-slate-400">{`آخر تغيير ${state.updatedAt.slice(0, 10)}`}</span>}
+        </p>
+        {state.canEdit ? (
+          <button type="button" role="switch" aria-checked={state.enabled} disabled={saving} onClick={toggle} className={state.enabled ? buttonClass.secondary : buttonClass.primary}>
+            {saving ? 'جارٍ الحفظ…' : state.enabled ? 'إخفاء عن الموظفين' : 'إظهار للموظفين'}
+          </button>
+        ) : (
+          <span className="text-[11.5px] font-bold text-slate-500">القرار للمالك أو صاحب العمل</span>
+        )}
+      </div>
     </Card>
   );
 }
@@ -370,6 +413,15 @@ export default function AssumptionsPage() {
             }}
           />
           <CompanySettingsPanel data={data} />
+          {tab === 'global' && data.totalRewards && (
+            <TotalRewardsToggle
+              state={data.totalRewards}
+              onSaved={() => {
+                setVersion((v) => v + 1);
+                reload();
+              }}
+            />
+          )}
         </>
       )}
     </WfPage>

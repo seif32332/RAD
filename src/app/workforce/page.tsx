@@ -155,6 +155,42 @@ function GroupTable({ rows: all, horizon, label }: { rows: OverviewResponse['byC
   );
 }
 
+interface PlansSummary {
+  counts: Record<string, number>;
+  labels: Record<string, string>;
+  latestApproved: { id: string; name: string; fromMonth: string; months: number; decidedAt: string | null } | null;
+}
+
+/** «الخطط»: plans by status and the latest approved plan, linking to «خطة القوى العاملة». */
+function PlansSummaryCard() {
+  const { data, error, reload } = useApi<PlansSummary>('/api/workforce/plans?summary=1');
+  return (
+    <Card title="الخطط" subtitle="خطط القوى العاملة بنسخها واعتمادها، والمخطط مقابل الفعلي من الرواتب." actions={<Link href="/workforce/plans" className={buttonClass.link}>خطة القوى العاملة ←</Link>}>
+      {error && <ErrorBlock message={error} onRetry={reload} />}
+      {data && (
+        <div className="space-y-3">
+          <ul className="flex flex-wrap gap-2 text-[12px] font-bold">
+            {Object.entries(data.counts).map(([k, v]) => (
+              <li key={k} className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-1.5 text-slate-700">
+                {data.labels[k] ?? k}: <Num value={v} />
+              </li>
+            ))}
+          </ul>
+          {data.latestApproved ? (
+            <p className="text-[12.5px] font-bold text-slate-700">
+              آخر خطة معتمدة:{' '}
+              <Link href={`/workforce/plans/${encodeURIComponent(data.latestApproved.id)}`} className="font-black text-indigo-700 hover:underline">{data.latestApproved.name}</Link>{' '}
+              <span className="text-slate-500">{`(من ${data.latestApproved.fromMonth}، ${data.latestApproved.months} شهراً)`}</span>
+            </p>
+          ) : (
+            <p className="text-[12px] font-bold text-slate-500">لا توجد خطة معتمدة بعد.</p>
+          )}
+        </div>
+      )}
+    </Card>
+  );
+}
+
 export default function WorkforceOverviewPage() {
   const [horizon, setHorizon] = useState<Horizon>(36);
   const [scenario, setScenario] = useState<Scenario>('base');
@@ -410,6 +446,7 @@ export default function WorkforceOverviewPage() {
             )}
           </Card>
           <SaudizationSummaryCard />
+          <PlansSummaryCard />
         </div>
       )}
     </WfPage>

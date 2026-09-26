@@ -58,6 +58,17 @@ export const ASSUMPTION_DEFS = {
     defaultValue: null,
   },
   INCLUDE_HRDF: { key: 'INCLUDE_HRDF', kind: 'boolean', label: 'احتساب دعم هدف (سطر سالب مشروط)', unit: null, defaultValue: true },
+  // Phase 3B (total rewards statement, SPEC §9): owner decision, GLOBAL row only (companyId ''), stored as
+  // value 1 / 0. Not an engine input: read by GET /api/portal/total-rewards. Edited on the assumptions page
+  // (its own toggle section) by SUPER_ADMIN / COMPANY_ADMIN only.
+  TOTAL_REWARDS_ENABLED: {
+    key: 'TOTAL_REWARDS_ENABLED',
+    kind: 'boolean',
+    label: 'إظهار بيان المكافآت الشاملة للموظفين في البوابة',
+    unit: null,
+    defaultValue: false,
+    note: 'قرار المالك؛ يسري على كل الشركات',
+  },
 } as const satisfies Record<string, AssumptionDef>;
 
 export type AssumptionKey = keyof typeof ASSUMPTION_DEFS;

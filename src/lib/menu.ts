@@ -119,7 +119,9 @@ export type MenuIconName =
   | 'UserMinus'
   | 'SlidersHorizontal'
   | 'BookOpenCheck'
-  | 'Archive';
+  | 'Archive'
+  | 'ClipboardList'
+  | 'ChartColumn';
 
 export interface MenuItem {
   href: string;
@@ -252,6 +254,8 @@ export const MENU_GROUPS: readonly MenuGroup[] = [
       { href: '/workforce/exit-cost', label: 'كلفة الإنهاء', iconName: 'UserMinus', iconClassName: 'text-rose-500', roles: PAGE_ROLES.workforce },
       { href: '/workforce/saudization', label: 'مخطط السعودة', iconName: 'ShieldCheck', iconClassName: 'text-green-600', roles: PAGE_ROLES.workforce },
       { href: '/workforce/hire-scenario', label: 'سيناريوهات التوظيف', iconName: 'UserPlus', iconClassName: 'text-sky-500', roles: PAGE_ROLES.workforce },
+      { href: '/workforce/plans', label: 'خطة القوى العاملة', iconName: 'ClipboardList', iconClassName: 'text-violet-500', roles: PAGE_ROLES.workforce },
+      { href: '/workforce/benchmarks', label: 'المؤشرات الداخلية', iconName: 'ChartColumn', iconClassName: 'text-cyan-600', roles: PAGE_ROLES.workforce },
       { href: '/workforce/nitaqat-register', label: 'سجل نطاقات والتوطين', iconName: 'Landmark', iconClassName: 'text-emerald-700', roles: PAGE_ROLES.workforce },
       { href: '/workforce/assumptions', label: 'الافتراضات', iconName: 'SlidersHorizontal', iconClassName: 'text-amber-500', roles: PAGE_ROLES.workforce },
       { href: '/workforce/rules', label: 'سجل القواعد والأدلة', iconName: 'BookOpenCheck', iconClassName: 'text-teal-600', roles: PAGE_ROLES.workforce },

@@ -1,4 +1,4 @@
-// Workforce decision engine ("محرك القرارات"), phases 1–2 — PURE public API (client-safe).
+// Workforce decision engine ("محرك القرارات"), phases 1–3A — PURE public API (client-safe).
 // The database loader is src/lib/workforce/load.ts (server-only) and is NOT re-exported here.
 export * from '@/lib/workforce/types';
 export * from '@/lib/workforce/version';
@@ -15,3 +15,4 @@ export * from '@/lib/workforce/privacy';
 export * from '@/lib/workforce/nitaqat';
 export * from '@/lib/workforce/saudization';
 export * from '@/lib/workforce/hiring';
+export * from '@/lib/workforce/planning';

@@ -22,6 +22,8 @@ export const WF_NAV = [
   { href: '/workforce/exit-cost', label: 'كلفة الإنهاء' },
   { href: '/workforce/saudization', label: 'مخطط السعودة' },
   { href: '/workforce/hire-scenario', label: 'سيناريوهات التوظيف' },
+  { href: '/workforce/plans', label: 'خطة القوى العاملة' },
+  { href: '/workforce/benchmarks', label: 'المؤشرات الداخلية' },
   { href: '/workforce/nitaqat-register', label: 'سجل نطاقات والتوطين' },
   { href: '/workforce/assumptions', label: 'الافتراضات' },
   { href: '/workforce/rules', label: 'سجل القواعد' },

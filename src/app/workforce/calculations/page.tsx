@@ -11,9 +11,9 @@ import type { MoneyTriple, WfStatus } from '@/lib/workforce/types';
 import { useApi } from '../_components/api';
 import { Card, EmptyBlock, ErrorBlock, LoadingBlock, Money, Num, SelectField, StatusBadge, WfPage, buttonClass } from '../_components/ui';
 
-const KIND_LABELS: Record<string, string> = { TRUE_COST: 'الكلفة الحقيقية', EXIT_COST: 'كلفة الإنهاء', OVERVIEW: 'لوحة القرار', SAUDIZATION: 'مخطط السعودة', HIRE_SCENARIO: 'سيناريو توظيف' };
+const KIND_LABELS: Record<string, string> = { TRUE_COST: 'الكلفة الحقيقية', EXIT_COST: 'كلفة الإنهاء', OVERVIEW: 'لوحة القرار', SAUDIZATION: 'مخطط السعودة', HIRE_SCENARIO: 'سيناريو توظيف', WORKFORCE_PLAN: 'خطة القوى العاملة' };
 const BAND_TEXT: Record<string, string> = { RED: 'أحمر', LOW_GREEN: 'أخضر منخفض', MEDIUM_GREEN: 'أخضر متوسط', HIGH_GREEN: 'أخضر مرتفع', PLATINUM: 'بلاتيني' };
-const SUBJECT_LABELS: Record<string, string> = { EMPLOYEE: 'موظف', COMPANY: 'شركة', BRANCH: 'فرع', DEPARTMENT: 'إدارة', ALL: 'كل الموظفين' };
+const SUBJECT_LABELS: Record<string, string> = { EMPLOYEE: 'موظف', COMPANY: 'شركة', BRANCH: 'فرع', DEPARTMENT: 'إدارة', ALL: 'كل الموظفين', PLAN: 'خطة' };
 const PAGE = 25;
 
 interface ListItem {
@@ -113,6 +113,23 @@ function OutputsSummary({ d }: { d: DetailResponse }) {
           </li>
         ))}
       </ul>
+    );
+  }
+  if (d.kind === 'WORKFORCE_PLAN') {
+    const t = (o.totals ?? {}) as Record<string, { totalBeforeHrdf: number; totalAfterHrdf: number }>;
+    return (
+      <div className="space-y-3">
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+          {['12', '24', '36'].filter((k) => t[k]).map((k) => (
+            <div key={k} className="rounded-2xl bg-slate-50 p-3">
+              <p className="text-[11px] font-black text-slate-500">{`${k} شهراً`}</p>
+              <p className="mt-1 text-[15px] font-black text-slate-900"><Money value={t[k].totalBeforeHrdf} /></p>
+              <p className="text-[11px] font-bold text-green-700">بعد الدعم <Money value={t[k].totalAfterHrdf} /></p>
+            </div>
+          ))}
+        </div>
+        {d.subjectId && <Link href={`/workforce/plans/${encodeURIComponent(d.subjectId)}`} className={buttonClass.link}>فتح الخطة</Link>}
+      </div>
     );
   }
   if (d.kind === 'OVERVIEW') {

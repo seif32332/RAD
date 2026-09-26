@@ -2,6 +2,7 @@
 // shape (views.ts). Shared by the GET endpoints and by POST /api/workforce/calculations, which recomputes
 // from the stored params and never trusts outputs sent by the client.
 import 'server-only';
+import { createHash } from 'node:crypto';
 import { prisma } from '@/lib/prisma';
 import { logAudit } from '@/lib/audit';
 import { rateLimit } from '@/lib/rate-limit';
@@ -33,9 +34,32 @@ export function limitOrThrow(user: Pick<AuthUser, 'id'>, bucket: string, limit: 
 
 const VIEW_AUDIT_WINDOW_MS = 5 * 60_000;
 
-/** VIEW audit at most once per user, screen and 5 minutes (the screens refetch on every filter change). */
+/** Stable text of a filter set: keys sorted at every level, null / undefined / '' dropped. */
+export function normalizeViewFilters(v: unknown): string {
+  const norm = (x: unknown): unknown => {
+    if (Array.isArray(x)) return x.map(norm);
+    if (x instanceof Date) return x.toISOString();
+    if (x && typeof x === 'object') {
+      const o: Record<string, unknown> = {};
+      for (const k of Object.keys(x as Record<string, unknown>).sort()) {
+        const val = (x as Record<string, unknown>)[k];
+        if (val === null || val === undefined || val === '') continue;
+        o[k] = norm(val);
+      }
+      return o;
+    }
+    return x;
+  };
+  return JSON.stringify(norm(v) ?? null);
+}
+
+/**
+ * VIEW audit at most once per user, screen and filter set every 5 minutes: the same view refetched is logged
+ * once, while every different scope / filter (e.g. probing departments of the benchmarks) is logged.
+ */
 export async function auditViewOnce(user: Pick<AuthUser, 'id'>, entityType: string, details: unknown, ip: string | null): Promise<void> {
-  if (!rateLimit(`wf-view:${entityType}:${user.id}`, 1, VIEW_AUDIT_WINDOW_MS).ok) return;
+  const filters = createHash('sha256').update(normalizeViewFilters(details)).digest('base64url').slice(0, 22);
+  if (!rateLimit(`wf-view:${entityType}:${user.id}:${filters}`, 1, VIEW_AUDIT_WINDOW_MS).ok) return;
   await logAudit({ userId: user.id, action: 'VIEW', entityType, details, ipAddress: ip });
 }
 

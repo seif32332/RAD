@@ -2472,3 +2472,74 @@ model UserCompanyScope {
   @@id([userId, companyId])
   @@index([companyId])
 }
+
+// --- محرك القرارات (المرحلة 3): خطة القوى العاملة ---
+// بيانات سيناريو فقط: لا تغيّر راتب أي موظف ولا تكتب SalaryChange (بوابة المال في تصميم PeopleOS).
+model HeadcountPlan {
+  id           String            @id @default(uuid())
+  name         String
+  companyId    String? // نطاق الخطة (فارغ = كل الشركات)
+  fromMonth    DateTime // أول شهر في الخطة (أول يوم في الشهر)
+  months       Int               @default(12) // 12 / 24 / 36
+  attritionPct Float? // معدل الدوران السنوي المفترض (فارغ = المعدل الفعلي من تاريخ المنشأة)
+  status       String            @default("DRAFT") // DRAFT, SUBMITTED, APPROVED, REJECTED, ARCHIVED
+  basedOnId    String? // نسخة منسوخة من خطة أخرى
+  notes        String?           @db.Text
+  createdById  String?
+  submittedAt  DateTime?
+  decidedById  String? // من اعتمد أو رفض (يختلف عن المنشئ)
+  decidedAt    DateTime?
+  decisionNote String?           @db.Text
+  createdAt    DateTime          @default(now())
+  updatedAt    DateTime          @default(now()) @updatedAt
+  positions    PlannedPosition[]
+  raises       PlanRaise[]
+
+  @@index([status, createdAt])
+  @@index([companyId])
+}
+
+// وظيفة مخططة: تعيين جديد، أو إحلال بديل لموظف يغادر، أو خروج مخطط
+model PlannedPosition {
+  id                 String        @id @default(uuid())
+  planId             String
+  kind               String // NEW_HIRE, BACKFILL, EXIT
+  title              String
+  companyId          String?
+  branchId           String?
+  departmentId       String?
+  nationalityClass   String? // SAUDI, EXPAT, GCC (للتعيين والإحلال)
+  gosiRegime         String? // NEW / OLD للسعودي (الافتراضي NEW للمعيّن الجديد)
+  gender             String?
+  occupationName     String?
+  basicSalary        Float?
+  housingAllowance   Float?
+  otherAllowances    Float?
+  dependentsCount    Int?
+  medicalClass       String?
+  startMonth         DateTime? // بداية التعيين أو الإحلال
+  exitEmployeeId     String? // للخروج المخطط أو الموظف الذي يُستبدل
+  exitMonth          DateTime?
+  exitReason         String? // EMPLOYEE_EXIT_REASONS
+  notes              String?       @db.Text
+  createdAt          DateTime      @default(now())
+  plan               HeadcountPlan @relation(fields: [planId], references: [id], onDelete: Cascade)
+
+  @@index([planId])
+}
+
+// زيادة مخططة ضمن الخطة (نسبة أو مبلغ) على نطاق محدد من تاريخ محدد
+model PlanRaise {
+  id             String        @id @default(uuid())
+  planId         String
+  scope          String // ALL, COMPANY, DEPARTMENT, EMPLOYEE
+  scopeId        String?
+  pct            Float?
+  amount         Float?
+  effectiveMonth DateTime
+  notes          String?       @db.Text
+  createdAt      DateTime      @default(now())
+  plan           HeadcountPlan @relation(fields: [planId], references: [id], onDelete: Cascade)
+
+  @@index([planId])
+}

@@ -32,6 +32,7 @@ import UnlinkedAccountCard from './_components/UnlinkedAccountCard';
 import PortalTabBar, { type PortalTab } from './_components/PortalTabBar';
 import ClockCard, { type PunchRejection } from './_components/ClockCard';
 import DocumentsCard, { type DocumentsCardHandle } from './_components/DocumentsCard';
+import TotalRewardsCard from './_components/TotalRewardsCard';
 import { cancellableLeaveId, formatLeaveDays, isUnlinkedAccount, leavePreviewQuery, parseLeavePreview, type LeavePreview } from './_lib';
 
 // ---------------------------------------------------------------------------
@@ -911,6 +912,9 @@ ${row('إجمالي الاستقطاعات', `${formatMoney(p.totalDeductions)} 
 
         {/* Official documents (hidden until the document engine is configured for the company) */}
         <DocumentsCard ref={documentsRef} />
+
+        {/* Total rewards statement (hidden unless the owner enabled it, SPEC §9) */}
+        <TotalRewardsCard />
 
         {/* Pending Evaluations */}
         {pendingEvals.length > 0 && (

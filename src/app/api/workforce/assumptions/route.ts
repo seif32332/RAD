@@ -8,15 +8,18 @@
 //     value null removes the row. SUPER_ADMIN, COMPANY_ADMIN, FINANCE_MANAGER. Audited with before/after.
 //     The former keys OVERTIME_HOURLY_BASIS / MEDICAL_PREMIUM_BY_CLASS / MEDICAL_PREMIUM_DEFAULT /
 //     DEPENDENT_MEDICAL_PREMIUM are refused (400, Arabic message pointing to the company settings).
+// Phase 3B (SPEC §9): TOTAL_REWARDS_ENABLED (show the total rewards statement in the portal) is a GLOBAL
+//     row only (companyId ''), stored as value 1 / 0, and only SUPER_ADMIN / COMPANY_ADMIN may change it
+//     (owner decision). GET returns it as `totalRewards`.
 import { NextResponse } from 'next/server';
 import { z } from 'zod';
 import { prisma } from '@/lib/prisma';
 import { getClientIp, requireUser } from '@/lib/auth';
 import { ROLE_GROUPS, type AppRole } from '@/lib/constants';
-import { badRequest, handleApiError, parseBody, parseQuery } from '@/lib/http';
+import { badRequest, forbidden, handleApiError, parseBody, parseQuery } from '@/lib/http';
 import { logAudit } from '@/lib/audit';
 import { today } from '@/lib/dates';
-import { ASSUMPTION_DEFS, REMOVED_ASSUMPTION_KEYS, resolveCompanyAssumptions, type AssumptionKey } from '@/lib/workforce/assumptions';
+import { ASSUMPTION_DEFS, REMOVED_ASSUMPTION_KEYS, resolveAssumption, resolveCompanyAssumptions, type AssumptionKey } from '@/lib/workforce/assumptions';
 import { companyCostSettings, MEDICAL_PREMIUM_KEYS, type CompanyCostSettings } from '@/lib/workforce/company-settings';
 import { loadIqamaFeeRule } from '@/lib/workforce/load';
 import { ESTIMATE_DISCLAIMER } from '@/lib/workforce/version';
@@ -24,6 +27,7 @@ import { COMPANY_WORKFORCE_ROLES } from '@/app/api/companies/_workforce';
 import { assumptionsPutSchema } from '../_lib/schemas';
 import { ASSUMPTION_BOUNDS, assumptionAllowsRange, assumptionFormValue, validateAssumptionValue } from '../_lib/views';
 import { limitOrThrow } from '../_lib/server';
+import { TOTAL_REWARDS_ASSUMPTION_KEY } from '@/lib/workforce/total-rewards';
 
 export const dynamic = 'force-dynamic';
 
@@ -81,8 +85,16 @@ export async function GET(req: Request) {
     const resolved = resolveCompanyAssumptions(rows, companyId || null, 'base');
     const overridden = new Set(rows.filter((r) => r.companyId && r.key in ASSUMPTION_DEFS).map((r) => r.companyId));
     const legacyRows = rows.filter((r) => Object.prototype.hasOwnProperty.call(REMOVED_ASSUMPTION_KEYS, r.key));
+    // --- Phase 3B: total rewards statement toggle (global row) ---
+    const trRow = rows.find((r) => r.key === TOTAL_REWARDS_ASSUMPTION_KEY && r.companyId === '');
+    const totalRewards = {
+      enabled: resolveAssumption(rows, TOTAL_REWARDS_ASSUMPTION_KEY, null).value === true,
+      canEdit: ROLE_GROUPS.OWNER.includes(user.role),
+      updatedAt: trRow ? trRow.updatedAt.toISOString() : null,
+    };
     return NextResponse.json({
       disclaimer: ESTIMATE_DISCLAIMER,
+      totalRewards,
       canEdit: EDIT_ROLES.includes(user.role),
       canEditCompanySettings: COMPANY_WORKFORCE_ROLES.includes(user.role),
       companyId,
@@ -136,7 +148,16 @@ export async function PUT(req: Request) {
       const company = await prisma.company.findUnique({ where: { id: b.companyId }, select: { id: true } });
       if (!company) throw badRequest('الشركة غير موجودة');
     }
-    const checks = b.items.map((it) => ({ it, check: validateAssumptionValue(it.key, it.value) }));
+    // --- Phase 3B: TOTAL_REWARDS_ENABLED = owner decision, global row only, stored as value 1 / 0 ---
+    if (b.items.some((it) => it.key === TOTAL_REWARDS_ASSUMPTION_KEY)) {
+      if (b.companyId) throw badRequest('إظهار بيان المكافآت الشاملة إعداد عام لكل الشركات، لا لشركة واحدة');
+      if (!ROLE_GROUPS.OWNER.includes(user.role)) throw forbidden('إظهار بيان المكافآت الشاملة للموظفين قرار المالك أو صاحب العمل');
+    }
+    const checks = b.items.map((it) => {
+      const check = validateAssumptionValue(it.key, it.value);
+      if (it.key !== TOTAL_REWARDS_ASSUMPTION_KEY || !check.ok || check.store.remove) return { it, check };
+      return { it, check: { ok: true as const, store: { remove: false as const, value: check.store.valueJson === 'true' ? 1 : 0, valueJson: null } } };
+    });
     const errors = checks.filter((c) => !c.check.ok).map((c) => (c.check.ok ? '' : c.check.message));
     if (errors.length) throw badRequest(errors.join(' — '), { fields: checks.filter((c) => !c.check.ok).map((c) => c.it.key) });
 
