@@ -1,0 +1,91 @@
+{
+ "doc": {
+  "language": "ar-en",
+  "numerals": "latn",
+  "number": "ACM-2026-000184",
+  "titleAr": "خطاب تعريف بالراتب",
+  "titleEn": "Salary Certificate",
+  "verifyUrl": "https://acme.radeef.sa/v/K7Q2M9XJ4TRW8PZC3VN6HD5BLA",
+  "issuedGregorianAr": "26 سبتمبر 2026",
+  "issuedHijriAr": "15 ربيع الآخر 1448 هـ",
+  "issuedGregorianEn": "26 September 2026",
+  "issuedHijriEn": "Rabiʻ II 15, 1448 AH",
+  "validUntilAr": "25 ديسمبر 2026",
+  "validUntilEn": "25 December 2026",
+  "pageNumbering": "1"
+ },
+ "company": {
+  "legalNameAr": "شركة أكمي للمقاولات العامة المحدودة",
+  "legalNameEn": "ACME General Contracting Co. Ltd.",
+  "crNumber": "1010123456",
+  "unifiedNumber": "7001234567",
+  "addressAr": "الرياض، حي العليا، طريق الملك فهد، ص.ب 12345، الرمز البريدي 11564",
+  "addressEn": "King Fahd Rd, Al Olaya, Riyadh 11564, P.O. Box 12345",
+  "phone": "+966 11 234 5678",
+  "email": "hr@acme.example",
+  "primaryColor": "#0F4C81"
+ },
+ "addressee": {
+  "ar": "إلى من يهمه الأمر",
+  "en": "To Whom It May Concern"
+ },
+ "employee": {
+  "fullNameAr": "محمد عبدالله الأحمد",
+  "fullNameEn": "Mohammed Abdullah Alahmad",
+  "employeeNumber": "E-00412",
+  "nationalityAr": "أردني",
+  "nationalityEn": "Jordanian",
+  "idLabelAr": "إقامة",
+  "idLabelEn": "Iqama",
+  "idNumber": "2456789012",
+  "passportNumber": "N1234567",
+  "jobTitleAr": "مهندس مدني أول",
+  "jobTitleEn": "Senior Civil Engineer",
+  "joinDateAr": "10 مارس 2019",
+  "joinDateEn": "10 March 2019"
+ },
+ "salary": {
+  "currencyAr": "ريال سعودي",
+  "currencyEn": "SAR",
+  "rows": [
+   {
+    "labelAr": "الراتب الأساسي",
+    "labelEn": "Basic Salary",
+    "amount": "9500.00",
+    "amountText": "9,500.00",
+    "amountTextEn": "9,500.00"
+   },
+   {
+    "labelAr": "بدل السكن",
+    "labelEn": "Housing Allowance",
+    "amount": "2375.00",
+    "amountText": "2,375.00",
+    "amountTextEn": "2,375.00"
+   },
+   {
+    "labelAr": "بدل النقل",
+    "labelEn": "Transportation Allowance",
+    "amount": "950.00",
+    "amountText": "950.00",
+    "amountTextEn": "950.00"
+   },
+   {
+    "labelAr": "بدلات أخرى",
+    "labelEn": "Other Allowances",
+    "amount": "675.50",
+    "amountText": "675.50",
+    "amountTextEn": "675.50"
+   }
+  ],
+  "total": "13500.50",
+  "totalText": "13,500.50",
+  "totalTextEn": "13,500.50"
+ },
+ "signature": {
+  "nameAr": "سارة خالد العتيبي",
+  "nameEn": "Sarah Khalid Alotaibi",
+  "titleAr": "مديرة الموارد البشرية",
+  "titleEn": "HR Director",
+  "printImage": true
+ }
+}

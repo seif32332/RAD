@@ -37,6 +37,7 @@ import {
   type ExitReason,
 } from '@/app/api/employees/_workforce-fields';
 import DataReviewBanner from '../_components/DataReviewBanner';
+import EmployeeDocumentsCard from '../_components/EmployeeDocumentsCard';
 
 type DocKey = 'workContractUrl' | 'iqamaCopyUrl' | 'healthCertificateUrl' | 'passportCopyUrl';
 
@@ -556,6 +557,9 @@ export default function EmployeeProfilePage() {
         {isGov && !isSaudiNationalityValue(emp.nationality) && (
           <MuqeemCard employeeId={emp.id} onEmployeeChanged={refreshEmp} />
         )}
+
+        {/* Official documents issued for this employee (docs/document-engine); HR / payroll roles */}
+        {(isHr || roleIn(role, ROLE_GROUPS.PAYROLL)) && <EmployeeDocumentsCard employeeId={emp.id} />}
 
         {/* Employee Documents */}
         <div className="bg-white rounded-[2rem] border border-slate-100 shadow-[0_4px_24px_rgba(0,0,0,0.03)] overflow-hidden">

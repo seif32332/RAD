@@ -603,6 +603,7 @@ export const IMPORT_TEMPLATE: readonly ImportTemplateColumn[] = [
   { header: 'القسم الإداري', field: 'departmentName', example: '' },
   { header: 'المدير المباشر', field: 'directManager', example: '' },
   { header: 'المسمى الوظيفي المعتمد', field: 'jobTitle', example: 'محاسب' },
+  { header: 'المسمى الوظيفي بالإنجليزية', field: 'jobTitleEnglish', example: 'Accountant' },
   { header: 'جدول العمل / الشفتات', field: 'workSchedule', example: '' },
   { header: 'محل السكن', field: 'accommodationType', example: '' },
   { header: 'نوع العقد', field: 'contractType', example: CONTRACT_TYPE_LABELS.FULL_TIME },
@@ -653,6 +654,7 @@ export type ImportField =
   | 'departmentName'
   | 'directManager'
   | 'jobTitle'
+  | 'jobTitleEnglish'
   | 'workSchedule'
   | 'accommodationType'
   | 'contractType'
@@ -703,6 +705,9 @@ export const IMPORT_COLUMN_MAP: ReadonlyArray<readonly [string, ImportField]> = 
   ['القسم الاداري', 'departmentName'],
   ['القسم', 'departmentName'],
   ['المدير المباشر', 'directManager'],
+  ['المسمى الوظيفي بالإنجليزية', 'jobTitleEnglish'],
+  ['المسمى الوظيفي بالانجليزية', 'jobTitleEnglish'],
+  ['Job Title (English)', 'jobTitleEnglish'],
   ['المسمى الوظيفي المعتمد', 'jobTitle'],
   ['المسمى الوظيفي', 'jobTitle'],
   ['جدول العمل / الشفتات', 'workSchedule'],

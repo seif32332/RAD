@@ -61,6 +61,17 @@ const CONFIRM_MESSAGES: Record<CorrectionAction, string> = {
   REJECT: 'هل أنت متأكد من رفضك للمبرر المرفق؟',
 };
 
+/**
+ * Manual letter requests from the portal (companies not yet on the document engine): HR issues the
+ * letter from /documents with the employee and type prefilled, then approves this request.
+ */
+const LETTER_REQUEST_TYPES: ReadonlyArray<[string, string]> = [
+  ['[طلب: شهادة راتب]', 'SALARY_CERTIFICATE'],
+  ['[طلب: خطاب تعريف بالراتب]', 'SALARY_CERTIFICATE'],
+  ['[طلب: شهادة خبرة]', 'EXPERIENCE_CERTIFICATE'],
+];
+const letterTypeOf = (c: Pick<Correction, 'reason'>) => LETTER_REQUEST_TYPES.find(([p]) => (c.reason ?? '').trimStart().startsWith(p))?.[1] ?? null;
+
 const APPROVE_GENERAL_MESSAGE = 'هل تريد اعتماد هذا الطلب؟';
 
 const SUCCESS_FALLBACK: Record<CorrectionAction, string> = {
@@ -248,6 +259,14 @@ export default function AttendanceCorrectionsPage() {
                       </span>
                       {c.reason}
                     </div>
+                    {isHr && c.status === ATTENDANCE_CORRECTION_STATUS.PENDING && c.employeeId && letterTypeOf(c) && (
+                      <Link
+                        href={`/documents?issueFor=${encodeURIComponent(c.employeeId)}&type=${letterTypeOf(c)}`}
+                        className="mt-3 inline-flex items-center gap-1 text-[12px] font-black text-indigo-700 hover:text-indigo-900"
+                      >
+                        أصدِره من المستندات الرسمية (برقم ورمز تحقق)، ثم اعتمد هذا الطلب
+                      </Link>
+                    )}
                     {(c.managerComment || c.hrComment) && (
                       <div className="mt-3 text-[12px] font-bold text-slate-500 space-y-1 whitespace-pre-line">
                         {c.managerComment && <p>ملاحظة المدير: {c.managerComment}</p>}

@@ -3,7 +3,8 @@ import type { NextRequest } from 'next/server';
 import { SESSION_COOKIE, verifySession } from '@/lib/session';
 
 /** Pages reachable without a session. */
-const PUBLIC_PAGE_PREFIXES = ['/login', '/apply'];
+// /v: public verification of issued documents (QR code, docs/document-engine DOC-06).
+const PUBLIC_PAGE_PREFIXES = ['/login', '/apply', '/v'];
 
 /** API routes reachable without a session (each one enforces its own limits). */
 const PUBLIC_API_PREFIXES = [

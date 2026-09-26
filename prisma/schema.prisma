@@ -62,6 +62,7 @@ model User {
   employeeProfile Employee?
   auditLogs       AuditLog[]
   uploadedFiles   UploadedFile[]
+  companyScopes   UserCompanyScope[] @relation("ScopedUser")
 }
 
 // --- وحدة التدقيق (Audit Logs) ---
@@ -140,7 +141,16 @@ model Company {
   violations        ComplianceViolation[]
   medicalInsurances MedicalInsurance[]
   administrations   Administration[]
-  muqeemPlatform    GovPlatform?          @relation("CompanyMuqeemPlatform", fields: [muqeemPlatformId], references: [id], onDelete: SetNull)
+
+  // محرك إصدار المستندات (docs/document-engine): الشركة هنا هي الجهة النظامية المُصدِرة
+  brandProfile         BrandProfile?
+  documentAssets       DocumentAsset[]
+  signatories          Signatory[]
+  documentTypeSettings DocumentTypeSetting[]
+  documentRequests     DocumentRequest[]
+  issuedDocuments      IssuedDocument[]
+  userScopes           UserCompanyScope[]
+  muqeemPlatform       GovPlatform?          @relation("CompanyMuqeemPlatform", fields: [muqeemPlatformId], references: [id], onDelete: SetNull)
 
   @@index([commercialRegExp])
   @@index([trademarkExpDate])
@@ -364,6 +374,7 @@ model Employee {
   departmentId     String?
 
   jobTitle        String? // المسمى الوظيفي
+  jobTitleEnglish String? // المسمى بالإنجليزية (الخطابات ثنائية اللغة، docs/document-engine)
   directManagerId String? // المدير المباشر
 
   workSchedule      String? // جدول العمل
@@ -456,6 +467,9 @@ model Employee {
   assetRequestsMade      AssetRequest[]         @relation("RequesterToAssetRequest")
   assetRequestsFor       AssetRequest[]         @relation("RequestedForToAssetRequest")
   salaryChanges          SalaryChange[]
+
+  documentRequests DocumentRequest[]
+  issuedDocuments  IssuedDocument[]
 
   @@index([legalCompanyId])
   @@index([actualCompanyId])
@@ -2122,6 +2136,274 @@ model SalaryChange {
 }
 
 // --- محرك القرارات (المرحلة 2): نطاقات المطوّر 2026 وقرارات توطين المهن ---
+// ---------------------------------------------------------------------------
+// محرك إصدار المستندات (docs/document-engine: ADR-001 + SPEC §4.3)
+// ثبات السجلات (DOC-07 / DOC-09 / DOC-12) تحميه triggers في الترحيل 9b_document_engine،
+// فهي خارج هذا الملف. العزل بين العملاء بنيوي (DEC-004): لا tenantId.
+// ---------------------------------------------------------------------------
+
+/// هوية الشركة النظامية على مستنداتها. الاسم والسجل والرقم الموحد تُقرأ من Company نفسها.
+model BrandProfile {
+  id           String   @id @default(uuid())
+  companyId    String   @unique
+  numberPrefix String // 2-6 أحرف لاتينية كبيرة: ACM ← ACM-SAL-2026-000184 (ثابتة بعد أول إصدار)
+  logoAssetId  String?
+  primaryColor String   @default("#0F4C81")
+  numerals     String   @default("latn") // latn | arab (أرقام المبالغ والتواريخ)
+  addressAr    String?
+  addressEn    String?
+  phone        String?
+  email        String?
+  updatedById  String?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  company Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
+}
+
+/// شعار أو توقيع أو ختم. ثابت بعنوان محتواه: التغيير أصل جديد، ولا يُحذف ما استُخدم (DOC-04).
+model DocumentAsset {
+  id          String   @id @default(uuid())
+  companyId   String
+  kind        String // LOGO | SIGNATURE | STAMP
+  sha256      String
+  storedName  String // <UPLOAD_DIR>/.document-assets/<sha256>.png (shared file when two companies upload the same bytes)
+  size        Int
+  width       Int
+  height      Int
+  createdById String?
+  createdAt   DateTime @default(now())
+
+  company Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
+
+  @@unique([companyId, sha256])
+  @@index([companyId, kind])
+}
+
+model Signatory {
+  id               String   @id @default(uuid())
+  companyId        String
+  userId           String? // إن كان له حساب: يعتمد بنفسه ويقبل التفويض
+  nameAr           String
+  nameEn           String?
+  titleAr          String
+  titleEn          String?
+  signatureAssetId String?
+  stampAssetId     String?
+  isActive         Boolean  @default(true)
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  company        Company                @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  authorizations SigningAuthorization[]
+
+  @@index([companyId, isActive])
+}
+
+/// تفويض مسبق صريح ومقيد وقابل للإلغاء (DOC-04). لا يُعدَّل إلا بالقبول أو الإلغاء، ولا يُحذف.
+model SigningAuthorization {
+  id             String    @id @default(uuid())
+  signatoryId    String
+  legalCompanyId String
+  typeKey        String
+  scopeJson      String?   @db.Text // مثل {"maxTotalSalary":"30000.00"}
+  validFrom      DateTime
+  validUntil     DateTime?
+  grantedById    String
+  grantedAt      DateTime  @default(now())
+  acceptedAt     DateTime? // قبول الموقّع نفسه؛ بدونه لا يسري إن كان له حساب
+  revokedAt      DateTime?
+  revokedById    String?
+  revokeReason   String?
+
+  signatory Signatory @relation(fields: [signatoryId], references: [id], onDelete: Restrict)
+
+  @@index([signatoryId, typeKey, legalCompanyId])
+}
+
+/// سياسة النوع لكل شركة. الحقول الفارغة = افتراضي النوع في الكود.
+model DocumentTypeSetting {
+  id               String   @id @default(uuid())
+  companyId        String
+  typeKey          String
+  enabled          Boolean  @default(true)
+  selfService      Boolean?
+  requiresApproval Boolean?
+  validityDays     Int?
+  signatoryId      String?
+  updatedById      String?
+  updatedAt        DateTime @updatedAt
+
+  company Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
+
+  @@unique([companyId, typeKey])
+}
+
+model DocumentRequest {
+  id                String    @id @default(uuid())
+  typeKey           String
+  legalCompanyId    String // مشتقة من employee.legalCompanyId، لا يختارها المستخدم (DOC-03)
+  employeeId        String
+  requestedById     String?
+  source            String // PORTAL | HR | SYSTEM
+  paramsJson        String    @db.Text
+  status            String // DRAFT | PENDING_APPROVAL | APPROVED | ISSUED | REJECTED | CANCELLED (DOC-08)
+  currentSnapshotId String?   @unique
+  rejectReason      String?
+  closedAt          DateTime?
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+
+  employee        Employee           @relation(fields: [employeeId], references: [id], onDelete: Restrict)
+  legalCompany    Company            @relation(fields: [legalCompanyId], references: [id], onDelete: Restrict)
+  currentSnapshot DocumentSnapshot?  @relation("CurrentSnapshot", fields: [currentSnapshotId], references: [id], onDelete: Restrict)
+  snapshots       DocumentSnapshot[] @relation("RequestSnapshots")
+  approvals       DocumentApproval[]
+  renderJob       DocumentRenderJob?
+  issuedDocument  IssuedDocument?
+
+  @@index([status, createdAt])
+  @@index([employeeId, createdAt])
+  @@index([legalCompanyId, status])
+}
+
+/// لقطة ثابتة للبيانات الجوهرية بصيغة JSON قانونية (JCS)؛ النص نفسه هو ما تُحسب بصمته.
+model DocumentSnapshot {
+  id              String    @id @default(uuid())
+  requestId       String
+  typeKey         String
+  contractVersion Int
+  data            String    @db.Text
+  dataSha256      String
+  brand           String    @db.Text // قيم الهوية وقت اللقطة (ليست جوهرية، DOC-05)
+  purgedAt        DateTime? // انتهاء مدة الاحتفاظ (DOC-09): تُمسح data وbrand
+  createdAt       DateTime  @default(now())
+
+  request        DocumentRequest  @relation("RequestSnapshots", fields: [requestId], references: [id], onDelete: Restrict)
+  currentFor     DocumentRequest? @relation("CurrentSnapshot")
+  issuedDocument IssuedDocument?
+
+  @@index([requestId])
+}
+
+model DocumentApproval {
+  id             String    @id @default(uuid())
+  requestId      String
+  snapshotId     String
+  snapshotSha256 String // المعتمد يعتمد ما رآه (DOC-05)
+  approverId     String
+  decision       String // APPROVED | REJECTED
+  note           String?
+  decidedAt      DateTime  @default(now())
+  invalidatedAt  DateTime?
+  invalidReason  String? // STALE_SNAPSHOT
+
+  request DocumentRequest @relation(fields: [requestId], references: [id], onDelete: Restrict)
+
+  @@index([requestId])
+}
+
+/// معالجة تقنية فقط (DOC-08). الرقم ولحظة الإصدار يُحجزان هنا ولا يتغيران عبر المحاولات (DOC-02).
+model DocumentRenderJob {
+  id              String   @id @default(uuid())
+  requestId       String   @unique
+  legalCompanyId  String
+  typeCode        String
+  year            Int
+  seq             Int
+  number          String
+  issuedAt        DateTime // = creationTimestamp للتصيير: نفس البايتات عند إعادة المحاولة
+  verifyTokenHash String   @unique
+  verifyTokenEnc  String? // الرمز مشفراً (encryptField) حتى ينجح التصيير، ثم يُمسح
+  signatoryId     String?
+  authorizationId String?
+  approvalId      String?
+  status          String   @default("QUEUED") // QUEUED | RENDERING | FAILED | DONE
+  attempts        Int      @default(0)
+  lastError       String?
+  nextAttemptAt   DateTime @default(now())
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  request DocumentRequest @relation(fields: [requestId], references: [id], onDelete: Restrict)
+
+  @@unique([legalCompanyId, number])
+  @@index([status, nextAttemptAt])
+}
+
+/// المستند الصادر. يُنشأ بعد وجود البايتات وبصمتها فقط. لا يتغير بعد الإنشاء إلا الإلغاء
+/// والاستبدال وعلامة انتهاء الاحتفاظ (trigger، DOC-07).
+model IssuedDocument {
+  id              String    @id @default(uuid())
+  number          String
+  legalCompanyId  String
+  employeeId      String
+  typeKey         String
+  requestId       String    @unique
+  snapshotId      String    @unique
+  snapshotSha256  String
+  approvalId      String?
+  signatoryId     String?
+  authorizationId String?
+  templateRef     String
+  templateSha256  String
+  rendererId      String
+  rendererVersion String
+  typstSha256     String
+  fontsSha256     String
+  pdfStandard     String
+  storedName      String    @unique // <UPLOAD_DIR>/.documents/<storedName>
+  pdfSha256       String
+  pdfSize         Int
+  verifyTokenHash String    @unique
+  validUntil      DateTime?
+  issuedAt        DateTime
+  issuedById      String?
+  status          String    @default("ISSUED") // ISSUED | REVOKED | SUPERSEDED (لا EXPIRED، DOC-08)
+  revokedAt       DateTime?
+  revokedById     String?
+  revokeReason    String?
+  supersededById  String?   @unique
+  purgedAt        DateTime? // انتهاء مدة الاحتفاظ: حُذف الملف، وبقي هذا السجل (DOC-09)
+  createdAt       DateTime  @default(now())
+
+  employee     Employee         @relation(fields: [employeeId], references: [id], onDelete: Restrict)
+  legalCompany Company          @relation(fields: [legalCompanyId], references: [id], onDelete: Restrict)
+  request      DocumentRequest  @relation(fields: [requestId], references: [id], onDelete: Restrict)
+  snapshot     DocumentSnapshot @relation(fields: [snapshotId], references: [id], onDelete: Restrict)
+
+  @@unique([legalCompanyId, number])
+  @@index([employeeId, issuedAt])
+  @@index([status])
+}
+
+model DocumentCounter {
+  legalCompanyId String
+  typeCode       String
+  year           Int
+  next           Int    @default(1)
+
+  @@id([legalCompanyId, typeCode, year])
+}
+
+/// سجل إلحاق فقط بسلسلة بصمات (UPDATE/DELETE مرفوضان بـtrigger).
+model DocumentEvent {
+  id         String   @id @default(uuid())
+  seq        BigInt   @unique @default(autoincrement())
+  requestId  String?
+  documentId String?
+  type       String
+  actorId    String?
+  ip         String?
+  metaJson   String?  @db.Text
+  prevHash   String
+  hash       String
+  at         DateTime @default(now())
+
+  @@index([documentId])
+  @@index([requestId])
+}
+
 // أنشطة نطاقات كما في ملحق الدليل الإجرائي الرسمي، مع مصدر كل صف وحالته.
 model NitaqatActivity {
   key         String         @id // مفتاح ثابت (slug)
@@ -2174,4 +2456,19 @@ model LocalizationDecision {
   createdAt            DateTime  @default(now())
 
   @@index([groupNameAr])
+}
+
+/// Limits a back-office user to some legal companies for official documents (docs/document-engine
+/// SPEC §10). No rows = every company (default, backward compatible); owners are never limited.
+model UserCompanyScope {
+  userId      String
+  companyId   String
+  createdById String?
+  createdAt   DateTime @default(now())
+
+  user    User    @relation("ScopedUser", fields: [userId], references: [id], onDelete: Cascade)
+  company Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
+
+  @@id([userId, companyId])
+  @@index([companyId])
 }

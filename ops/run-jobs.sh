@@ -35,7 +35,7 @@ JOB=""
 TENANTS=()
 JOBS_APP_DIR="${JOBS_APP_DIR:-$RADEEF_ROOT/src}"
 JOB_TIMEOUT="${JOB_TIMEOUT:-30m}"
-JOB_RE='^(expiry-digest|deactivate-terminated|outbox-dispatch|purge-attendance-biometrics)$'
+JOB_RE='^(expiry-digest|deactivate-terminated|outbox-dispatch|purge-attendance-biometrics|documents-retention|documents-integrity)$'
 
 while (($#)); do
   case "$1" in

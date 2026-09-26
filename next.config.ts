@@ -15,12 +15,27 @@ const nextConfig: NextConfig = {
   output: "standalone",
   poweredByHeader: false,
   serverExternalPackages: ["exceljs"],
+  // Official document templates are read at runtime and sent to radeef-render (docs/document-engine).
+  outputFileTracingIncludes: {
+    "/api/documents/**": ["./src/lib/documents/templates/**/*.typ"],
+  },
   experimental: {
     // src/proxy.ts buffers request bodies; allow the 10 MB upload limit plus multipart overhead.
     proxyClientMaxBodySize: "11mb",
   },
   async headers() {
-    return [{ source: "/:path*", headers: securityHeaders }];
+    return [
+      { source: "/:path*", headers: securityHeaders },
+      // Public verification of issued documents (QR): never indexed, the token never leaks as a referrer.
+      {
+        source: "/v/:token*",
+        headers: [
+          { key: "Referrer-Policy", value: "no-referrer" },
+          { key: "X-Robots-Tag", value: "noindex, nofollow" },
+          { key: "Cache-Control", value: "no-store" },
+        ],
+      },
+    ];
   },
   async rewrites() {
     return {

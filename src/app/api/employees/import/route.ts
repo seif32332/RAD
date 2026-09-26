@@ -521,6 +521,7 @@ export async function POST(req: Request) {
           if (iban) updateData.ibanNumber = iban;
           if (bankName) updateData.bankName = bankName;
           if (txt(raw.jobTitle)) updateData.jobTitle = cellText(raw.jobTitle);
+          if (txt(raw.jobTitleEnglish)) updateData.jobTitleEnglish = cellText(raw.jobTitleEnglish);
           if (txt(raw.workSchedule)) updateData.workSchedule = cellText(raw.workSchedule);
           if (basicSalary !== null) updateData.basicSalary = roundMoney(basicSalary);
           if (gosiDeduction !== null) updateData.gosiDeduction = roundMoney(gosiDeduction);
@@ -618,6 +619,7 @@ export async function POST(req: Request) {
             branchId,
             departmentId,
             jobTitle: txt(raw.jobTitle),
+            jobTitleEnglish: txt(raw.jobTitleEnglish),
             workSchedule: txt(raw.workSchedule),
             accommodationType,
             joinDate,

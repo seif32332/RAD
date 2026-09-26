@@ -390,6 +390,22 @@ Persistent=true
 [Install]
 WantedBy=timers.target
 
+# /etc/systemd/system/radeef-jobs@documents-integrity.timer     (04:30 + حتى 30 دقيقة، يومياً)
+[Timer]
+OnCalendar=*-*-* 04:30:00 Asia/Riyadh
+RandomizedDelaySec=30min
+Persistent=true
+[Install]
+WantedBy=timers.target
+
+# /etc/systemd/system/radeef-jobs@documents-retention.timer     (أسبوعياً، الجمعة 05:00)
+[Timer]
+OnCalendar=Fri *-*-* 05:00:00 Asia/Riyadh
+RandomizedDelaySec=30min
+Persistent=true
+[Install]
+WantedBy=timers.target
+
 # /etc/systemd/system/radeef-jobs@expiry-digest.timer           (03:55 + حتى 30 دقيقة)
 [Timer]
 OnCalendar=*-*-* 03:55:00 Asia/Riyadh
@@ -606,3 +622,89 @@ sudo -iu radeef /opt/radeef/src/ops/run-jobs.sh purge-attendance-biometrics <ten
 4. **جرّب الرفض عمداً:** صورة موظف آخر، وصورة على شاشة جوال، وتسجيل من خارج النطاق. كلها يجب أن تُرفض وتظهر في السجل
    بصورتها.
 5. **لا تسويق** بمنع التلاعب تماماً أو بالذكاء الاصطناعي (DEC-002، DEC-005، DEC-006).
+
+## 6. خدمة إصدار المستندات `radeef-render` (ADR-001، docs/document-engine)
+
+خدمة داخلية تحوّل قالب Typst وبيانات جاهزة إلى PDF. نسخة واحدة لكل خادم تخدم كل المستأجرين، على
+`127.0.0.1:8091` فقط، ولا تمر عبر Nginx أبداً. عديمة الحالة: كل طلب في مجلد مؤقت يُحذف بعده، ولا تكتب ولا تسجّل أي محتوى.
+التصميم والقياسات في `docs/document-engine/POC.md` §H، والكود في `services/render/`.
+
+- **ما يُثبَّت:**
+  - ثنائي Typst 0.15.1 الرسمي، مثبّت ببصمة الحزمة وبصمة الثنائي في `services/render/typst.lock`.
+  - حزمة الخطوط IBM Plex Sans Arabic، مثبّتة في `services/render/fonts.lock`.
+  - `scripts/fetch-assets.sh` يرفض أي ملف لا تطابق بصمته.
+  - الخدمة نفسها ترفض التشغيل إذا لم يطابق الثنائي أو الخطوط البصمات، أو وُجد خط إضافي في المجلد.
+- **التثبيت (PM2 / المضيف):** يحتاج Node ‏20.9 أو أحدث في مسار نظامي (`/usr/bin/node`، لا `~/.nvm`)، و`xz-utils`.
+  ```bash
+  sudo ops/render-setup.sh --src /opt/radeef/src          # الأصول الموثّقة + /etc/radeef/services/render.env + خدمة systemd
+  sudo ops/render-setup.sh --configure-tenants            # يضيف RENDER_SERVICE_URL/TOKEN لكل /etc/radeef/<tenant>.env
+  pm2 startOrReload ecosystem.config.js --update-env
+  ```
+- **Docker:**
+  ```bash
+  sudo sh -c 'umask 077; printf "RENDER_SERVICE_TOKEN=%s\n" "$(openssl rand -hex 32)" > /etc/radeef/services/render.env'
+  docker build -t radeef-render services/render
+  docker run -d --name radeef-render --restart unless-stopped --read-only --cap-drop ALL \
+    --security-opt no-new-privileges --memory 512m --pids-limit 128 --tmpfs /tmp:size=160m,mode=1777 \
+    --env-file /etc/radeef/services/render.env -p 172.17.0.1:8091:8091 radeef-render
+  sudo ops/render-setup.sh --configure-tenants --mode docker
+  ```
+- **بعد إصدار غيّر `services/render`:**
+  - `sudo ops/render-setup.sh --update --src /opt/radeef/src`.
+  - يجهّز الملفات ويتحقق من الأصول أولاً، ثم يبدّل.
+  - يرجع للملفات والـunit السابقين إن لم تصبح الخدمة سليمة (جُرّب ذلك فعلياً).
+  - `deploy.sh` لا يلمس هذه الخدمة.
+- **التحقق بعد التثبيت:** `curl -s 127.0.0.1:8091/health` يعرض `typst.version` و`typst.sha256` و`fontsSha256`. هذه القيم
+  تُحفظ على كل مستند صادر (DOC-07)، ويجب أن تطابق `typst.lock` وبصمة الحزمة في اختبارات `services/render/test`.
+- **السجلات:** `journalctl -u radeef-render -f`. سطر JSON لكل طلب فيه رمز الخطأ والأحجام والأزمنة فقط، ولا بيانات ولا
+  رسائل Typst (قد تقتبس القالب والبيانات، فتُعاد للمستأجر فقط).
+- **رموز الأخطاء المهمة:**
+
+  | الرمز | المعنى | ما يفعله المستأجر |
+  |---|---|---|
+  | `UNSUPPORTED_CHARACTERS` (422) | حرف لا يوجد في الخط، والتفاصيل تسرد النقاط (مثل `U+4E2D`) | تصحيح البيانات. لا يصدر مستند بمربعات فارغة |
+  | `TEMPLATE_ERROR` / `RENDER_WARNING` (422) | خطأ أو تحذير من Typst، والتحذير يُعامل كخطأ | خلل في القالب، ويُصلح في الكود |
+  | `BUSY` (503، `Retry-After: 2`) | 4 تصييرات جارية و16 في الانتظار | إعادة المحاولة من طابور المهام |
+  | `RENDER_TIMEOUT` (504) | تجاوز 15 ثانية، وتُقتل مجموعة العمليات كاملة | إعادة المحاولة. ويُراجع القالب إن تكرر |
+
+- **عند توقف الخدمة:**
+  - الإصدار يفشل ويبقى الرقم محجوزاً على المهمة (DOC-02)، ثم تعيد `scripts/jobs.mjs` المحاولة.
+  - خطوات الفحص: `systemctl status radeef-render`، ثم `/health`، ثم مطابقة التوكن.
+- **تدوير التوكن:** مثل `radeef-face` (§5.1)، مع `render.env` و`RENDER_SERVICE_*`.
+- **ترقية Typst أو الخطوط:**
+  - تغيير `typst.lock` أو `fonts.lock` يغيّر البايتات الناتجة.
+  - يُحدَّث `GOLDEN` في `services/render/test/helpers.mjs` في نفس الـcommit بعد مراجعة بصرية للمخرجات.
+  - المستندات الصادرة سابقاً تحتفظ بنسخ ما صدرت به (DOC-07).
+- **العزل (مقاس في الاختبار):**
+  - `systemd-analyze security radeef-render` = 1.2 (OK).
+  - لا شبكة إلا مقبسها المحلي، ولا ترى `/etc/radeef` ولا `/var/lib/radeef` ولا `/home`.
+  - `SystemCallFilter` مع `pkey_*`، لأن V8 يحتاجها، و`UV_USE_IO_URING=0`.
+
+### 6.1 تفعيل إصدار المستندات لعميل
+
+1. الخدمة تعمل (§6)، ثم `ops/render-setup.sh --configure-tenants`. هذا يضيف `RENDER_SERVICE_URL` و`RENDER_SERVICE_TOKEN`.
+2. `APP_URL` في ملف العميل هو عنوانه العام بـhttps، وهو أصل رابط التحقق المطبوع في QR (`<APP_URL>/v/<token>`). بدونه لا يصدر أي مستند.
+3. الترحيل `9b_document_engine` يُطبَّق مع النشر المعتاد (expand-only).
+4. المالك من «المستندات الرسمية ← الإعدادات» لكل شركة نظامية:
+   - بادئة الترقيم، وهي ثابتة بعد أول إصدار.
+   - الشعار والتوقيع والختم (PNG).
+   - الموقّع، ويُربط بحسابه إن وُجد.
+   - موقّع كل نوع.
+   - التفويض المسبق عند الحاجة. يسري بعد قبول الموقّع من صفحة المستندات.
+5. **التفعيل تدريجي:** لا تظهر «مستنداتي الرسمية» في بوابة موظفي شركة، ولا تُقبل طلباتها، حتى تكتمل البنود 1 و2 وبادئة الترقيم. حتى ذلك الحين يبقى طلب «شهادة أو خطاب» يدوياً إلى الموارد البشرية كما كان.
+
+**الإصدار وإعادة المحاولة:**
+- الإصدار متزامن (نحو 100 إلى 300 ms).
+- إذا تعذرت الخدمة يبقى الطلب «قيد الإصدار» ومعه رقمه المحجوز. يُعاد التصيير تلقائياً بتباعد متزايد (30 ثانية ثم دقيقة ثم دقيقتان … حتى ساعة، 8 محاولات) عند فتح قوائم المستندات، وبزر «إعادة المحاولة» في صفحة الموارد البشرية.
+- لا توجد مهمة في `scripts/jobs.mjs`، لأن خط الإصدار TypeScript داخل التطبيق.
+- الأعطال الدائمة (ملف شعار أو توقيع مفقود، أو حرف غير مدعوم) تُوقف المهمة (`BLOCKED`) برسالة واضحة، ولا تُعاد تلقائياً.
+- المستندات الصادرة في `UPLOAD_DIR/.documents`، والأصول في `UPLOAD_DIR/.document-assets`. المجلدان داخل النسخ الاحتياطي الحالي لـ`UPLOAD_DIR`، ولا يصل إليهما `/api/files`.
+
+### 6.2 مهام المستندات الخلفية (`scripts/jobs.mjs`)
+
+| المهمة | ما تفعله | ملاحظات |
+|---|---|---|
+| `documents-integrity` | تتحقق من سلسلة بصمات `DocumentEvent` كاملة، وتعيد حساب SHA-256 لكل ملف مستند صادر وتقارنه بـ`pdfSha256` | أي خلل يجعل التشغيل `FAILED` مع رقم المستند وسبب الخلل، ويرسل بريداً واحداً يومياً للمديرين (أدوار `expiry_digest_roles`). الحد الأقصى للملفات في التشغيل الواحد `DOCUMENTS_INTEGRITY_MAX` (افتراضي 2000). يحتاج `UPLOAD_DIR` |
+| `documents-retention` | بعد `document_retention_years` (افتراضي 10، قرار المالك) من تاريخ انتهاء خدمة الموظف: يحذف ملف الـPDF ويمسح محتوى اللقطات، ويبقى سجل المستند (الرقم والنوع والشركة والتواريخ والبصمة). صفحة التحقق تعرض «انتهت مدة الاحتفاظ» | `--dry-run` يعدّ فقط. الحذف مسموح بـtrigger لمرة واحدة فقط ولا يُتراجع عنه. يؤكد المستشار المدة ضمن DEC-008 قبل تفعيل المؤقت |
+
+الحدث `PURGED` تكتبه المهمة في سلسلة الأحداث بنفس خوارزمية التطبيق. `scripts/lib/document-chain.mjs` نسخة JS منها، واختبار `documents-chain-parity` يمنع أي اختلاف بين النسختين.

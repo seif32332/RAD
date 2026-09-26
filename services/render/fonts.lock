@@ -1,0 +1,6 @@
+# Font bundle (IBM Plex Sans Arabic, SIL OFL 1.1). "<sha256>  <file>  <url>" per line.
+# Only these files may exist in the fonts directory; the service refuses to start otherwise.
+# The bundle identity (fontsSha256 on every issued document) is computed from the sha256/name pairs.
+6f611412270a132bbac838da9259d4c68569b4175f3b3b8fa3fa36a30b56dab9  IBMPlexSansArabic-Regular.ttf  https://github.com/google/fonts/raw/main/ofl/ibmplexsansarabic/IBMPlexSansArabic-Regular.ttf
+b8363ab9f733dfa4f8e96b8b2102c24b5cf4110fb96d1d3d9a9412f6fb49cf74  IBMPlexSansArabic-Medium.ttf  https://github.com/google/fonts/raw/main/ofl/ibmplexsansarabic/IBMPlexSansArabic-Medium.ttf
+691e0c891a38637ae6bbdb69700f8042cb0724a137bee615068ffdb92244f61f  IBMPlexSansArabic-Bold.ttf  https://github.com/google/fonts/raw/main/ofl/ibmplexsansarabic/IBMPlexSansArabic-Bold.ttf

@@ -55,7 +55,12 @@ jobs:
         run: npm run build
 
       - name: Shell script syntax
-        run: for f in ops/*.sh ops/lib/*.sh; do bash -n "$f"; done
+        run: |
+          for f in ops/*.sh ops/lib/*.sh; do bash -n "$f"; done
+          sh -n services/render/scripts/fetch-assets.sh
+
+      - name: Typecheck document renderer (services/render, JSDoc)
+        run: npx tsc -p services/render/tsconfig.json
 
       - name: Node script syntax (jobs, ops tools, tenant manager)
         run: |
@@ -158,6 +163,32 @@ jobs:
           node scripts/jobs.mjs deactivate-terminated --dry-run
           node scripts/jobs.mjs outbox-dispatch
           node scripts/tenant-stats.mjs
+
+  # ADR-001 DOC-01: the document renderer with the pinned Typst binary and fonts. The golden tests
+  # prove the service renders byte-for-byte what the POC accepted (docs/document-engine/POC.md).
+  render-service:
+    name: Document renderer (Node ${{ matrix.node }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        node: [20, 24] # minimum supported (engines) and current LTS (Docker image)
+    defaults:
+      run:
+        working-directory: services/render
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+
+      - name: Fetch pinned Typst + fonts (checksums verified)
+        run: sh scripts/fetch-assets.sh .
+
+      - name: Tests (unit, HTTP end-to-end, golden bytes, limits, isolation)
+        run: npm test
 
   # DEC-006: no AI / OCR SDK may be added without an entry in the approved sub-processor list.
   ai-processors:
@@ -276,3 +307,12 @@ jobs:
           tags: radeef:ci-${{ github.sha }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+      - name: Build document renderer image (no push)
+        uses: docker/build-push-action@v6
+        with:
+          context: services/render
+          push: false
+          tags: radeef-render:ci-${{ github.sha }}
+          cache-from: type=gha,scope=render
+          cache-to: type=gha,mode=max,scope=render

@@ -61,6 +61,7 @@ interface EmployeeDetail {
   branchId?: string | null;
   departmentId?: string | null;
   jobTitle?: string | null;
+  jobTitleEnglish?: string | null;
   directManagerId?: string | null;
   workSchedule?: string | null;
   accommodationType?: string | null;
@@ -122,6 +123,7 @@ function toFormData(emp: EmployeeDetail): EmployeeFormData {
     branchId: emp.branchId || '',
     departmentId: emp.departmentId || '',
     jobTitle: emp.jobTitle || '',
+    jobTitleEnglish: emp.jobTitleEnglish || '',
     directManagerId: emp.directManagerId || '',
     workSchedule: emp.workSchedule || '',
     accommodationType: emp.accommodationType || '',

@@ -1,0 +1,72 @@
+# /etc/systemd/system/radeef-render.service: internal document renderer (installed by ops/render-setup.sh).
+# One instance serves every tenant; it listens on 127.0.0.1 only and is never exposed by Nginx.
+#
+# It decodes images uploaded by customers (logos, signatures, stamps) and compiles templates, so it
+# is isolated from the tenants exactly like radeef-face: a dynamic user, no view of their env
+# files, uploads, backups or processes, no network except its own localhost socket, and nothing
+# written anywhere but its private /tmp (one directory per render, removed afterwards).
+[Unit]
+Description=Radeef document renderer (127.0.0.1:8091)
+After=network.target
+
+[Service]
+Type=simple
+DynamicUser=yes
+WorkingDirectory=/opt/radeef/render/current
+# RENDER_SERVICE_TOKEN (chmod 600, read by systemd itself). Kept out of /etc/radeef/*.env, which lists tenants.
+EnvironmentFile=/etc/radeef/services/render.env
+Environment=NODE_ENV=production RENDER_HOST=127.0.0.1 RENDER_PORT=8091 RENDER_TMP_DIR=/tmp
+# No io_uring in libuv: one kernel attack surface less, and no dependence on whether this
+# systemd version puts io_uring_* in @system-service.
+Environment=UV_USE_IO_URING=0
+Environment=TYPST_BIN=/opt/radeef/render/current/bin/typst FONTS_DIR=/opt/radeef/render/current/fonts FONTS_LOCK=/opt/radeef/render/current/fonts.lock
+# NODE_BIN is substituted by ops/render-setup.sh with the host's Node (>= 20.9).
+ExecStart=NODE_BIN /opt/radeef/render/current/src/main.mjs
+Restart=on-failure
+RestartSec=3
+# 4 concurrent renders at ~30 MB each + Node: 512 MB leaves a wide margin (POC.md §E).
+MemoryMax=512M
+TasksMax=128
+UMask=0077
+# Renders are killed at RENDER_TIMEOUT_MS (15 s); give in-flight ones time to finish on stop.
+TimeoutStopSec=25
+KillMode=control-group
+
+# Only the service's own files are visible under /opt/radeef; tenant data is hidden.
+TemporaryFileSystem=/opt/radeef:ro
+BindReadOnlyPaths=/opt/radeef/render
+InaccessiblePaths=-/etc/radeef -/var/lib/radeef -/var/backups/radeef
+# EnvironmentFile above is read by systemd before these apply; the service itself cannot open it.
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+PrivateIPC=true
+ProtectProc=invisible
+ProcSubset=pid
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ProtectClock=true
+ProtectHostname=true
+NoNewPrivileges=true
+CapabilityBoundingSet=
+AmbientCapabilities=
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+IPAddressDeny=any
+IPAddressAllow=localhost
+RestrictNamespaces=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+LockPersonality=true
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+# V8 (Node >= 20) protects its JIT pages with memory protection keys; not in @system-service.
+SystemCallFilter=pkey_alloc pkey_free pkey_mprotect
+SystemCallFilter=~@privileged
+# Node's JIT needs writable+executable memory, so MemoryDenyWriteExecute stays off. @resources stays
+# allowed: Node reads its fd limit with prlimit64. Verified with systemd 257 + Node 20.19 (strace).
+
+[Install]
+WantedBy=multi-user.target

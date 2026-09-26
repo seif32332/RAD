@@ -19,6 +19,11 @@
  *                          and the face template + reference photo of terminated employees. Files live in
  *                          UPLOAD_DIR/.biometric; refuses to run without UPLOAD_DIR or when that folder
  *                          is missing while the database still references files (wrong mount).
+ *   documents-retention    Official documents (docs/document-engine): 10 years (SystemSetting
+ *                          document_retention_years) after the end of service, deletes the issued PDF and
+ *                          clears the snapshot content; the IssuedDocument row stays. Needs UPLOAD_DIR.
+ *   documents-integrity    Walks the DocumentEvent hash chain and re-hashes the stored PDFs against
+ *                          pdfSha256; any mismatch fails the run and emails the admins once a day.
  *   outbox-dispatch        DRY RUN unless OUTBOX_SEND=true AND SMTP_HOST/SMTP_USER/SMTP_PASS/SMTP_FROM
  *                          are set. State machine: PENDING -> SENDING (lease) -> SENT | FAILED | UNKNOWN.
  *                          A lease that expires, or a send that times out, becomes UNKNOWN and is never
@@ -41,9 +46,10 @@
 import { PrismaClient } from '@prisma/client';
 import { pathToFileURL } from 'node:url';
 import path from 'node:path';
-import { stat, unlink } from 'node:fs/promises';
+import { readFile, stat, unlink } from 'node:fs/promises';
+import { appendEvent as appendDocumentEvent, isStoredDocumentName, parseRetentionYears, sha256Hex, verifyEventChain } from './lib/document-chain.mjs';
 
-export const JOB_NAMES = ['expiry-digest', 'deactivate-terminated', 'outbox-dispatch', 'purge-attendance-biometrics'];
+export const JOB_NAMES = ['expiry-digest', 'deactivate-terminated', 'outbox-dispatch', 'purge-attendance-biometrics', 'documents-retention', 'documents-integrity'];
 export const JOB_CONNECTION_LIMIT = 2;
 const DAY_MS = 24 * 60 * 60 * 1000;
 const RIYADH_OFFSET_MS = 3 * 60 * 60 * 1000;
@@ -585,11 +591,115 @@ async function purgeAttendanceBiometrics(prisma, { dryRun, now = new Date(), env
   return summary;
 }
 
+
+// ---------------------------------------------------------------------------------------------
+// Official documents (docs/document-engine: ADR-001 DOC-07 / DOC-09, RUNBOOK §6)
+// ---------------------------------------------------------------------------------------------
+
+function documentsDir(env) {
+  const uploadDir = String(env.UPLOAD_DIR || '').trim();
+  if (!uploadDir) throw new Error('UPLOAD_DIR is not set in the tenant env file: refusing to guess where issued documents are');
+  return path.join(path.resolve(uploadDir), '.documents');
+}
+
+/**
+ * documents-retention: owner decision (SPEC §15.5): an issued document and its snapshots are kept
+ * `document_retention_years` (default 10) after the employee's end of service. Then the PDF is
+ * deleted and the snapshot content cleared; the IssuedDocument row stays (number, type, company,
+ * dates, hash, status) so the verification page answers "retention period ended".
+ */
+async function documentsRetention(prisma, { dryRun, now = new Date(), env = process.env }) {
+  const dir = documentsDir(env);
+  const setting = await prisma.systemSetting.findUnique({ where: { key: 'document_retention_years' }, select: { value: true } });
+  const years = parseRetentionYears(setting && setting.value);
+  const cutoff = new Date(now);
+  cutoff.setUTCFullYear(cutoff.getUTCFullYear() - years);
+  const due = await prisma.issuedDocument.findMany({
+    where: { purgedAt: null, employee: { isTerminated: true, terminationDate: { not: null, lte: cutoff } } },
+    select: { id: true, requestId: true, storedName: true },
+    take: 500,
+  });
+  const summary = { retentionYears: years, cutoff: cutoff.toISOString().slice(0, 10), due: due.length, purged: 0, missingFiles: 0 };
+  if (dryRun || !due.length) return { ...summary, dryRun: !!dryRun };
+  const dirExists = await stat(dir).then((s) => s.isDirectory(), () => false);
+  if (!dirExists) throw new Error(`${dir} not found while documents are due for purge (is the uploads volume mounted?)`);
+
+  for (const d of due) {
+    // Database first (the row keeps its hash); then the file. A crash between the two leaves an
+    // orphan file that the next run of documents-integrity reports, never a row pointing at nothing.
+    await prisma.$transaction(async (tx) => {
+      await tx.issuedDocument.update({ where: { id: d.id }, data: { purgedAt: now } });
+      await tx.documentSnapshot.updateMany({ where: { requestId: d.requestId, purgedAt: null }, data: { data: '{}', brand: '{}', purgedAt: now } });
+      await appendDocumentEvent(tx, { type: 'PURGED', documentId: d.id, requestId: d.requestId, meta: { reason: 'RETENTION', years } });
+    });
+    if (isStoredDocumentName(d.storedName)) {
+      try {
+        await unlink(path.join(dir, ...d.storedName.split('/')));
+      } catch (err) {
+        if (err && err.code === 'ENOENT') summary.missingFiles += 1;
+        else throw err;
+      }
+    }
+    summary.purged += 1;
+  }
+  return summary;
+}
+
+/**
+ * documents-integrity: (1) walks the DocumentEvent hash chain, (2) re-hashes every stored PDF (up
+ * to DOCUMENTS_INTEGRITY_MAX files per run, oldest check first by issue date) against the recorded
+ * pdfSha256. Any mismatch fails the run (JobRun FAILED) and queues one email per admin per day.
+ */
+async function documentsIntegrity(prisma, { dryRun, now = new Date(), env = process.env }) {
+  const dir = documentsDir(env);
+  const max = Math.min(Math.max(Number(env.DOCUMENTS_INTEGRITY_MAX) || 2000, 1), 100000);
+  const chain = await verifyEventChain(prisma);
+  const docs = await prisma.issuedDocument.findMany({
+    where: { purgedAt: null },
+    select: { number: true, storedName: true, pdfSha256: true },
+    orderBy: { issuedAt: 'asc' },
+    take: max,
+  });
+  const problems = [];
+  if (chain.brokenAtSeq !== null) problems.push(`event chain broken at seq ${chain.brokenAtSeq}`);
+  let checked = 0;
+  for (const d of docs) {
+    if (!isStoredDocumentName(d.storedName)) {
+      problems.push(`${d.number}: invalid stored name`);
+      continue;
+    }
+    try {
+      const buf = await readFile(path.join(dir, ...d.storedName.split('/')));
+      if (sha256Hex(buf) !== d.pdfSha256) problems.push(`${d.number}: file does not match its recorded hash`);
+    } catch (err) {
+      problems.push(`${d.number}: ${err && err.code === 'ENOENT' ? 'file missing' : 'unreadable'}`);
+    }
+    checked += 1;
+  }
+  const summary = { eventsChecked: chain.checked, chainIntact: chain.brokenAtSeq === null, filesChecked: checked, problems: problems.slice(0, 50), problemCount: problems.length };
+  if (problems.length && !dryRun) {
+    const { users } = await digestRecipients(prisma);
+    const dayKey = riyadhTodayKey(now);
+    const login = loginUrl();
+    const body = `فحص سلامة المستندات الرسمية وجد ${problems.length} مشكلة (سلسلة الأحداث أو ملفات لا تطابق بصماتها). التفاصيل في JobRun (documents-integrity)، وتحتاج مراجعة فورية.${login ? `\n\n${login}` : ''}`;
+    if (users.length) {
+      await prisma.notificationOutbox.createMany({
+        data: users.map((u) => ({ idempotencyKey: `documents-integrity:${u.id}:${dayKey}`, channel: 'EMAIL', recipient: u.email, subject: 'رديف: تنبيه سلامة المستندات الرسمية', body })),
+        skipDuplicates: true,
+      });
+    }
+    throw new Error(`integrity problems: ${JSON.stringify(summary)}`.slice(0, 1000));
+  }
+  return summary;
+}
+
 const JOBS = {
   'expiry-digest': expiryDigest,
   'deactivate-terminated': deactivateTerminated,
   'outbox-dispatch': outboxDispatch,
   'purge-attendance-biometrics': purgeAttendanceBiometrics,
+  'documents-retention': documentsRetention,
+  'documents-integrity': documentsIntegrity,
 };
 
 // ---------------------------------------------------------------------------------------------

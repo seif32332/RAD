@@ -47,6 +47,7 @@ const EXPORT_SELECT = {
   department: { select: { nameArabic: true } },
   directManager: { select: { employeeId: true } },
   jobTitle: true,
+  jobTitleEnglish: true,
   workSchedule: true,
   accommodationType: true,
   contractType: true,
@@ -102,6 +103,7 @@ function employeeRow(emp: ExportEmployee): CellValue[] {
     // The employee code is unambiguous and the import resolves managers by code.
     directManager: emp.directManager?.employeeId ?? null,
     jobTitle: emp.jobTitle,
+    jobTitleEnglish: emp.jobTitleEnglish,
     workSchedule: emp.workSchedule,
     accommodationType: emp.accommodationType ? ACCOMMODATION_LABELS[emp.accommodationType] : null,
     contractType: CONTRACT_TYPE_LABELS[emp.contractType],

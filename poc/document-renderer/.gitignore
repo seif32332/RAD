@@ -1,0 +1,6 @@
+work/
+out/
+scratch/
+fonts/*.ttf
+fonts-evaluated/
+gotenberg/*.ttf

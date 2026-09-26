@@ -50,6 +50,7 @@ listed in the first column of this table.
 | `fastapi`, `uvicorn`, `python-multipart` | `services/face` (radeef-face, 127.0.0.1:8090) | HTTP layer of the internal face verification service | Selfie image, in memory only | No | APPROVED (DEC-011). Enable `self_attendance_enabled` only after the remaining DEC-011 steps | Owner: saif (seifmostafa@qiadah.sa), 2026-09-26 |
 | `numpy`, `opencv-python-headless`, `onnxruntime` | `services/face` | Face detection (YuNet, MIT), 128-d embedding (SFace, Apache-2.0), passive liveness (MiniFASNet, Apache-2.0) | Selfie image, in memory only; returns an embedding that Radeef stores encrypted | No | APPROVED (DEC-011) | Owner: saif (seifmostafa@qiadah.sa), 2026-09-26 |
 
+| Typst 0.15.1 (static binary, Apache-2.0; pinned in `services/render/typst.lock`) + IBM Plex Sans Arabic (SIL OFL 1.1; `services/render/fonts.lock`) | `services/render` (radeef-render, 127.0.0.1:8091) | Renders official documents (salary certificates, letters) to PDF; no runtime npm dependencies | Document data prepared by the tenant (names, IDs, amounts) and customer logos / signatures / stamps, in a per-request temp directory deleted after each render | No (no network: `IPAddressDeny=any`) | APPROVED (ADR-001 DOC-01, POC 2026-09-26) | Owner: saif (seifmostafa@qiadah.sa), 2026-09-26 |
 Biometric data handling (PDPL: sensitive data):
 - **Consent:** explicit and versioned (`FaceProfile.consentVersion`).
 - **Templates:** encrypted with `DATA_ENCRYPTION_KEY`.

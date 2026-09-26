@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
   Wallet, CalendarDays, PiggyBank, FileText, CheckCircle, AlertTriangle, ShieldAlert, AlertCircle,
   Clock, CalendarClock, DownloadCloud, Receipt, Activity, X, Plane, UserPlus, Send, Ban,
@@ -31,6 +31,7 @@ import CircularsSection from './_components/CircularsSection';
 import UnlinkedAccountCard from './_components/UnlinkedAccountCard';
 import PortalTabBar, { type PortalTab } from './_components/PortalTabBar';
 import ClockCard, { type PunchRejection } from './_components/ClockCard';
+import DocumentsCard, { type DocumentsCardHandle } from './_components/DocumentsCard';
 import { cancellableLeaveId, formatLeaveDays, isUnlinkedAccount, leavePreviewQuery, parseLeavePreview, type LeavePreview } from './_lib';
 
 // ---------------------------------------------------------------------------
@@ -141,6 +142,13 @@ const GENERAL_TYPE_LABELS: Record<string, string> = {
   OTHER: 'طلب آخر',
 };
 
+/** Portal letter requests handled by the document engine (src/lib/documents/types.ts). */
+const ENGINE_LETTER_TYPES: Record<string, string> = {
+  SALARY_CERT: 'SALARY_CERTIFICATE',
+  EMPLOYMENT_LETTER: 'SALARY_CERTIFICATE',
+  EXPERIENCE_LETTER: 'EXPERIENCE_CERTIFICATE',
+};
+
 /** Asset types an employee may request for themselves (same values as /asset-request). */
 const ASSET_TYPE_OPTIONS = [
   { value: 'LAPTOP', label: 'جهاز حاسب آلي (لابتوب)' },
@@ -241,6 +249,8 @@ export default function EmployeePortalPage() {
 
   // General Request Modal State
   const [isGeneralModalOpen, setIsGeneralModalOpen] = useState(false);
+  // Official letters issued by the document engine (docs/document-engine) when configured.
+  const documentsRef = useRef<DocumentsCardHandle>(null);
   const [generalData, setGeneralData] = useState(EMPTY_GENERAL);
 
   // Medical Insurance Modal
@@ -541,6 +551,10 @@ export default function EmployeePortalPage() {
   const fullName = `${employee.firstNameArabic ?? ''} ${employee.lastNameArabic ?? ''}`.trim();
 
   const openGeneralRequest = (requestType: string) => {
+    // Letters go through the document engine when the employee's company is configured for it;
+    // otherwise (not configured yet) they stay a manual request to HR, as before.
+    const engineType = ENGINE_LETTER_TYPES[requestType];
+    if (engineType && documentsRef.current?.openRequest(engineType)) return;
     setGeneralData({ ...EMPTY_GENERAL, requestType });
     setIsGeneralModalOpen(true);
   };
@@ -894,6 +908,9 @@ ${row('إجمالي الاستقطاعات', `${formatMoney(p.totalDeductions)} 
             <ActionTile tone="indigo" icon={<FileText size={26} />} title="شهادة أو خطاب" subtitle="راتب، تعريف، خبرة" onClick={() => openGeneralRequest('SALARY_CERT')} />
           </div>
         </section>
+
+        {/* Official documents (hidden until the document engine is configured for the company) */}
+        <DocumentsCard ref={documentsRef} />
 
         {/* Pending Evaluations */}
         {pendingEvals.length > 0 && (

@@ -36,6 +36,8 @@ const PAGE_ROLES = {
   legal: ROLE_GROUPS.LEGAL,
   /** GET /api/legal/investigations: LEGAL + HR */
   investigations: union(ROLE_GROUPS.LEGAL, ROLE_GROUPS.HR),
+  /** GET /api/documents/requests?scope=staff: HR + PAYROLL (issue, approve, revoke official documents) */
+  documents: union(ROLE_GROUPS.HR, ROLE_GROUPS.PAYROLL),
   /** GET /api/renewals: ROLE_GROUPS.GOV */
   renewals: ROLE_GROUPS.GOV,
   /** GET /api/incoming-requests: HR + PAYROLL (HUB_ROLES) */
@@ -297,6 +299,8 @@ export const MENU_GROUPS: readonly MenuGroup[] = [
         roles: PAGE_ROLES.corrections,
       },
       { href: '/leaves', label: 'إدارة الإجازات', iconName: 'CalendarDays', roles: PAGE_ROLES.staff },
+      // Official documents (salary / employment / experience letters): GET /api/documents/requests?scope=staff
+      { href: '/documents', label: 'المستندات الرسمية', iconName: 'FileSignature', iconClassName: 'text-indigo-500', roles: PAGE_ROLES.documents },
       { href: '/visas', label: 'التأشيرات والتذاكر', iconName: 'Plane', iconClassName: 'text-blue-500', roles: PAGE_ROLES.hrOrGov },
       {
         href: '/medical-insurance',
@@ -657,7 +661,8 @@ function matchesPrefix(pathname: string, prefixes: readonly string[]): boolean {
 }
 
 /** Pages reachable without a session (mirrors src/proxy.ts). */
-export const PUBLIC_PAGE_PREFIXES = ['/login', '/apply'] as const;
+// /v: public verification of issued documents (QR on the PDF, docs/document-engine DOC-06).
+export const PUBLIC_PAGE_PREFIXES = ['/login', '/apply', '/v'] as const;
 
 /** Pages rendered without the sidebar/header (public pages + print views). */
 export const SHELL_FREE_PREFIXES = [...PUBLIC_PAGE_PREFIXES, '/evaluations/print'] as const;

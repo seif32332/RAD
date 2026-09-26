@@ -72,6 +72,8 @@ export interface EmployeeFormData {
   branchId: string;
   departmentId: string;
   jobTitle: string;
+  /** English job title: bilingual official letters (docs/document-engine). */
+  jobTitleEnglish: string;
   directManagerId: string;
   workSchedule: string;
   accommodationType: string;
@@ -145,7 +147,7 @@ export const EMPTY_EMPLOYEE_FORM: EmployeeFormData = {
   ibanNumber: '', bankName: '', bankCode: '', salaryPaymentMethod: 'BANK_TRANSFER',
   legalCompanyId: '', actualCompanyId: '', administrationId: '',
   branchId: '', departmentId: '',
-  jobTitle: '', directManagerId: '', workSchedule: '', accommodationType: '',
+  jobTitle: '', jobTitleEnglish: '', directManagerId: '', workSchedule: '', accommodationType: '',
   basicSalary: '', gosiDeduction: '',
   idDocUrl: '', passportDocUrl: '', healthCertDocUrl: '', contractDocUrl: '',
   gosiRegime: 'UNKNOWN', gosiRegistrationSource: '', gosiNumber: '', idType: '',
@@ -742,6 +744,7 @@ export function EmployeeFormFields({
           </div>
 
           <PremiumInput name="jobTitle" value={formData.jobTitle} onChange={handleChange} label="المسمى الوظيفي المعتمد" required />
+          <PremiumInput name="jobTitleEnglish" value={formData.jobTitleEnglish} onChange={handleChange} label="المسمى الوظيفي بالإنجليزية (للخطابات ثنائية اللغة)" dir="ltr" />
           <SearchableSelect
             name="workSchedule"
             value={formData.workSchedule}
