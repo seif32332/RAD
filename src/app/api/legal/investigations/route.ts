@@ -1,7 +1,8 @@
-import { NextResponse } from 'next/server';
+import { after, NextResponse } from 'next/server';
 import { z } from 'zod';
 import type { Prisma } from '@prisma/client';
 import { prisma } from '@/lib/prisma';
+import { suggestInvestigationMinutesQuietly } from '@/lib/documents/service';
 import { getClientIp, requireUser, type AuthUser } from '@/lib/auth';
 import { DEDUCTION_STATUS, ROLE_GROUPS } from '@/lib/constants';
 import { badRequest, conflict, handleApiError, notFound, parseBody } from '@/lib/http';
@@ -182,6 +183,8 @@ export async function POST(req: Request) {
       const data = updateStatusSchema.parse(payload ?? {});
       const { investigation, audits } = await prisma.$transaction((tx) => updateInvestigationStatus(tx, data, user, ipAddress));
       await Promise.all(audits.map((a) => logAudit(a)));
+      // A concluded investigation suggests its minutes (after commit; waits for a second person's approval).
+      after(() => suggestInvestigationMinutesQuietly(investigation.id));
       return NextResponse.json({ message: 'تم تحديث التحقيق', data: investigation });
     }
 

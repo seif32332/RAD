@@ -7,6 +7,7 @@ import { handleApiError, parseBody } from '@/lib/http';
 import { zBool, zMonth, zYear } from '@/lib/validation';
 import { logAudit } from '@/lib/audit';
 import { generatePayrollMonth } from '@/lib/payroll';
+import { applyDueChangeOrders } from '@/lib/documents/change-orders';
 
 export const dynamic = 'force-dynamic';
 
@@ -26,6 +27,8 @@ export async function POST(req: Request) {
     const user = await requireUser(ROLE_GROUPS.PAYROLL);
     const { month, year, supplementary } = await parseBody(req, GenerateSchema);
 
+    // Promotion / salary decisions due by today are applied first, so the payroll reads them.
+    await applyDueChangeOrders();
     const result = await generatePayrollMonth(prisma, year, month, { supplementary: supplementary === true });
 
     await logAudit({

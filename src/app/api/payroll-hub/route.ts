@@ -1,6 +1,7 @@
-import { NextResponse } from 'next/server';
+import { after, NextResponse } from 'next/server';
 import { z, type ZodTypeAny } from 'zod';
 import { prisma } from '@/lib/prisma';
+import { issuePayslipsQuietly } from '@/lib/documents/service';
 import { getClientIp, requireEmployeeId, requireUser, type AuthUser } from '@/lib/auth';
 import { DEDUCTION_STATUS, LOAN_STATUS, PAYROLL_STATUS, ROLE_GROUPS, roleIn } from '@/lib/constants';
 import { badRequest, conflict, forbidden, handleApiError, notFound, parseBody, parseQuery } from '@/lib/http';
@@ -453,6 +454,8 @@ const HANDLERS: Record<string, Handler> = {
       details: { month: m, year: y, approved: result.count, paid: result.paid, loansCompleted: result.loansCompleted },
       ipAddress: ip,
     });
+    // Paid: every employee's payslip is issued in the background (after commit, best effort).
+    if (p.markPaid) after(() => issuePayslipsQuietly(y, m));
     return ok(
       p.markPaid ? 'تم اعتماد وصرف مسير الرواتب بنجاح' : `تم اعتماد مسير رواتب شهر ${m}/${y} بنجاح`,
       undefined,
@@ -465,6 +468,7 @@ const HANDLERS: Record<string, Handler> = {
     const { month, year } = parsePayload(MonthPayload, payload);
     const count = await prisma.$transaction((tx) => markPayrollMonthPaid(tx, year, month));
     await logAudit({ userId: user.id, action: 'UPDATE', entityType: 'PAYROLL', entityId: `${year}-${month}`, details: { status: PAYROLL_STATUS.PAID, count }, ipAddress: ip });
+    after(() => issuePayslipsQuietly(year, month));
     return ok(`تم تسجيل صرف مسير رواتب شهر ${month}/${year}`, undefined, { count, month, year });
   },
 

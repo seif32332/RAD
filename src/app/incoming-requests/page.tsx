@@ -287,7 +287,7 @@ export default function IncomingRequestsPage() {
     req: IncomingRequest,
     actionType: 'APPROVE' | 'REJECT',
     updatedData?: OnboardingEdit,
-    opts: { existingAssetId?: string; confirmed?: boolean } = {},
+    opts: { existingAssetId?: string; confirmed?: boolean; lastWorkingDate?: string } = {},
   ): Promise<boolean> => {
     if (busyId) return false;
     let reason: string | undefined;
@@ -320,6 +320,7 @@ export default function IncomingRequestsPage() {
           updatedData,
           ...(reason ? { reason } : {}),
           ...(opts.existingAssetId ? { existingAssetId: opts.existingAssetId } : {}),
+          ...(opts.lastWorkingDate ? { lastWorkingDate: opts.lastWorkingDate } : {}),
         }),
       });
       if (res.status === 401) {
@@ -375,7 +376,29 @@ export default function IncomingRequestsPage() {
       setFulfilReq(req);
       return;
     }
+    if (req.type === 'TERMINATION') {
+      void approveTermination(req);
+      return;
+    }
     void handleAction(req, 'APPROVE');
+  };
+
+  /** Resignation / termination: the last working day is fixed at approval (printed on the acceptance letter). */
+  const approveTermination = async (req: IncomingRequest) => {
+    const suggested = (req.customData as { suggestedLastWorkingDate?: string } | undefined)?.suggestedLastWorkingDate ?? '';
+    const input = await promptDialog(`آخر يوم عمل للموظف ${req.employeeName ?? ''} (بصيغة سنة-شهر-يوم). الاقتراح: تاريخ الطلب + فترة الإشعار في ملفه.`, {
+      title: 'اعتماد إنهاء الخدمة',
+      confirmText: 'اعتماد',
+      defaultValue: suggested,
+      placeholder: '2026-10-31',
+    });
+    if (input === null) return;
+    const day = input.trim();
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(day)) {
+      toast.error('اكتب التاريخ بصيغة سنة-شهر-يوم، مثل 2026-10-31');
+      return;
+    }
+    await handleAction(req, 'APPROVE', undefined, { confirmed: true, lastWorkingDate: day });
   };
 
   const submitFulfilment = async () => {

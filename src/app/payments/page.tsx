@@ -9,6 +9,7 @@ import { useRole } from '@/context/RoleContext';
 import { formatDate } from '@/lib/dates';
 import { formatMoney, sumMoney } from '@/lib/money';
 import { paymentDeleteBlockReason } from '@/app/api/payments/access';
+import SettlementPaymentProofFields, { EMPTY_PAYMENT_PROOF, paymentProofComplete, type PaymentProofValue } from '@/components/SettlementPaymentProofFields';
 
 interface Payment {
   id: string;
@@ -118,6 +119,8 @@ export default function PaymentsPage() {
   const [isUploadingAdd, setIsUploadingAdd] = useState(false);
   const [isSubmittingAdd, setIsSubmittingAdd] = useState(false);
   const [receiptUrl, setReceiptUrl] = useState('');
+  const [proof, setProof] = useState<PaymentProofValue>(EMPTY_PAYMENT_PROOF);
+  const paysSettlement = selectedPayment?.entityType === 'SETTLEMENT';
   const [isUploading, setIsUploading] = useState(false);
   const [isSubmittingPay, setIsSubmittingPay] = useState(false);
   const [busyId, setBusyId] = useState<string | null>(null);
@@ -290,7 +293,7 @@ export default function PaymentsPage() {
       const res = await fetch(`/api/payments/${selectedPayment.id}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ status: 'PAID', receiptUrl })
+        body: JSON.stringify({ status: 'PAID', receiptUrl, ...(paysSettlement ? proof : {}) })
       });
       if (res.status === 401) return redirectToLogin();
       if (!res.ok) {
@@ -300,6 +303,7 @@ export default function PaymentsPage() {
       toast.success('تم تأكيد دفع الفاتورة');
       setIsPayModalOpen(false);
       setReceiptUrl('');
+      setProof(EMPTY_PAYMENT_PROOF);
       await fetchPayments();
     } catch {
       toast.error("حدث خطأ");
@@ -825,8 +829,10 @@ export default function PaymentsPage() {
                  )}
                </div>
 
+               {paysSettlement ? <SettlementPaymentProofFields value={proof} onChange={setProof} disabled={isSubmittingPay} /> : null}
+
                <div className="pt-4 border-t border-slate-100">
-                  <button disabled={!receiptUrl || isUploading || isSubmittingPay} type="submit" className="w-full bg-emerald-600 hover:bg-emerald-700 text-white font-extrabold text-[13px] px-8 py-3.5 rounded-xl transition-all shadow-lg shadow-emerald-200 hover:-translate-y-0.5 flex justify-center disabled:opacity-50 disabled:hover:translate-y-0">
+                  <button disabled={!receiptUrl || isUploading || isSubmittingPay || (paysSettlement && !paymentProofComplete(proof))} type="submit" className="w-full bg-emerald-600 hover:bg-emerald-700 text-white font-extrabold text-[13px] px-8 py-3.5 rounded-xl transition-all shadow-lg shadow-emerald-200 hover:-translate-y-0.5 flex justify-center disabled:opacity-50 disabled:hover:translate-y-0">
                     {isSubmittingPay ? 'جاري الحفظ...' : 'تأكيد دفع الفاتورة'}
                   </button>
                </div>

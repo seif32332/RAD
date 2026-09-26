@@ -1,6 +1,7 @@
-import { NextResponse } from 'next/server';
+import { after, NextResponse } from 'next/server';
 import { z } from 'zod';
 import { prisma } from '@/lib/prisma';
+import { syncLeaveLetterQuietly } from '@/lib/documents/service';
 import { getClientIp, requireUser } from '@/lib/auth';
 import { LEAVE_STATUS, ROLE_GROUPS, roleIn } from '@/lib/constants';
 import { badRequest, conflict, forbidden, handleApiError, notFound, parseBody } from '@/lib/http';
@@ -78,6 +79,8 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
     const body = await parseBody(req, actionSchema);
     const ipAddress = getClientIp(req);
     const opts = { ipAddress };
+    // Any action may change the leave (approval, dates, cancellation): keep its letter in line (idempotent).
+    after(() => syncLeaveLetterQuietly(id));
 
     switch (body.action) {
       case 'APPROVE_MANAGER':
@@ -183,7 +186,8 @@ async function abscond(id: string, body: Extract<ActionBody, { action: 'ABSCOND'
       where: { id: leave.employeeId, exitReason: null },
       data: { exitReason, exitVoluntary: defaultExitVoluntary(exitReason) },
     });
-    await deactivateEmployeeUser(tx, leave.employeeId, { reason: 'ABSCONDED', actorId: user.id, ipAddress });
+    // Absconding: no documents-only window (the account stops at once unless a grace period applies).
+    await deactivateEmployeeUser(tx, leave.employeeId, { reason: 'ABSCONDED', actorId: user.id, ipAddress, documentsAccess: false });
     await logAudit(
       {
         userId: user.id,

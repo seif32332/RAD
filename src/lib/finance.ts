@@ -15,6 +15,7 @@
 //
 // Deductions: approve = the penalty stands (-> DEDUCTED, due in payroll);
 //             reject  = the penalty is dropped (-> REJECTED, or WAIVED for a waive request).
+import { paidAtDate, type SettlementPaymentProof } from '@/lib/settlement-payment';
 import 'server-only';
 import type { Prisma } from '@prisma/client';
 import type { AuthUser } from '@/lib/auth';
@@ -745,14 +746,28 @@ export async function rejectSettlement(tx: Tx, settlementId: string, user: AuthU
 }
 
 /**
- * Finance confirms the transfer: OWNER_APPROVED -> PAID. The linked PaymentRequest is marked
+ * Finance confirms the transfer: OWNER_APPROVED -> PAID, with the payment proof (method, reference,
+ * actual day) the settlement statement's discharge refers to. The linked PaymentRequest is marked
  * PAID too; a LEAVE_SETTLEMENT puts the employee ON_LEAVE.
  */
-export async function markSettlementPaid(tx: Tx, settlementId: string, receiptUrl: string | null, user: AuthUser, ctx: FinanceCtx = {}) {
+export async function markSettlementPaid(
+  tx: Tx,
+  settlementId: string,
+  receiptUrl: string | null,
+  user: AuthUser,
+  ctx: FinanceCtx = {},
+  proof: SettlementPaymentProof,
+) {
   requireRole(user, ROLE_GROUPS.FINANCE);
   const res = await tx.settlement.updateMany({
     where: { id: settlementId, status: SETTLEMENT_STATUS.OWNER_APPROVED },
-    data: { status: SETTLEMENT_STATUS.PAID, ...(receiptUrl ? { transferReceiptUrl: receiptUrl } : {}) },
+    data: {
+      status: SETTLEMENT_STATUS.PAID,
+      ...(receiptUrl ? { transferReceiptUrl: receiptUrl } : {}),
+      paymentMethod: proof.paymentMethod,
+      paymentReference: proof.paymentReference,
+      paidAt: paidAtDate(proof.paidAt),
+    },
   });
   if (res.count === 0) {
     await guardFailed(
@@ -777,7 +792,7 @@ export async function markSettlementPaid(tx: Tx, settlementId: string, receiptUr
     await tx.employee.update({ where: { id: settlement.employeeId }, data: { employmentStatus: 'ON_LEAVE' } });
   }
   await logAudit(
-    { userId: user.id, action: 'UPDATE', entityType: 'SETTLEMENT', entityId: settlementId, details: { status: SETTLEMENT_STATUS.PAID, receiptUrl }, ipAddress: ctx.ipAddress },
+    { userId: user.id, action: 'UPDATE', entityType: 'SETTLEMENT', entityId: settlementId, details: { status: SETTLEMENT_STATUS.PAID, receiptUrl, ...proof }, ipAddress: ctx.ipAddress },
     tx,
   );
   return settlement;

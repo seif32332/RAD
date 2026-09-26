@@ -17,14 +17,15 @@ export interface EffectivePolicy {
   signatoryId: string | null;
 }
 
-/** Company setting over type defaults (null = default). */
+/** Company setting over type defaults (null = default). A locked type ignores approval / portal settings. */
 export function effectivePolicy(def: DocumentTypeDefinition, setting: TypeSettingRow | null): EffectivePolicy {
   return {
     enabled: setting?.enabled ?? true,
-    selfService: setting?.selfService ?? def.defaults.selfService,
-    requiresApproval: setting?.requiresApproval ?? def.defaults.requiresApproval,
+    selfService: def.approvalLocked || def.issuance === 'AUTO' ? false : setting?.selfService ?? def.defaults.selfService,
+    requiresApproval: def.approvalLocked || def.approvalMandatory ? true : def.issuance === 'AUTO' ? false : setting?.requiresApproval ?? def.defaults.requiresApproval,
     validityDays: setting?.validityDays !== undefined && setting?.validityDays !== null ? setting.validityDays : def.defaults.validityDays,
-    signatoryId: setting?.signatoryId ?? null,
+    // AUTO documents are unsigned (issued from an approved payroll): no signatory at all.
+    signatoryId: def.issuance === 'AUTO' ? null : setting?.signatoryId ?? null,
   };
 }
 

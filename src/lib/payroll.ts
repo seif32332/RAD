@@ -447,6 +447,7 @@ export async function generatePayrollMonth(
           amount: true,
           isMonthly: true,
           countsTowardGosi: true,
+          allowanceType: true,
           payrollMonth: true,
           payrollYear: true,
           paidInPayrollId: true,

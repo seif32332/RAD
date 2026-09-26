@@ -164,7 +164,7 @@ describe('render model (ADR DOC-01)', () => {
       typeLabelAr: 'خطاب تعريف بالراتب', typeLabelEn: 'Salary Certificate', number: 'ACM-SAL-2026-000184', issuedDate: '2026-09-26',
       validUntilDate: '2026-12-25', verifyUrl: 'https://x/v/T', language: 'ar', addresseeAr: null, addresseeEn: null, signature: null, hasLogo: false,
     });
-    expect(model.employee.fullNameAr).toBe('محمد عبدالله الأحمد');
+    expect(model.employee?.fullNameAr).toBe('محمد عبدالله الأحمد');
     expect(model.doc.issuedHijriAr).toBe('15 ربيع الآخر 1448 هـ');
     expect(model.salary?.totalText).toBe('13,500.50');
     expect(model.addressee.ar).toBe('إلى من يهمه الأمر');

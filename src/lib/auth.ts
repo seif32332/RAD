@@ -27,10 +27,37 @@ export interface AuthUser {
   employeeId: string | null;
   /** Current User.sessionVersion (needed when re-issuing a session cookie). */
   sessionVersion: number;
+  /**
+   * Terminated employee within his documents-only window (src/lib/access.ts). Only
+   * getDocumentsSessionUser / requireDocumentsUser ever return such a user.
+   */
+  documentsOnly?: boolean;
 }
 
-/** Reads and verifies the session cookie, then loads the (active) user. Cached per request. */
+/**
+ * Reads and verifies the session cookie, then loads the (active) user. Cached per request.
+ * A documents-only account (terminated employee) is NOT a session here: every page and API that
+ * uses getSessionUser / requireUser treats it as logged out (fail closed).
+ */
 export const getSessionUser = cache(async (): Promise<AuthUser | null> => {
+  const user = await loadSessionUser();
+  return user && !user.documentsOnly ? user : null;
+});
+
+/**
+ * Same session, also accepting a documents-only account while its window lasts. Used only by the
+ * official-documents endpoints a leaver needs (his list, download, accept / dispute) and logout.
+ */
+export const getDocumentsSessionUser = cache(async (): Promise<AuthUser | null> => loadSessionUser());
+
+/** For the documents endpoints: 401 without a session (a documents-only account passes). */
+export async function requireDocumentsUser(): Promise<AuthUser> {
+  const user = await getDocumentsSessionUser();
+  if (!user) throw unauthorized();
+  return user;
+}
+
+const loadSessionUser = cache(async (): Promise<AuthUser | null> => {
   const store = await cookies();
   const session = await verifySession(store.get(SESSION_COOKIE)?.value);
   if (!session) return null;
@@ -46,10 +73,13 @@ export const getSessionUser = cache(async (): Promise<AuthUser | null> => {
       isActive: true,
       passwordHash: true,
       sessionVersion: true,
+      documentsOnlyUntil: true,
       employeeProfile: { select: { id: true, firstNameArabic: true, lastNameArabic: true } },
     },
   });
   if (!user || !user.isActive) return null;
+  // Documents-only window over: no access at all (the nightly job then deactivates the account).
+  if (user.documentsOnlyUntil && user.documentsOnlyUntil.getTime() <= Date.now()) return null;
   // Revocation: logout bumps sessionVersion; a password change changes the credential version.
   if ((session.sv ?? 0) !== user.sessionVersion) return null;
   if (!(await sessionMatchesCredentials(session, user.passwordHash))) return null;
@@ -66,6 +96,7 @@ export const getSessionUser = cache(async (): Promise<AuthUser | null> => {
     avatarUrl: user.avatarUrl ?? null,
     employeeId: user.employeeProfile?.id ?? null,
     sessionVersion: user.sessionVersion,
+    ...(user.documentsOnlyUntil ? { documentsOnly: true } : {}),
   };
 });
 

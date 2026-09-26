@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server';
 import { z } from 'zod';
 import { ContractType, PaymentMethod, AccommodationType, type Prisma } from '@prisma/client';
 import { prisma } from '@/lib/prisma';
+import { salaryTransferConflict } from '@/lib/documents/queries';
 import { requireUser, getClientIp } from '@/lib/auth';
 import { managedEmployeesWhere } from '@/lib/hr-workflows';
 import { ROLE_GROUPS, roleIn } from '@/lib/constants';
@@ -330,6 +331,10 @@ export async function PUT(req: Request, { params }: Ctx) {
       probationDays,
       basicSalary: updated.basicSalary,
     });
+
+    // A valid salary transfer letter commits the company to a bank (warning only, owner decision).
+    const commitment = await salaryTransferConflict(updated.id, updated.ibanNumber, updated.bankName ?? null);
+    if (commitment) warnings.push({ field: 'ibanNumber', message: commitment });
 
     return NextResponse.json({ message: 'تم تحديث بيانات الموظف بنجاح', employee: updated, warnings });
   } catch (err) {

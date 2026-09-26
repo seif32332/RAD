@@ -666,7 +666,7 @@ function matchesPrefix(pathname: string, prefixes: readonly string[]): boolean {
 
 /** Pages reachable without a session (mirrors src/proxy.ts). */
 // /v: public verification of issued documents (QR on the PDF, docs/document-engine DOC-06).
-export const PUBLIC_PAGE_PREFIXES = ['/login', '/apply', '/v'] as const;
+export const PUBLIC_PAGE_PREFIXES = ['/login', '/apply', '/v', '/offer'] as const;
 
 /** Pages rendered without the sidebar/header (public pages + print views). */
 export const SHELL_FREE_PREFIXES = [...PUBLIC_PAGE_PREFIXES, '/evaluations/print'] as const;

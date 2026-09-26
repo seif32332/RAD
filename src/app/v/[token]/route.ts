@@ -100,6 +100,11 @@ ${row('الجهة المُصدرة', r.issuerAr, r.issuerEn)}
 ${row('تاريخ الإصدار', formatGregorian(r.issuedAt, 'ar'), formatGregorian(r.issuedAt, 'en'))}
 ${row('صالح حتى', r.validUntil ? formatGregorian(r.validUntil, 'ar') : 'بلا تاريخ انتهاء', r.validUntil ? formatGregorian(r.validUntil, 'en') : 'No expiry')}
 ${r.revokedAt ? row('تاريخ الإلغاء', formatGregorian(r.revokedAt, 'ar')) : ''}
+${r.release ? row(
+  'المخالصة',
+  r.release.status === 'ACCEPTED' ? `وافق عليها الموظف في ${formatGregorian(r.release.at!, 'ar')}` : r.release.status === 'DISPUTED' ? `اعترض عليها الموظف في ${formatGregorian(r.release.at!, 'ar')}` : 'لم يوافق عليها الموظف بعد',
+  r.release.status === 'ACCEPTED' ? `Accepted by the employee on ${formatGregorian(r.release.at!, 'en')}` : r.release.status === 'DISPUTED' ? `Disputed by the employee on ${formatGregorian(r.release.at!, 'en')}` : 'Not yet accepted by the employee',
+) : ''}
 </dl>
 ${r.pdfSha256 ? `<div class="card"><label for="pdf">مطابقة الملف <small dir="ltr">Check the PDF file</small></label>
 <p>اختر ملف الـPDF الذي استلمته للتحقق من أنه مطابق تماماً للمستند الصادر.</p>

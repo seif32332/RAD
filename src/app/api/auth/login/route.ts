@@ -69,6 +69,11 @@ export async function POST(req: Request) {
     if (!user.isActive) {
       return jsonError(403, 'الحساب معطل، يرجى مراجعة مدير النظام');
     }
+    // Terminated employee: documents-only access while the window lasts (src/lib/access.ts).
+    const documentsOnly = !!user.documentsOnlyUntil;
+    if (user.documentsOnlyUntil && user.documentsOnlyUntil.getTime() <= Date.now()) {
+      return jsonError(403, 'انتهت مدة الدخول بعد انتهاء الخدمة؛ تواصل مع الموارد البشرية');
+    }
 
     resetRateLimit(`login:${normalizedEmail}`);
     refundRateLimit(`login-ip:${ip}`);
@@ -86,6 +91,7 @@ export async function POST(req: Request) {
     const response = NextResponse.json({
       message: 'تم تسجيل الدخول بنجاح',
       user: { id: user.id, email: user.email, role: user.role, name: displayName, avatarUrl: user.avatarUrl ?? null },
+      ...(documentsOnly ? { documentsOnly: true, redirect: '/my-documents' } : {}),
     });
     response.cookies.set(SESSION_COOKIE, token, sessionCookieOptions(maxAge));
     // Remove cookies from the old insecure scheme.

@@ -9,6 +9,7 @@ import { useRole } from '@/context/RoleContext';
 import { ROLE_GROUPS, SETTLEMENT_STATUS, roleIn } from '@/lib/constants';
 import { formatDate } from '@/lib/dates';
 import { formatMoney } from '@/lib/money';
+import SettlementPaymentProofFields, { EMPTY_PAYMENT_PROOF, paymentProofComplete, type PaymentProofValue } from '@/components/SettlementPaymentProofFields';
 
 interface SettlementRow {
   id: string;
@@ -425,6 +426,7 @@ export default function SettlementsPage() {
 
   const [selectedSettlement, setSelectedSettlement] = useState<SettlementRow | null>(null);
   const [receiptUrl, setReceiptUrl] = useState('');
+  const [proof, setProof] = useState<PaymentProofValue>(EMPTY_PAYMENT_PROOF);
   const [actionLoading, setActionLoading] = useState(false);
 
   const fetchSettlements = useCallback(async (opts: { silent?: boolean } = {}) => {
@@ -528,7 +530,7 @@ export default function SettlementsPage() {
       const res = await fetch('/api/settlements', {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ id, status: newStatus, transferReceiptUrl: receiptUrl || null }),
+        body: JSON.stringify(newStatus === 'PAID' ? { id, status: newStatus, ...proof } : { id, status: newStatus, transferReceiptUrl: receiptUrl || null }),
       });
       if (res.status === 401) return redirectToLogin();
       if (!res.ok) {
@@ -537,6 +539,7 @@ export default function SettlementsPage() {
         toast.success(newStatus === 'OWNER_APPROVED' ? '\u062a\u0645 \u0627\u0644\u0627\u0639\u062a\u0645\u0627\u062f \u0648\u0625\u0631\u0633\u0627\u0644\u0647\u0627 \u0644\u0644\u0645\u062f\u0641\u0648\u0639\u0627\u062a' : '\u062a\u0645 \u062a\u0623\u0643\u064a\u062f \u0627\u0644\u062f\u0641\u0639 \u0628\u0646\u062c\u0627\u062d');
         setSelectedSettlement(null);
         setReceiptUrl('');
+        setProof(EMPTY_PAYMENT_PROOF);
         await fetchSettlements({ silent: true });
       }
     } catch {
@@ -834,13 +837,12 @@ export default function SettlementsPage() {
                           <p className="text-[12px] font-bold text-blue-600 mt-1">{'\u0628\u0639\u062f \u0627\u0644\u062a\u062d\u0648\u064a\u0644 \u0644\u062d\u0633\u0627\u0628 \u0627\u0644\u0645\u0648\u0638\u0641\u060c \u0623\u062f\u062e\u0644 \u0631\u0642\u0645 \u0627\u0644\u062d\u0648\u0627\u0644\u0629 \u0648\u0623\u0643\u062f \u0627\u0644\u062f\u0641\u0639.'}</p>
                         </div>
                       </div>
-                      <div className="flex flex-col md:flex-row gap-4">
-                        <div className="flex-1">
-                           <label className="text-[11px] font-black text-blue-600 block mb-2">{'\u0631\u0642\u0645 \u0625\u064a\u0635\u0627\u0644 \u0627\u0644\u062d\u0648\u0627\u0644\u0629 (\u0627\u062e\u062a\u064a\u0627\u0631\u064a)'}</label>
-                           <input type="text" value={receiptUrl} onChange={(e) => setReceiptUrl(e.target.value)} placeholder={'\u0645\u062b\u0627\u0644: \u062d\u0648\u0627\u0644\u0629 \u0645\u0635\u0631\u0641\u064a\u0629 \u0631\u0642\u0645 459392'} className="w-full px-4 py-3 rounded-xl border-none focus:ring-4 focus:ring-blue-200 bg-white font-bold text-[13px] outline-none" />
+                      <div className="flex flex-col gap-4">
+                        <div className="bg-white rounded-xl p-4">
+                          <SettlementPaymentProofFields value={proof} onChange={setProof} disabled={actionLoading} />
                         </div>
                         <div className="flex items-end">
-                           <button type="button" disabled={actionLoading} onClick={() => handleAction(selectedSettlement.id, 'PAID')} className="w-full px-8 py-3 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white font-black text-[13px] rounded-xl transition shadow-lg shadow-emerald-600/20 flex justify-center items-center gap-2">
+                           <button type="button" disabled={actionLoading || !paymentProofComplete(proof)} onClick={() => handleAction(selectedSettlement.id, 'PAID')} className="w-full px-8 py-3 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white font-black text-[13px] rounded-xl transition shadow-lg shadow-emerald-600/20 flex justify-center items-center gap-2">
                              <CheckCircle size={16}/> {actionLoading ? '\u062c\u0627\u0631\u064a...' : '\u062a\u0623\u0643\u064a\u062f \u0627\u0644\u062f\u0641\u0639'}
                            </button>
                         </div>

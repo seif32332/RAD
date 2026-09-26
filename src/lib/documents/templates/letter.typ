@@ -89,7 +89,18 @@
   v(1mm)
   pair(d, [*إلى:* #d.addressee.ar], [*To:* #d.addressee.en])
 
+  // The company's own opening / closing paragraphs (data, placed as text), around the fixed body.
+  let paras(ps) = if ps != none { for p in ps { par(p.map(l => [#l]).join(linebreak())) } }
+  let t = d.at("texts", default: none)
+  if t != none and (t.openingAr != none or t.openingEn != none) {
+    pair(d, paras(t.openingAr), paras(t.openingEn))
+  }
+
   body
+
+  if t != none and (t.closingAr != none or t.closingEn != none) {
+    pair(d, paras(t.closingAr), paras(t.closingEn))
+  }
 
   // Signature, stamp, QR: one block, never split across pages.
   v(4mm)

@@ -63,7 +63,7 @@ const STORED_DOC_RE = /^\d{4}\/[0-9a-f-]{36}\.pdf$/;
 export const isStoredDocumentName = (name) => typeof name === 'string' && STORED_DOC_RE.test(name);
 
 /** Retention in years from SystemSetting `document_retention_years` (owner decision: 10; bounds 1..50). */
-export function parseRetentionYears(raw) {
+export function parseRetentionYears(raw, fallback = 10) {
   const n = Number(raw);
-  return Number.isInteger(n) && n >= 1 && n <= 50 ? n : 10;
+  return Number.isInteger(n) && n >= 1 && n <= 50 ? n : fallback;
 }

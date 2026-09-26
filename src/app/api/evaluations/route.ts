@@ -1,7 +1,8 @@
-import { NextResponse } from 'next/server';
+import { after, NextResponse } from 'next/server';
 import { z } from 'zod';
 import type { Prisma } from '@prisma/client';
 import { prisma } from '@/lib/prisma';
+import { issueEvaluationReportQuietly } from '@/lib/documents/service';
 import { getClientIp, hasRole, requireEmployeeId, requireUser, type AuthUser } from '@/lib/auth';
 import { ROLE_GROUPS } from '@/lib/constants';
 import { HttpError, badRequest, conflict, forbidden, handleApiError, notFound, parseBody } from '@/lib/http';
@@ -683,6 +684,8 @@ export async function POST(req: Request) {
         );
       });
 
+      // Closed: its report is issued automatically (after commit, best effort; the sweep retries).
+      after(() => issueEvaluationReportQuietly(body.evaluationId));
       return NextResponse.json({ message: 'تم تسجيل إقرار الموظف وإغلاق التقييم' });
     }
 

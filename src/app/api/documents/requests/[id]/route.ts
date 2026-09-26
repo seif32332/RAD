@@ -1,8 +1,8 @@
 import { NextResponse } from 'next/server';
 import { z } from 'zod';
-import { requireUser } from '@/lib/auth';
+import { requireDocumentsUser, requireUser } from '@/lib/auth';
 import { ROLE_GROUPS } from '@/lib/constants';
-import { handleApiError, notFound, parseBody } from '@/lib/http';
+import { forbidden, handleApiError, notFound, parseBody } from '@/lib/http';
 import { documentRequestDetail } from '@/lib/documents/queries';
 import {
   approveDocumentRequest, cancelDocumentRequest, rejectDocumentRequest, retryDocumentRequest,
@@ -35,9 +35,12 @@ const actionSchema = z.discriminatedUnion('action', [
 /** POST /api/documents/requests/<id> { action: approve | reject | cancel | retry } */
 export async function POST(req: Request, { params }: { params: Promise<{ id: string }> }) {
   try {
-    const user = await requireUser(ROLE_GROUPS.ALL);
+    const user = await requireDocumentsUser();
     const { id } = await params;
     const body = await parseBody(req, actionSchema);
+    // A leaver's documents-only session may only cancel / retry his own requests: never approve or
+    // reject (he may have been a signatory, and approval is also granted by user id).
+    if (user.documentsOnly && body.action !== 'cancel' && body.action !== 'retry') throw forbidden();
     const actor = actorFrom(user, req);
     switch (body.action) {
       case 'approve':

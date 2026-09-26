@@ -1,7 +1,9 @@
-import { NextResponse } from 'next/server';
+import { after, NextResponse } from 'next/server';
 import { z } from 'zod';
 import type { LeaveStatus, LeaveType } from '@prisma/client';
 import { prisma } from '@/lib/prisma';
+import { suggestExitDocumentsQuietly } from '@/lib/documents/service';
+import { settlementPaymentProofSchema } from '@/lib/settlement-payment';
 import { getClientIp, requireUser } from '@/lib/auth';
 import {
   DEFAULT_EXIT_REENTRY_VISA_FEE,
@@ -706,6 +708,13 @@ export async function POST(req: Request) {
   }
 }
 
+/** Payment proof of a PAID transition; the same rules on both paths that pay a settlement. */
+function paymentProof(body: { paymentMethod?: string; paymentReference?: string; paidAt?: string }) {
+  const parsed = settlementPaymentProofSchema.safeParse(body);
+  if (!parsed.success) throw badRequest(parsed.error.issues[0]?.message ?? 'بيانات إثبات الصرف غير مكتملة');
+  return parsed.data;
+}
+
 const UpdateSettlementSchema = z.object({
   id: zId,
   status: z.preprocess(
@@ -714,6 +723,10 @@ const UpdateSettlementSchema = z.object({
   ),
   transferReceiptUrl: zOptText(2000),
   ownerNotes: zOptText(5000),
+  // PAID: payment proof (method, reference, actual day), required.
+  paymentMethod: z.string().optional(),
+  paymentReference: z.string().optional(),
+  paidAt: z.string().optional(),
 });
 
 /**
@@ -734,7 +747,7 @@ export async function PUT(req: Request) {
           case SETTLEMENT_STATUS.REJECTED:
             return rejectSettlement(tx, body.id, user, body.ownerNotes, ctx);
           case SETTLEMENT_STATUS.PAID:
-            return markSettlementPaid(tx, body.id, body.transferReceiptUrl ?? null, user, ctx);
+            return markSettlementPaid(tx, body.id, body.transferReceiptUrl ?? null, user, ctx, paymentProof(body));
           default: {
             const data: { ownerNotes?: string | null; transferReceiptUrl?: string | null } = {};
             if (body.ownerNotes !== undefined) {
@@ -759,6 +772,9 @@ export async function PUT(req: Request) {
       },
       { timeout: 30000, maxWait: 10000 },
     );
+
+    // A paid end-of-service settlement suggests its clearance / experience letters (after commit, best effort).
+    if (body.status === SETTLEMENT_STATUS.PAID) after(() => suggestExitDocumentsQuietly(body.id));
 
     return NextResponse.json({ message: 'تم تحديث التصفية', data: updated });
   } catch (err) {

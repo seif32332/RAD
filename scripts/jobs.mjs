@@ -10,8 +10,10 @@
  *                          SystemSetting keys as src/lib/alerts.ts) and ONE NotificationOutbox row per
  *                          admin user per day: counts + a login link only — no names, no ID numbers.
  *                          idempotencyKey = expiry-digest:<userId>:<YYYY-MM-DD> (Asia/Riyadh day).
- *   deactivate-terminated  Deactivates (isActive=false, sessionVersion+1, audit row) the logins of
- *                          employees terminated at least `terminated_access_days` days ago
+ *   deactivate-terminated  Ends the logins of terminated employees: after `terminated_access_days`
+ *                          (full access) the account keeps documents-only access for
+ *                          `terminated_documents_access_days` more days (default 30), then it is
+ *                          deactivated (isActive=false, sessionVersion+1, audit row)
  *                          (SystemSetting, default 0 = immediately; same rule as src/lib/access.ts).
  *   purge-attendance-biometrics
  *                          Self clock-in (PDPL minimization): deletes the evidence selfies of rejected /
@@ -49,7 +51,7 @@ import path from 'node:path';
 import { readFile, stat, unlink } from 'node:fs/promises';
 import { appendEvent as appendDocumentEvent, isStoredDocumentName, parseRetentionYears, sha256Hex, verifyEventChain } from './lib/document-chain.mjs';
 
-export const JOB_NAMES = ['expiry-digest', 'deactivate-terminated', 'outbox-dispatch', 'purge-attendance-biometrics', 'documents-retention', 'documents-integrity'];
+export const JOB_NAMES = ['expiry-digest', 'deactivate-terminated', 'outbox-dispatch', 'purge-attendance-biometrics', 'documents-retention', 'documents-integrity', 'apply-employee-changes'];
 export const JOB_CONNECTION_LIMIT = 2;
 const DAY_MS = 24 * 60 * 60 * 1000;
 const RIYADH_OFFSET_MS = 3 * 60 * 60 * 1000;
@@ -164,6 +166,28 @@ export function digestThresholds(settingRows) {
 }
 
 /** Same rule as src/lib/access.ts terminatedAccessDays: finite > 0 -> min(floor, 90), else 0. */
+/** Documents-only window after termination (same rule as src/lib/access.ts parseDocumentsDays). */
+export function parseDocumentsDays(value) {
+  if (value === null || value === undefined || String(value).trim() === '') return 30;
+  const n = Number(value);
+  if (!Number.isFinite(n) || n < 0) return 30;
+  return Math.min(Math.floor(n), 90);
+}
+
+/**
+ * What the job does with an active login of a terminated employee (pure):
+ *  - 'KEEP': still in its full-access grace, or in its documents-only window;
+ *  - 'DOCUMENTS': grace over -> documents-only for `documentsDays` from now (the window starts when
+ *    full access ends, like src/lib/access.ts: a backdated termination never shortens it);
+ *  - 'DEACTIVATE': nothing left.
+ */
+export function terminatedLoginAction(user, terminatedOn, graceDays, documentsDays, now = new Date()) {
+  if (user.documentsOnlyUntil) return new Date(user.documentsOnlyUntil) > now ? { action: 'KEEP' } : { action: 'DEACTIVATE' };
+  if (!accessExpired(terminatedOn, graceDays, now)) return { action: 'KEEP' };
+  if (documentsDays > 0) return { action: 'DOCUMENTS', until: new Date(now.getTime() + documentsDays * 86400e3) };
+  return { action: 'DEACTIVATE' };
+}
+
 export function parseGraceDays(value) {
   const n = Number(value ?? 0);
   return Number.isFinite(n) && n > 0 ? Math.min(Math.floor(n), 90) : 0;
@@ -406,20 +430,52 @@ async function expiryDigest(prisma, { dryRun, now = new Date() }) {
 }
 
 async function deactivateTerminated(prisma, { dryRun, now = new Date() }) {
-  const setting = await prisma.systemSetting.findUnique({ where: { key: 'terminated_access_days' }, select: { value: true } });
-  const graceDays = parseGraceDays(setting && setting.value);
+  const settings = await prisma.systemSetting.findMany({
+    where: { key: { in: ['terminated_access_days', 'terminated_documents_access_days'] } },
+    select: { key: true, value: true },
+  });
+  const value = (key) => settings.find((r) => r.key === key)?.value;
+  const graceDays = parseGraceDays(value('terminated_access_days'));
+  const documentsDays = parseDocumentsDays(value('terminated_documents_access_days'));
   const candidates = await prisma.employee.findMany({
     where: { isTerminated: true, userId: { not: null }, user: { is: { isActive: true } } },
-    select: { id: true, userId: true, terminationDate: true, updatedAt: true },
+    select: { id: true, userId: true, terminationDate: true, updatedAt: true, user: { select: { documentsOnlyUntil: true } } },
   });
-  const due = candidates.filter((e) => accessExpired(e.terminationDate || e.updatedAt, graceDays, now));
-  const summary = { graceDays, activeLoginsOfTerminated: candidates.length, due: due.length, deactivated: 0, stillInGrace: candidates.length - due.length };
+  const plan = candidates.map((e) => ({ e, ...terminatedLoginAction(e.user, e.terminationDate || e.updatedAt, graceDays, documentsDays, now) }));
+  const due = plan.filter((p) => p.action === 'DEACTIVATE').map((p) => p.e);
+  const toDocuments = plan.filter((p) => p.action === 'DOCUMENTS');
+  const summary = {
+    graceDays, documentsDays, activeLoginsOfTerminated: candidates.length, due: due.length, toDocumentsOnly: toDocuments.length,
+    deactivated: 0, documentsOnly: 0, stillInGrace: candidates.length - due.length - toDocuments.length,
+  };
   if (dryRun) return { ...summary, dryRun: true };
+  // Full access over, documents window not: documents-only until the window ends (sessions revoked).
+  for (const p of toDocuments) {
+    const changed = await prisma.$transaction(async (tx) => {
+      const res = await tx.user.updateMany({
+        where: { id: p.e.userId, isActive: true, documentsOnlyUntil: null },
+        data: { documentsOnlyUntil: p.until, sessionVersion: { increment: 1 } },
+      });
+      if (res.count > 0) {
+        await tx.auditLog.create({
+          data: {
+            userId: null,
+            action: 'UPDATE',
+            entityType: 'User',
+            entityId: p.e.userId,
+            details: JSON.stringify({ field: 'documentsOnlyUntil', to: p.until.toISOString(), reason: 'terminated_access_expired', employeeId: p.e.id, graceDays, documentsDays, job: 'deactivate-terminated' }),
+          },
+        });
+      }
+      return res.count;
+    });
+    summary.documentsOnly += changed;
+  }
   for (const e of due) {
     const changed = await prisma.$transaction(async (tx) => {
       const res = await tx.user.updateMany({
         where: { id: e.userId, isActive: true },
-        data: { isActive: false, sessionVersion: { increment: 1 } },
+        data: { isActive: false, documentsOnlyUntil: null, sessionVersion: { increment: 1 } },
       });
       if (res.count > 0) {
         await tx.auditLog.create({
@@ -614,12 +670,24 @@ async function documentsRetention(prisma, { dryRun, now = new Date(), env = proc
   const years = parseRetentionYears(setting && setting.value);
   const cutoff = new Date(now);
   cutoff.setUTCFullYear(cutoff.getUTCFullYear() - years);
+  // Candidate documents (job offers) have no end of service: kept candidate_document_retention_years
+  // (default 2) after issuance.
+  const candSetting = await prisma.systemSetting.findUnique({ where: { key: 'candidate_document_retention_years' }, select: { value: true } });
+  const candidateYears = parseRetentionYears(candSetting && candSetting.value, 2);
+  const candidateCutoff = new Date(now);
+  candidateCutoff.setUTCFullYear(candidateCutoff.getUTCFullYear() - candidateYears);
   const due = await prisma.issuedDocument.findMany({
-    where: { purgedAt: null, employee: { isTerminated: true, terminationDate: { not: null, lte: cutoff } } },
+    where: {
+      purgedAt: null,
+      OR: [
+        { employee: { isTerminated: true, terminationDate: { not: null, lte: cutoff } } },
+        { jobApplicationId: { not: null }, issuedAt: { lte: candidateCutoff } },
+      ],
+    },
     select: { id: true, requestId: true, storedName: true },
     take: 500,
   });
-  const summary = { retentionYears: years, cutoff: cutoff.toISOString().slice(0, 10), due: due.length, purged: 0, missingFiles: 0 };
+  const summary = { retentionYears: years, cutoff: cutoff.toISOString().slice(0, 10), candidateRetentionYears: candidateYears, due: due.length, purged: 0, missingFiles: 0 };
   if (dryRun || !due.length) return { ...summary, dryRun: !!dryRun };
   const dirExists = await stat(dir).then((s) => s.isDirectory(), () => false);
   if (!dirExists) throw new Error(`${dir} not found while documents are due for purge (is the uploads volume mounted?)`);
@@ -630,6 +698,8 @@ async function documentsRetention(prisma, { dryRun, now = new Date(), env = proc
     await prisma.$transaction(async (tx) => {
       await tx.issuedDocument.update({ where: { id: d.id }, data: { purgedAt: now } });
       await tx.documentSnapshot.updateMany({ where: { requestId: d.requestId, purgedAt: null }, data: { data: '{}', brand: '{}', purgedAt: now } });
+      // The employee's comment on a warning is personal data too; the acknowledgement itself stays as evidence.
+      await tx.documentAcknowledgement.updateMany({ where: { documentId: d.id, comment: { not: null } }, data: { comment: null } });
       await appendDocumentEvent(tx, { type: 'PURGED', documentId: d.id, requestId: d.requestId, meta: { reason: 'RETENTION', years } });
     });
     if (isStoredDocumentName(d.storedName)) {
@@ -650,6 +720,44 @@ async function documentsRetention(prisma, { dryRun, now = new Date(), env = proc
  * to DOCUMENTS_INTEGRITY_MAX files per run, oldest check first by issue date) against the recorded
  * pdfSha256. Any mismatch fails the run (JobRun FAILED) and queues one email per admin per day.
  */
+/**
+ * apply-employee-changes: promotion / salary decisions whose effective date has come are applied to
+ * the employee file once (same rule as src/lib/documents/change-orders.ts applyChangeOrder: atomic
+ * appliedAt guard, Employee update, SalaryChange row isPlanned=false, audit row). The app also
+ * applies them when the documents list opens and before a payroll is generated.
+ */
+async function applyEmployeeChanges(prisma, { dryRun, now = new Date() }) {
+  const day = new Date(now.getTime() + 3 * 3600e3).toISOString().slice(0, 10);
+  const endOfToday = new Date(`${day}T23:59:59.999+03:00`);
+  const due = await prisma.employeeChangeOrder.findMany({
+    where: { appliedAt: null, cancelledAt: null, effectiveDate: { lte: endOfToday } },
+    orderBy: { effectiveDate: 'asc' },
+    take: 500,
+  });
+  const summary = { due: due.length, applied: 0 };
+  if (dryRun) return { ...summary, dryRun: true };
+  for (const o of due) {
+    const applied = await prisma.$transaction(async (tx) => {
+      const moved = await tx.employeeChangeOrder.updateMany({ where: { id: o.id, appliedAt: null, cancelledAt: null }, data: { appliedAt: new Date() } });
+      if (moved.count !== 1) return 0;
+      const data = {};
+      if (o.basicSalary !== null) data.basicSalary = o.basicSalary;
+      if (o.jobTitle !== null) data.jobTitle = o.jobTitle;
+      if (o.jobTitleEnglish !== null) data.jobTitleEnglish = o.jobTitleEnglish;
+      if (Object.keys(data).length) await tx.employee.update({ where: { id: o.employeeId }, data });
+      if (o.basicSalary !== null) {
+        await tx.salaryChange.create({ data: { employeeId: o.employeeId, effectiveDate: o.effectiveDate, basicSalary: o.basicSalary, reason: `قرار ترقية/زيادة (${o.documentId})`, isPlanned: false } });
+      }
+      await tx.auditLog.create({
+        data: { userId: null, action: 'UPDATE', entityType: 'Employee', entityId: o.employeeId, details: JSON.stringify({ source: 'EmployeeChangeOrder', orderId: o.id, documentId: o.documentId, after: data, job: 'apply-employee-changes' }) },
+      });
+      return 1;
+    });
+    summary.applied += applied;
+  }
+  return summary;
+}
+
 async function documentsIntegrity(prisma, { dryRun, now = new Date(), env = process.env }) {
   const dir = documentsDir(env);
   const max = Math.min(Math.max(Number(env.DOCUMENTS_INTEGRITY_MAX) || 2000, 1), 100000);
@@ -700,6 +808,7 @@ const JOBS = {
   'purge-attendance-biometrics': purgeAttendanceBiometrics,
   'documents-retention': documentsRetention,
   'documents-integrity': documentsIntegrity,
+  'apply-employee-changes': applyEmployeeChanges,
 };
 
 // ---------------------------------------------------------------------------------------------

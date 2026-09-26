@@ -4,10 +4,12 @@
 // Every approval/rejection goes through the shared workflow helpers (src/lib/hr-workflows.ts,
 // src/lib/finance.ts) or an atomic status guard inside prisma.$transaction, so a double click
 // can never apply side effects twice.
-import { NextResponse } from 'next/server';
+import { after, NextResponse } from 'next/server';
 import { z } from 'zod';
 import type { LeaveType, Prisma } from '@prisma/client';
 import { prisma } from '@/lib/prisma';
+import { suggestExitAcceptanceQuietly, syncLeaveLetterQuietly } from '@/lib/documents/service';
+import { earliestLastWorkingDay, suggestedLastWorkingDay } from '@/lib/termination';
 import { getClientIp, hasRole, requireUser, type AuthUser } from '@/lib/auth';
 import {
   DEDUCTION_PENDING_STATUSES,
@@ -286,7 +288,7 @@ export async function GET() {
       hrOnly(() =>
         prisma.terminationRequest.findMany({
           where: { status: SIMPLE_STATUS.PENDING },
-          select: { id: true, terminationType: true, reasonDetails: true, createdAt: true, employee: employeeSelect },
+          select: { id: true, terminationType: true, reasonDetails: true, createdAt: true, employee: { select: { ...employeeSelect.select, noticePeriodDays: true } } },
         }),
       ),
       hubOnly(() =>
@@ -450,6 +452,10 @@ export async function GET() {
         title: 'طلب إنهاء عقد / استقالة',
         ...employeeFields(r.employee),
         createdAt: r.createdAt,
+        // Suggested last working day: request day + notice period, never before the resignation withdrawal window.
+        customData: {
+          suggestedLastWorkingDate: suggestedLastWorkingDay(r.createdAt, r.terminationType, r.employee.noticePeriodDays),
+        },
         details: `النوع: ${r.terminationType} | المبرر: ${r.reasonDetails || 'غير محدد'}`,
       })),
       ...pendingAttendanceCorrections.map((r) => ({
@@ -614,6 +620,8 @@ const actionSchema = z.object({
   existingAssetId: zOptText(100),
   /** Onboarding review edits (validated separately, only whitelisted fields are used). */
   updatedData: z.unknown().optional(),
+  /** TERMINATION approval: the last working day (YYYY-MM-DD, Riyadh), required. */
+  lastWorkingDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'تاريخ آخر يوم عمل غير صالح').optional(),
 });
 
 /** Editable onboarding fields (whitelist). Unknown keys sent by the page are ignored. */
@@ -662,6 +670,7 @@ interface ActionCtx {
   id: string;
   reason: string | null;
   existingAssetId: string | null;
+  lastWorkingDate: string | null;
 }
 
 function requireGroup(user: AuthUser, group: readonly string[], message?: string) {
@@ -693,7 +702,9 @@ export async function POST(req: Request) {
       id: body.dbId,
       reason: body.reason ?? null,
       existingAssetId: body.existingAssetId ?? null,
+      lastWorkingDate: body.lastWorkingDate ?? null,
     };
+    if (body.lastWorkingDate && type !== 'TERMINATION') throw badRequest('آخر يوم عمل خاص بطلبات إنهاء الخدمة');
 
     if (type === 'ONBOARDING') {
       if (ctx.approve) {
@@ -720,6 +731,9 @@ export async function POST(req: Request) {
     }
 
     const message = await prisma.$transaction((tx) => HANDLERS[type](tx, ctx));
+    // An approved resignation / termination request suggests its acceptance letter (after commit).
+    if (type === 'TERMINATION' && ctx.approve) after(() => suggestExitAcceptanceQuietly(ctx.id));
+    if (type === 'LEAVE') after(() => syncLeaveLetterQuietly(ctx.id));
     return NextResponse.json({ message: message || 'تم إنجاز الإجراء بنجاح' });
   } catch (err) {
     return handleApiError(err, 'incoming-requests:POST');
@@ -784,17 +798,35 @@ const HANDLERS: Record<Exclude<RequestType, 'ONBOARDING'>, Handler> = {
     return 'تم رفض إشعار المباشرة';
   },
 
-  async TERMINATION(tx, { user, ip, approve, id, reason }) {
+  async TERMINATION(tx, { user, ip, approve, id, reason, lastWorkingDate }) {
     const now = new Date();
+    // Approval fixes the last working day (owner decision 2026-09-26): printed on the acceptance
+    // letter; never before the day the employee asked. A resignation may be withdrawn within 7 days
+    // (owner decision 2026-09-26), so its last working day is at least submission + 8 days.
+    let lastDay: Date | null = null;
+    if (approve) {
+      if (!lastWorkingDate) throw badRequest('حدد آخر يوم عمل قبل اعتماد طلب إنهاء الخدمة');
+      lastDay = new Date(`${lastWorkingDate}T00:00:00+03:00`);
+      const reqRow = await tx.terminationRequest.findUnique({ where: { id }, select: { createdAt: true, terminationType: true } });
+      if (!reqRow) throw notFound();
+      const earliest = earliestLastWorkingDay(reqRow.createdAt, reqRow.terminationType);
+      if (Number.isNaN(lastDay.getTime()) || lastWorkingDate < earliest) {
+        throw badRequest(
+          reqRow.terminationType === 'RESIGNATION'
+            ? `آخر يوم عمل في الاستقالة لا يسبق ${earliest} (مهلة سحب الاستقالة 7 أيام من تقديمها)`
+            : 'آخر يوم عمل لا يسبق تاريخ تقديم الطلب',
+        );
+      }
+    }
     const res = await tx.terminationRequest.updateMany({
       where: { id, status: SIMPLE_STATUS.PENDING },
       data: approve
-        ? { status: SIMPLE_STATUS.APPROVED, isHrApproved: true, hrApprovedAt: now }
+        ? { status: SIMPLE_STATUS.APPROVED, isHrApproved: true, hrApprovedAt: now, lastWorkingDate: lastDay }
         : { status: SIMPLE_STATUS.REJECTED },
     });
     if (res.count === 0) await guardFailed(tx.terminationRequest.findUnique({ where: { id }, select: { id: true } }));
     await logAudit(
-      { userId: user.id, action: approve ? 'APPROVE' : 'REJECT', entityType: 'TerminationRequest', entityId: id, details: { reason }, ipAddress: ip },
+      { userId: user.id, action: approve ? 'APPROVE' : 'REJECT', entityType: 'TerminationRequest', entityId: id, details: { reason, lastWorkingDate }, ipAddress: ip },
       tx,
     );
     return approve ? 'تم اعتماد طلب إنهاء العقد' : 'تم رفض طلب إنهاء العقد';

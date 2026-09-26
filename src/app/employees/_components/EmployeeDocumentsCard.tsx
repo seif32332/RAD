@@ -4,7 +4,7 @@ import React, { useEffect, useState } from 'react';
 import Link from 'next/link';
 import { FileSignature, Download } from 'lucide-react';
 import { formatDateShort } from '@/lib/dates';
-import { VALIDITY, pdfUrl, type DocView } from '@/app/documents/_lib';
+import { VALIDITY, acknowledgementLabel, pdfUrl, type DocView } from '@/app/documents/_lib';
 
 interface Row extends DocView { typeLabel: string }
 
@@ -47,7 +47,13 @@ export default function EmployeeDocumentsCard({ employeeId }: { employeeId: stri
         <ul className="divide-y divide-slate-100 text-[13px]">
           {rows.map((d) => (
             <li key={d.id} className="py-2 flex flex-wrap items-center justify-between gap-2">
-              <span><b>{d.typeLabel}</b> · <span dir="ltr">{d.number}</span> · {formatDateShort(d.issuedAt)}</span>
+              <span>
+                <b>{d.typeLabel}</b> · <span dir="ltr">{d.number}</span> · {formatDateShort(d.issuedAt)}
+                {(() => {
+                  const l = acknowledgementLabel(d.acknowledgement);
+                  return l ? <span className={l.tone} title={d.acknowledgement?.comment ?? undefined}> · {l.text}{d.acknowledgement?.comment ? ' (له ملاحظات)' : ''}</span> : null;
+                })()}
+              </span>
               <span className="flex items-center gap-3">
                 <span className={`px-2 py-0.5 rounded-md border text-[11px] font-bold ${VALIDITY[d.validity].tone}`}>{VALIDITY[d.validity].label}</span>
                 {d.validity !== 'PURGED' && (

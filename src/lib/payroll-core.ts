@@ -120,6 +120,8 @@ export interface AllowanceLike {
   name?: string | null;
   amount: number | null;
   isMonthly: boolean;
+  /** HOUSING | TRANSPORT | FOOD | OTHER (null = older rows: the name decides). */
+  allowanceType?: string | null;
   /** Part of the GOSI contributory wage (explicit flag, DEC-003). */
   countsTowardGosi?: boolean | null;
 }
@@ -133,6 +135,35 @@ export interface SalaryLike {
 export type SalaryBasis = 'basic' | 'total';
 
 /** Sum of recurring monthly allowances (one-off bonuses are excluded). */
+/** Payslip line of a recurring allowance: its type, else its name (food and the rest are "other"). */
+export function allowanceLine(a: Pick<AllowanceLike, 'name' | 'allowanceType'>): 'HOUSING' | 'TRANSPORT' | 'OTHER' {
+  const t = (a.allowanceType ?? '').toUpperCase();
+  if (t === 'HOUSING' || t === 'TRANSPORT') return t;
+  if (t) return 'OTHER';
+  if (/سكن|housing/i.test(a.name ?? '')) return 'HOUSING';
+  if (/نقل|مواصلات|transport/i.test(a.name ?? '')) return 'TRANSPORT';
+  return 'OTHER';
+}
+
+/**
+ * Recurring allowances of the month split by payslip line. Housing and transport are each scaled
+ * and rounded; "other" is what remains of the rounded total, so the three always add up to it.
+ */
+export function splitRecurringAllowances(allowances: ReadonlyArray<AllowanceLike> | null | undefined, factor: number, total: number) {
+  const full = (kind: 'HOUSING' | 'TRANSPORT') =>
+    sumMoney((allowances ?? []).filter((a) => a.isMonthly && allowanceLine(a) === kind).map((a) => a.amount ?? 0));
+  let housing = roundMoney(full('HOUSING') * factor);
+  let transport = roundMoney(full('TRANSPORT') * factor);
+  let other = roundMoney(total - housing - transport);
+  // Rounding can leave -0.01 when there is no other allowance: take it back from the larger line.
+  if (other < 0) {
+    if (housing >= transport) housing = roundMoney(housing + other);
+    else transport = roundMoney(transport + other);
+    other = 0;
+  }
+  return { housing, transport, other };
+}
+
 export function monthlyAllowancesTotal(allowances: ReadonlyArray<AllowanceLike> | null | undefined): number {
   return sumMoney((allowances ?? []).filter((a) => a.isMonthly).map((a) => a.amount ?? 0));
 }
@@ -573,6 +604,10 @@ export interface PayrollLineResult {
   factor: number;
   breakdown: {
     recurringAllowances: number;
+    /** recurringAllowances split for the payslip (housing + transport + other = recurringAllowances). */
+    housingAllowances: number;
+    transportAllowances: number;
+    otherAllowances: number;
     bonuses: number;
     penalties: number;
     leaveDeductions: number;
@@ -602,6 +637,10 @@ export interface PayrollBreakdownColumns {
   leaveDeduction: number;
   otherDeductions: number;
   bonusAmount: number;
+  /** Recurring allowances by payslip line (null on rows generated before the split). */
+  housingAllowance?: number | null;
+  transportAllowance?: number | null;
+  otherAllowances?: number | null;
   needsReview: boolean;
   reviewNote: string | null;
 }
@@ -616,6 +655,9 @@ export function payrollBreakdownColumns(line: PayrollLineResult): PayrollBreakdo
     leaveDeduction: line.breakdown.leaveDeductions,
     otherDeductions: line.breakdown.other,
     bonusAmount: line.breakdown.bonuses,
+    housingAllowance: line.breakdown.housingAllowances,
+    transportAllowance: line.breakdown.transportAllowances,
+    otherAllowances: line.breakdown.otherAllowances,
     needsReview: line.needsReview,
     reviewNote: line.reviewNote,
   };
@@ -795,6 +837,7 @@ export function computePayrollLine(input: PayrollLineInput): PayrollLineResult {
   const recurringFull = monthlyAllowancesTotal(emp.allowances);
   const basicSalary = roundMoney(basicFull * factor);
   const recurringAllowances = roundMoney(recurringFull * factor);
+  const split = splitRecurringAllowances(emp.allowances, factor, recurringAllowances);
   const bonuses = sumMoney(input.bonuses.map((b) => b.amount));
   const totalAllowances = roundMoney(recurringAllowances + bonuses);
 
@@ -896,6 +939,9 @@ export function computePayrollLine(input: PayrollLineInput): PayrollLineResult {
     factor,
     breakdown: {
       recurringAllowances,
+      housingAllowances: split.housing,
+      transportAllowances: split.transport,
+      otherAllowances: split.other,
       bonuses,
       penalties,
       leaveDeductions,

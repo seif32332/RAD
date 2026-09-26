@@ -347,7 +347,7 @@ sudo -u radeef node --env-file=/etc/radeef/acme.env /opt/radeef/src/scripts/crea
 | المهمة | ما تفعله | الافتراضي الآمن |
 |---|---|---|
 | `expiry-digest` | يحسب أعداد المستندات المنتهية والتي تقترب من الانتهاء لكل فئة (نفس العتبات ومفاتيح `alert_*` في `src/lib/alerts.ts`)، ويضيف **صفاً واحداً لكل مستخدم مدير في اليوم** إلى `NotificationOutbox` بمفتاح `expiry-digest:<userId>:<YYYY-MM-DD>`. النص **أعداد فقط + رابط تسجيل الدخول**: لا أسماء ولا أرقام هوية. لا يُرسل لمستخدم غير نشط أو مرتبط بموظف منتهية خدمته. لا شيء يُضاف في يوم بلا تنبيهات. | الأدوار من `SystemSetting.expiry_digest_roles` (افتراضي `SUPER_ADMIN,COMPANY_ADMIN`، ولا يُقبل `EMPLOYEE`). الرابط من `APP_URL`. |
-| `deactivate-terminated` | يعطّل دخول الموظفين المنتهية خدمتهم (`isActive=false`، `sessionVersion+1` لإبطال الجلسات، وسطر تدقيق) بعد مضي `terminated_access_days` يوماً من تاريخ الإنهاء. | `terminated_access_days` غير مضبوط = 0 = فوراً (نفس `src/lib/access.ts`). |
+| `deactivate-terminated` | بعد مضي `terminated_access_days` يوماً من الإنهاء (دخول كامل) يحوّل الحساب إلى «المستندات فقط» لمدة `terminated_documents_access_days` يوماً (صفحة `/my-documents`)، ثم يعطّله (`isActive=false`، `sessionVersion+1` لإبطال الجلسات، وسطر تدقيق). | `terminated_access_days` غير مضبوط = 0 = فوراً، و`terminated_documents_access_days` غير مضبوط = 30 (0 = تعطيل مباشر؛ نفس `src/lib/access.ts`). |
 | `outbox-dispatch` | يرسل صفوف `NotificationOutbox` بالبريد: `PENDING` ← `SENDING` (مع lease) ← `SENT` / `FAILED` / `UNKNOWN`. انتهاء المهلة أو انقطاع الاتصال أثناء الإرسال = `UNKNOWN` ولا يُعاد تلقائياً (قد يكون وصل). `FAILED` (رفض مؤكد) يُعاد حتى `OUTBOX_MAX_ATTEMPTS` (3). يعيد التحقق من أن مستلم الملخص ما زال نشطاً قبل الإرسال. | **تشغيل تجريبي (dry run)** لا يغيّر أي صف، إلا إذا `OUTBOX_SEND="true"` **و** `SMTP_HOST/USER/PASS/FROM` مضبوطة. |
 
 ```bash
@@ -386,6 +386,14 @@ TimeoutStartSec=90min
 [Timer]
 OnCalendar=*-*-* 03:30:00 Asia/Riyadh
 RandomizedDelaySec=20min
+Persistent=true
+[Install]
+WantedBy=timers.target
+
+# /etc/systemd/system/radeef-jobs@apply-employee-changes.timer  (00:15 + حتى 10 دقائق، يومياً)
+[Timer]
+OnCalendar=*-*-* 00:15:00 Asia/Riyadh
+RandomizedDelaySec=10min
 Persistent=true
 [Install]
 WantedBy=timers.target
@@ -704,6 +712,7 @@ sudo -iu radeef /opt/radeef/src/ops/run-jobs.sh purge-attendance-biometrics <ten
 
 | المهمة | ما تفعله | ملاحظات |
 |---|---|---|
+| `apply-employee-changes` | تطبّق قرارات الترقية أو تعديل الراتب التي حلّ تاريخ سريانها على ملف الموظف مرة واحدة (الراتب الأساسي والمسمى)، وتكتب `SalaryChange` (`isPlanned=false`) وسطر تدقيق | يطبّقها التطبيق أيضاً عند فتح قائمة المستندات وقبل توليد مسيّر الرواتب، فتأخر المؤقت لا يفوّت زيادة على المسيّر |
 | `documents-integrity` | تتحقق من سلسلة بصمات `DocumentEvent` كاملة، وتعيد حساب SHA-256 لكل ملف مستند صادر وتقارنه بـ`pdfSha256` | أي خلل يجعل التشغيل `FAILED` مع رقم المستند وسبب الخلل، ويرسل بريداً واحداً يومياً للمديرين (أدوار `expiry_digest_roles`). الحد الأقصى للملفات في التشغيل الواحد `DOCUMENTS_INTEGRITY_MAX` (افتراضي 2000). يحتاج `UPLOAD_DIR` |
 | `documents-retention` | بعد `document_retention_years` (افتراضي 10، قرار المالك) من تاريخ انتهاء خدمة الموظف: يحذف ملف الـPDF ويمسح محتوى اللقطات، ويبقى سجل المستند (الرقم والنوع والشركة والتواريخ والبصمة). صفحة التحقق تعرض «انتهت مدة الاحتفاظ» | `--dry-run` يعدّ فقط. الحذف مسموح بـtrigger لمرة واحدة فقط ولا يُتراجع عنه. يؤكد المستشار المدة ضمن DEC-008 قبل تفعيل المؤقت |
 

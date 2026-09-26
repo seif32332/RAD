@@ -1,7 +1,7 @@
 import { NextResponse } from 'next/server';
 import { prisma } from '@/lib/prisma';
 import { SESSION_COOKIE, sessionCookieOptions } from '@/lib/session';
-import { getSessionUser, getClientIp } from '@/lib/auth';
+import { getDocumentsSessionUser, getClientIp } from '@/lib/auth';
 import { logAudit } from '@/lib/audit';
 
 export const dynamic = 'force-dynamic';
@@ -12,7 +12,7 @@ export const dynamic = 'force-dynamic';
  * user's other devices) stops working immediately.
  */
 export async function POST(req: Request) {
-  const user = await getSessionUser().catch(() => null);
+  const user = await getDocumentsSessionUser().catch(() => null);
   if (user) {
     try {
       await prisma.user.update({ where: { id: user.id }, data: { sessionVersion: { increment: 1 } } });

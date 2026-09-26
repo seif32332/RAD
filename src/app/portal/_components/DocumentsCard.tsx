@@ -1,16 +1,17 @@
 'use client';
 
 import React, { forwardRef, useCallback, useEffect, useImperativeHandle, useState } from 'react';
-import { FileSignature, Download, Loader2, XCircle } from 'lucide-react';
+import { FileSignature, Download, Loader2, XCircle, CheckCircle2 } from 'lucide-react';
 import Modal from '@/components/ui/Modal';
 import { toast, readApiError, confirmDialog } from '@/components/ui/feedback';
 import { formatDateShort } from '@/lib/dates';
-import { REQUEST_STATUS, VALIDITY, pdfUrl, processingLabel, type DocView, type ProcessingView } from '@/app/documents/_lib';
+import { NOC_PURPOSES, REQUEST_STATUS, VALIDITY, pdfUrl, processingLabel, type DocView, type ProcessingView } from '@/app/documents/_lib';
 
 interface RequestRow {
   id: string;
   typeKey: string;
   typeLabel: string;
+  source: string;
   language: string;
   status: string;
   createdAt: string;
@@ -18,7 +19,7 @@ interface RequestRow {
   document: DocView | null;
   processing: ProcessingView | null;
 }
-interface TypeOption { key: string; labelAr: string; labelEn: string; validityDays: number | null }
+interface TypeOption { key: string; labelAr: string; labelEn: string; validityDays: number | null; languages?: string[]; noc?: boolean }
 
 export interface DocumentsCardHandle {
   /** Opens the request form; returns false when the engine is not available (caller falls back). */
@@ -36,7 +37,9 @@ const DocumentsCard = forwardRef<DocumentsCardHandle>(function DocumentsCard(_, 
   const [loaded, setLoaded] = useState(false);
   const [open, setOpen] = useState(false);
   const [busy, setBusy] = useState(false);
-  const [form, setForm] = useState({ typeKey: '', language: 'ar', addresseeAr: '', addresseeEn: '' });
+  const [form, setForm] = useState({ typeKey: '', language: 'ar', addresseeAr: '', addresseeEn: '', nocPurpose: 'TRAVEL', nocTarget: '', nocDetails: '' });
+  const selected = types.find((t) => t.key === form.typeKey) ?? null;
+  const [ack, setAck] = useState<{ documentId: string; label: string; comment: string; kind: 'RECEIPT' | 'RELEASE'; decision: 'RECEIVED' | 'ACCEPTED' | 'DISPUTED' } | null>(null);
 
   const load = useCallback(async () => {
     try {
@@ -82,6 +85,7 @@ const DocumentsCard = forwardRef<DocumentsCardHandle>(function DocumentsCard(_, 
           language: form.language,
           addresseeAr: form.addresseeAr || undefined,
           addresseeEn: form.language === 'ar-en' ? form.addresseeEn || undefined : undefined,
+          noc: selected?.noc ? { purpose: form.nocPurpose, targetAr: form.nocTarget, detailsAr: form.nocDetails.trim() || undefined } : undefined,
         }),
       });
       if (!res.ok) {
@@ -95,7 +99,7 @@ const DocumentsCard = forwardRef<DocumentsCardHandle>(function DocumentsCard(_, 
       else if (r.status === 'PENDING_APPROVAL') toast.success('رُفع الطلب للاعتماد، وستجده هنا عند صدوره.');
       else if (r.renderError) toast.info(r.renderError.message);
       setOpen(false);
-      setForm({ typeKey: '', language: 'ar', addresseeAr: '', addresseeEn: '' });
+      setForm({ typeKey: '', language: 'ar', addresseeAr: '', addresseeEn: '', nocPurpose: 'TRAVEL', nocTarget: '', nocDetails: '' });
       await load();
     } catch {
       toast.error('تعذر الاتصال بالخادم');
@@ -111,6 +115,26 @@ const DocumentsCard = forwardRef<DocumentsCardHandle>(function DocumentsCard(_, 
     });
     if (!res.ok) toast.error(await readApiError(res, 'تعذر الإلغاء'));
     await load();
+  }
+
+  async function acknowledge(e: React.FormEvent) {
+    e.preventDefault();
+    if (!ack) return;
+    setBusy(true);
+    try {
+      const res = await fetch(`/api/documents/${encodeURIComponent(ack.documentId)}`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'acknowledge', decision: ack.decision, comment: ack.comment.trim() || undefined }),
+      });
+      if (!res.ok) return toast.error(await readApiError(res, 'تعذر تسجيل ردك'));
+      toast.success(ack.decision === 'ACCEPTED' ? 'سُجّلت موافقتك على المخالصة.' : ack.decision === 'DISPUTED' ? 'سُجّل اعتراضك، وسيتابعه قسم الموارد البشرية.' : 'سُجّل إقرارك بالاستلام.');
+      setAck(null);
+      await load();
+    } catch {
+      toast.error('تعذر الاتصال بالخادم');
+    } finally {
+      setBusy(false);
+    }
   }
 
   if (!loaded || (!types.length && !requests.length)) return null;
@@ -146,6 +170,11 @@ const DocumentsCard = forwardRef<DocumentsCardHandle>(function DocumentsCard(_, 
                     {r.document?.validUntil ? <> · صالح حتى {formatDateShort(r.document.validUntil)}</> : null}
                   </p>
                   {r.rejectReason ? <p className="text-xs text-red-600 mt-1">سبب الرفض: {r.rejectReason}</p> : null}
+                  {r.document?.acknowledgement?.at ? (
+                    <p className={`text-xs mt-1 ${r.document.acknowledgement.decision === 'DISPUTED' ? 'text-red-700' : 'text-emerald-700'}`}>
+                      {r.document.acknowledgement.decision === 'ACCEPTED' ? 'وافقت على المخالصة' : r.document.acknowledgement.decision === 'DISPUTED' ? 'اعترضت على البيان' : 'أقررت بالاستلام'} في {formatDateShort(r.document.acknowledgement.at)}
+                    </p>
+                  ) : null}
                   {proc ? <p className="text-xs text-blue-700 mt-1">{proc}</p> : null}
                 </div>
                 <div className="flex items-center gap-2">
@@ -159,7 +188,26 @@ const DocumentsCard = forwardRef<DocumentsCardHandle>(function DocumentsCard(_, 
                       <Download size={16} aria-hidden="true" /> تنزيل
                     </a>
                   ) : null}
-                  {r.status === 'PENDING_APPROVAL' ? (
+                  {r.document?.acknowledgement && !r.document.acknowledgement.at && r.document.status === 'ISSUED' ? (
+                    r.document.acknowledgement.kind === 'RELEASE' ? (
+                      <>
+                        <button type="button" onClick={() => setAck({ documentId: r.document!.id, label: `${r.typeLabel} ${r.document!.number}`, comment: '', kind: 'RELEASE', decision: 'ACCEPTED' })}
+                          className="inline-flex items-center gap-1 bg-emerald-600 hover:bg-emerald-700 text-white px-3 py-1.5 rounded-lg text-[13px] font-bold">
+                          <CheckCircle2 size={16} aria-hidden="true" /> أوافق على المخالصة
+                        </button>
+                        <button type="button" onClick={() => setAck({ documentId: r.document!.id, label: `${r.typeLabel} ${r.document!.number}`, comment: '', kind: 'RELEASE', decision: 'DISPUTED' })}
+                          className="inline-flex items-center gap-1 border border-red-300 text-red-700 px-3 py-1.5 rounded-lg text-[13px] font-bold">
+                          <XCircle size={16} aria-hidden="true" /> أعترض
+                        </button>
+                      </>
+                    ) : (
+                      <button type="button" onClick={() => setAck({ documentId: r.document!.id, label: `${r.typeLabel} ${r.document!.number}`, comment: '', kind: 'RECEIPT', decision: 'RECEIVED' })}
+                        className="inline-flex items-center gap-1 bg-amber-500 hover:bg-amber-600 text-white px-3 py-1.5 rounded-lg text-[13px] font-bold">
+                        <CheckCircle2 size={16} aria-hidden="true" /> إقرار بالاستلام
+                      </button>
+                    )
+                  ) : null}
+                  {r.status === 'PENDING_APPROVAL' && r.source === 'PORTAL' ? (
                     <button type="button" onClick={() => void cancel(r.id)} className="inline-flex items-center gap-1 text-slate-500 hover:text-red-600 text-[13px]">
                       <XCircle size={16} aria-hidden="true" /> إلغاء
                     </button>
@@ -181,6 +229,21 @@ const DocumentsCard = forwardRef<DocumentsCardHandle>(function DocumentsCard(_, 
               {types.map((t) => <option key={t.key} value={t.key}>{t.labelAr}</option>)}
             </select>
           </label>
+          {selected?.noc ? (
+            <>
+              <label className="block">
+                <span className="block text-[13px] font-bold text-slate-700 mb-1">الغرض</span>
+                <select value={form.nocPurpose} onChange={(e) => setForm({ ...form, nocPurpose: e.target.value })} className="w-full border border-slate-300 rounded-xl px-3 py-2.5 text-[14px]">
+                  {Object.entries(NOC_PURPOSES).map(([k, v]) => <option key={k} value={k}>{v.label}</option>)}
+                </select>
+              </label>
+              <input value={form.nocTarget} required minLength={2} maxLength={120} onChange={(e) => setForm({ ...form, nocTarget: e.target.value })}
+                placeholder={NOC_PURPOSES[form.nocPurpose]?.target} className="w-full border border-slate-300 rounded-xl px-3 py-2.5 text-[14px]" />
+              <input value={form.nocDetails} maxLength={200} onChange={(e) => setForm({ ...form, nocDetails: e.target.value })}
+                placeholder="تفاصيل مختصرة (اختياري)، مثل مدة السفر" className="w-full border border-slate-300 rounded-xl px-3 py-2.5 text-[14px]" />
+              <p className="text-xs text-slate-500">يراجع قسم الموارد البشرية النص ويعتمده قبل الإصدار.</p>
+            </>
+          ) : null}
           <fieldset>
             <legend className="block text-[13px] font-bold text-slate-700 mb-1">اللغة</legend>
             <div className="flex gap-4 text-[14px]">
@@ -204,6 +267,34 @@ const DocumentsCard = forwardRef<DocumentsCardHandle>(function DocumentsCard(_, 
             <button type="button" onClick={() => setOpen(false)} disabled={busy} className="px-4 py-2 rounded-xl border text-[13px] font-bold">إلغاء</button>
             <button type="submit" disabled={busy || !form.typeKey} className="px-5 py-2 rounded-xl bg-indigo-600 text-white text-[13px] font-bold inline-flex items-center gap-2 disabled:opacity-60">
               {busy ? <Loader2 size={16} className="animate-spin" aria-hidden="true" /> : null} تقديم الطلب
+            </button>
+          </div>
+        </form>
+      </Modal>
+
+      <Modal open={!!ack} onClose={() => setAck(null)} tone="indigo" size="md" busy={busy}
+        title={ack?.decision === 'ACCEPTED' ? 'الموافقة على المخالصة' : ack?.decision === 'DISPUTED' ? 'الاعتراض على البيان' : 'إقرار بالاستلام'}
+        description={!ack ? '' : ack.decision === 'ACCEPTED'
+          ? `بالموافقة تقر باستلام صافي مستحقاتك المبينة في ${ack.label} بموجب إثبات الصرف المذكور فيه، وتبرئ ذمة الشركة وفق نص المخالصة. نزّل البيان واقرأه قبل الموافقة.`
+          : ack.decision === 'DISPUTED'
+            ? `اكتب سبب اعتراضك على ${ack.label}، وسيصل إلى قسم الموارد البشرية. الاعتراض لا يبرئ ذمة الشركة.`
+            : `أقر باستلام ${ack.label} واطلاعي عليه. الإقرار لا يعني الموافقة على ما ورد فيه.`}>
+        <form onSubmit={acknowledge} className="space-y-4">
+          {ack?.kind === 'RELEASE' ? (
+            <a href={pdfUrl(ack.documentId)} className="inline-flex items-center gap-1 text-indigo-700 font-bold text-[13px]"><Download size={16} aria-hidden="true" /> تنزيل البيان</a>
+          ) : null}
+          <label className="block">
+            <span className="block text-[13px] font-bold text-slate-700 mb-1">{ack?.decision === 'DISPUTED' ? 'سبب الاعتراض' : 'ملاحظاتك (اختياري)'}</span>
+            <textarea value={ack?.comment ?? ''} maxLength={2000} rows={4} required={ack?.decision === 'DISPUTED'} minLength={ack?.decision === 'DISPUTED' ? 5 : undefined}
+              onChange={(e) => setAck((a) => (a ? { ...a, comment: e.target.value } : a))}
+              className="w-full border border-slate-300 rounded-xl px-3 py-2.5 text-[14px]" placeholder="يطلع عليها قسم الموارد البشرية." />
+          </label>
+          <p className="text-xs text-slate-500">لا يمكن تعديل ردك أو ملاحظاتك بعد الإرسال.</p>
+          <div className="flex justify-end gap-2">
+            <button type="button" onClick={() => setAck(null)} disabled={busy} className="px-4 py-2 rounded-xl border text-[13px] font-bold">إلغاء</button>
+            <button type="submit" disabled={busy} className={`px-5 py-2 rounded-xl text-white text-[13px] font-bold inline-flex items-center gap-2 disabled:opacity-60 ${ack?.decision === 'DISPUTED' ? 'bg-red-600' : 'bg-indigo-600'}`}>
+              {busy ? <Loader2 size={16} className="animate-spin" aria-hidden="true" /> : null}
+              {ack?.decision === 'ACCEPTED' ? 'أوافق وأبرئ الذمة' : ack?.decision === 'DISPUTED' ? 'إرسال الاعتراض' : 'أقر بالاستلام'}
             </button>
           </div>
         </form>

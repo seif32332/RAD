@@ -1,4 +1,4 @@
-import { NextResponse } from 'next/server';
+import { after, NextResponse } from 'next/server';
 import { z } from 'zod';
 import type { Prisma } from '@prisma/client';
 import { prisma } from '@/lib/prisma';
@@ -9,6 +9,8 @@ import { zOptMoney, zOptText } from '@/lib/validation';
 import { roundMoney } from '@/lib/money';
 import { logAudit } from '@/lib/audit';
 import { markLoanTransferred, markSettlementPaid } from '@/lib/finance';
+import { suggestExitDocumentsQuietly } from '@/lib/documents/service';
+import { settlementPaymentProofSchema } from '@/lib/settlement-payment';
 import {
   LINKED_PAYMENT_ENTITY_TYPES,
   PAYMENTS_ACCESS,
@@ -30,6 +32,10 @@ const updateSchema = z.object({
   reason: zOptText(4000),
   amount: zOptMoney,
   accountNumber: zOptText(1000),
+  // Paying a SETTLEMENT: payment proof (method, reference, actual day), required.
+  paymentMethod: z.string().optional(),
+  paymentReference: z.string().optional(),
+  paidAt: z.string().optional(),
 });
 
 /** Fields that may only change before the request is approved/paid. */
@@ -64,7 +70,9 @@ export async function PUT(req: Request, { params }: Ctx) {
 
           // Linked entities: apply the same side effects as their own finance screens.
           if (current.entityId && current.entityType === 'SETTLEMENT') {
-            await markSettlementPaid(tx, current.entityId, receiptUrl, user, { ipAddress });
+            const proof = settlementPaymentProofSchema.safeParse(body);
+            if (!proof.success) throw badRequest(proof.error.issues[0]?.message ?? 'بيانات إثبات الصرف غير مكتملة');
+            await markSettlementPaid(tx, current.entityId, receiptUrl, user, { ipAddress }, proof.data);
           } else if (current.entityId && current.entityType === 'LOAN') {
             await markLoanTransferred(tx, current.entityId, receiptUrl, user, { ipAddress });
           } else if (current.entityId && current.entityType === 'VISA') {
@@ -163,6 +171,12 @@ export async function PUT(req: Request, { params }: Ctx) {
       },
       { timeout: 20_000 },
     );
+
+    // A paid end-of-service settlement suggests its clearance / experience letters (after commit, best effort).
+    if (body.status === PAYMENT_STATUS.PAID && payment.entityType === 'SETTLEMENT' && payment.entityId) {
+      const settlementId = payment.entityId;
+      after(() => suggestExitDocumentsQuietly(settlementId));
+    }
 
     return NextResponse.json(payment);
   } catch (err) {

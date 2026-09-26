@@ -10,7 +10,8 @@ import { formatDateShort } from '@/lib/dates';
 interface Asset { id: string; kind: string; sha256: string; width: number; height: number; createdAt: string }
 interface Signatory { id: string; userId: string | null; nameAr: string; nameEn: string | null; titleAr: string; titleEn: string | null; signatureAssetId: string | null; stampAssetId: string | null; isActive: boolean }
 interface Authorization { id: string; signatoryId: string; typeKey: string; typeLabel: string; scopeJson: string | null; validFrom: string; validUntil: string | null; acceptedAt: string | null; revokedAt: string | null; revokeReason: string | null }
-interface TypeRow { key: string; code: string; labelAr: string; defaults: { selfService: boolean; requiresApproval: boolean; validityDays: number | null }; setting: { enabled: boolean; selfService: boolean | null; requiresApproval: boolean | null; validityDays: number | null; signatoryId: string | null } | null }
+interface TextRow { textAr: string | null; textEn: string | null; createdAt: string }
+interface TypeRow { key: string; code: string; labelAr: string; locked?: boolean; approvalFixed?: boolean; texts?: { opening: TextRow | null; closing: TextRow | null }; defaults: { selfService: boolean; requiresApproval: boolean; validityDays: number | null }; setting: { enabled: boolean; selfService: boolean | null; requiresApproval: boolean | null; validityDays: number | null; signatoryId: string | null } | null }
 interface Settings {
   companies: { id: string; nameArabic: string }[];
   companyId: string | null;
@@ -220,6 +221,16 @@ export default function DocumentSettingsPage() {
           <p className="text-[12px] text-slate-500">«اعتماد دائماً» غير مفعّل = يصدر فوراً عند وجود تفويض مسبق ساري للموقّع، وإلا ينتظر الاعتماد.</p>
         </section>
 
+        {/* Company wording per type (owner): opening / closing paragraphs around the fixed body */}
+        <section className="rounded-2xl border bg-white p-5 space-y-3">
+          <h2 className="font-black text-slate-800">نصوص المستندات</h2>
+          <p className="text-[12px] text-slate-500">فقرة افتتاحية تُطبع قبل النص الأساسي، وفقرة ختامية بعده، لكل نوع. النص الأساسي (المبالغ والالتزامات والمخالصة) ثابت لا يتغير. كل حفظ نسخة جديدة؛ المستندات الصادرة تبقى بنصها، والطلبات بانتظار الاعتماد تحتاج اعتماداً جديداً.</p>
+          <div className="space-y-2">
+            {data.types.map((t) => <TextsEditor key={t.key + companyId} row={t} disabled={ro}
+              onSave={(slot, textAr, textEn) => void post({ action: 'text', companyId, typeKey: t.key, slot, textAr, textEn }, 'حُفظ النص.')} />)}
+          </div>
+        </section>
+
         {/* Company scope of back-office users (owner) */}
         {data.canEdit && (
           <section className="rounded-2xl border bg-white p-5 space-y-3">
@@ -291,8 +302,8 @@ function TypeRowEditor({ row, signatories, disabled, onSave }: {
   const s = row.setting;
   const [v, setV] = useState({
     enabled: s?.enabled ?? true,
-    selfService: s?.selfService ?? row.defaults.selfService,
-    requiresApproval: s?.requiresApproval ?? row.defaults.requiresApproval,
+    selfService: row.locked ? false : s?.selfService ?? row.defaults.selfService,
+    requiresApproval: row.locked || row.approvalFixed ? true : s?.requiresApproval ?? row.defaults.requiresApproval,
     validityDays: (s?.validityDays ?? row.defaults.validityDays)?.toString() ?? '',
     signatoryId: s?.signatoryId ?? '',
   });
@@ -300,8 +311,8 @@ function TypeRowEditor({ row, signatories, disabled, onSave }: {
     <tr>
       <td className="py-2">{row.labelAr} <span className="text-slate-400" dir="ltr">{row.code}</span></td>
       <td><input type="checkbox" aria-label="مفعّل" checked={v.enabled} disabled={disabled} onChange={(e) => setV({ ...v, enabled: e.target.checked })} /></td>
-      <td><input type="checkbox" aria-label="من البوابة" checked={v.selfService} disabled={disabled} onChange={(e) => setV({ ...v, selfService: e.target.checked })} /></td>
-      <td><input type="checkbox" aria-label="اعتماد دائماً" checked={v.requiresApproval} disabled={disabled} onChange={(e) => setV({ ...v, requiresApproval: e.target.checked })} /></td>
+      <td><input type="checkbox" aria-label="من البوابة" checked={v.selfService} disabled={disabled || row.locked} title={row.locked ? 'يصدره قسم الموارد البشرية فقط' : undefined} onChange={(e) => setV({ ...v, selfService: e.target.checked })} /></td>
+      <td><input type="checkbox" aria-label="اعتماد دائماً" checked={v.requiresApproval} disabled={disabled || row.locked || row.approvalFixed} title={row.locked ? 'يعتمده دائماً شخص غير كاتبه' : row.approvalFixed ? 'التزام مالي: يُعتمد دائماً' : undefined} onChange={(e) => setV({ ...v, requiresApproval: e.target.checked })} /></td>
       <td><input dir="ltr" className="w-20 border rounded-lg px-2 py-1" placeholder="بلا" value={v.validityDays} disabled={disabled} onChange={(e) => setV({ ...v, validityDays: e.target.value.replace(/\D/g, '') })} /></td>
       <td>
         <select className="border rounded-lg px-2 py-1" value={v.signatoryId} disabled={disabled} onChange={(e) => setV({ ...v, signatoryId: e.target.value })}>
@@ -330,5 +341,41 @@ function ScopeRow({ user, companies, selected, disabled, onSave }: {
         <button type="button" disabled={disabled} className="text-indigo-700 font-bold" onClick={() => onSave(ids)}>حفظ</button>
       </span>
     </li>
+  );
+}
+
+function TextsEditor({ row, disabled, onSave }: { row: TypeRow; disabled: boolean; onSave: (slot: 'OPENING' | 'CLOSING', textAr: string, textEn: string) => void }) {
+  const [open, setOpen] = useState(false);
+  const [v, setV] = useState({
+    openingAr: row.texts?.opening?.textAr ?? '', openingEn: row.texts?.opening?.textEn ?? '',
+    closingAr: row.texts?.closing?.textAr ?? '', closingEn: row.texts?.closing?.textEn ?? '',
+  });
+  const has = !!(row.texts?.opening?.textAr || row.texts?.closing?.textAr);
+  const area = (value: string, set: (x: string) => void, placeholder: string, dir: 'rtl' | 'ltr' = 'rtl') => (
+    <textarea value={value} maxLength={800} rows={2} dir={dir} disabled={disabled} onChange={(e) => set(e.target.value)} placeholder={placeholder}
+      className="w-full border rounded-lg px-2 py-1.5 text-[13px]" />
+  );
+  return (
+    <div className="border rounded-xl p-3">
+      <button type="button" onClick={() => setOpen(!open)} className="w-full flex items-center justify-between text-[13px] font-bold text-slate-700">
+        <span>{row.labelAr}</span><span className="text-slate-400 font-normal">{has ? 'مخصص' : 'افتراضي'}</span>
+      </button>
+      {open && (
+        <div className="mt-3 grid md:grid-cols-2 gap-3">
+          {(['OPENING', 'CLOSING'] as const).map((slot) => {
+            const ar = slot === 'OPENING' ? 'openingAr' : 'closingAr';
+            const en = slot === 'OPENING' ? 'openingEn' : 'closingEn';
+            return (
+              <div key={slot} className="space-y-1">
+                <p className="text-[12px] font-bold text-slate-600">{slot === 'OPENING' ? 'الفقرة الافتتاحية' : 'الفقرة الختامية'}</p>
+                {area(v[ar], (x) => setV({ ...v, [ar]: x }), 'بالعربية (فارغ = بلا فقرة)')}
+                {area(v[en], (x) => setV({ ...v, [en]: x }), 'English (bilingual letters)', 'ltr')}
+                {!disabled && <button type="button" className="text-indigo-700 font-bold text-[12px]" onClick={() => onSave(slot, v[ar], v[en])}>حفظ</button>}
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
   );
 }

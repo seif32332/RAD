@@ -11,7 +11,7 @@ import { canonicalJson, PREFIX_RE } from './core';
 import { appendEvent } from './events';
 import { enqueueNotice } from './notify';
 import { storeAsset } from './storage';
-import { DOCUMENT_TYPES, getDocumentType } from './types';
+import { DOCUMENT_TEXT_RE, DOCUMENT_TYPES, getDocumentType } from './types';
 import { staffCompanyScope, type Actor } from './service';
 
 const isOwner = (actor: Actor) => !!actor.role && roleIn(actor.role, ROLE_GROUPS.OWNER);
@@ -41,7 +41,7 @@ export async function documentSettings(companyId: string | null, actor: Actor) {
   const id = companyId ?? companies[0]?.id ?? null;
   if (!id) return { companies, companyId: null };
   if (!companies.some((c) => c.id === id)) throw notFound('الشركة غير موجودة');
-  const [brand, assets, signatories, typeSettings, authorizations, issuedCount, scopeRows] = await Promise.all([
+  const [brand, assets, signatories, typeSettings, authorizations, issuedCount, scopeRows, textRows] = await Promise.all([
     prisma.brandProfile.findUnique({ where: { companyId: id } }),
     prisma.documentAsset.findMany({ where: { companyId: id }, orderBy: { createdAt: 'desc' }, select: { id: true, kind: true, sha256: true, width: true, height: true, createdAt: true } }),
     prisma.signatory.findMany({ where: { companyId: id }, orderBy: { createdAt: 'asc' } }),
@@ -49,7 +49,9 @@ export async function documentSettings(companyId: string | null, actor: Actor) {
     prisma.signingAuthorization.findMany({ where: { legalCompanyId: id }, orderBy: { grantedAt: 'desc' } }),
     prisma.issuedDocument.count({ where: { legalCompanyId: id } }),
     isOwner(actor) ? prisma.userCompanyScope.findMany({ select: { userId: true, companyId: true } }) : Promise.resolve([]),
+    prisma.documentTextOverride.findMany({ where: { companyId: id }, orderBy: { createdAt: 'desc' }, select: { typeKey: true, slot: true, textAr: true, textEn: true, createdAt: true } }),
   ]);
+  const textOf = (typeKey: string, slot: string) => textRows.find((r) => r.typeKey === typeKey && r.slot === slot) ?? null;
   const scopes: Record<string, string[]> = {};
   for (const r of scopeRows) (scopes[r.userId] ??= []).push(r.companyId);
   return {
@@ -64,8 +66,9 @@ export async function documentSettings(companyId: string | null, actor: Actor) {
     signatories,
     authorizations: authorizations.map((a) => ({ ...a, typeLabel: getDocumentType(a.typeKey)?.labelAr ?? a.typeKey })),
     types: Object.values(DOCUMENT_TYPES).map((d) => ({
-      key: d.key, code: d.code, labelAr: d.labelAr, defaults: d.defaults,
+      key: d.key, code: d.code, labelAr: d.labelAr, defaults: d.defaults, locked: !!d.approvalLocked || d.issuance === 'AUTO', approvalFixed: !!d.approvalMandatory,
       setting: typeSettings.find((s) => s.typeKey === d.key) ?? null,
+      texts: { opening: textOf(d.key, 'OPENING'), closing: textOf(d.key, 'CLOSING') },
     })),
   };
 }
@@ -100,7 +103,20 @@ export const settingsActionSchema = z.discriminatedUnion('action', [
   // Owner: limit a back-office user to some legal companies (empty list = no limit).
   z.object({ action: z.literal('scope'), userId: z.string().min(1), companyIds: z.array(z.string().min(1)).max(500) }),
   z.object({ action: z.literal('revoke'), authorizationId: z.string().min(1), reason: z.string().trim().min(3).max(300) }),
+  // Owner: the company's opening / closing paragraph of a type (empty = remove). A new row each time.
+  z.object({
+    action: z.literal('text'), companyId: z.string().min(1), typeKey: z.string().min(1), slot: z.enum(['OPENING', 'CLOSING']),
+    textAr: z.string().max(800).optional().transform((v) => normalizeBlock(v)).pipe(z.string().regex(DOCUMENT_TEXT_RE, 'النص يحتوي رموزاً لا تُطبع في المستندات الرسمية').nullable()),
+    textEn: z.string().max(800).optional().transform((v) => normalizeBlock(v)).pipe(z.string().regex(DOCUMENT_TEXT_RE, 'النص يحتوي رموزاً لا تُطبع في المستندات الرسمية').nullable()),
+  }),
 ]);
+
+/** Paragraph text: CRLF normalized, spaces collapsed per line, at most one empty line; '' -> null. */
+function normalizeBlock(v: string | undefined): string | null {
+  if (!v) return null;
+  const t = v.replace(/\r\n?/g, '\n').split('\n').map((l) => l.replace(/[^\S\n]+/g, ' ').trim()).join('\n').replace(/\n{3,}/g, '\n\n').trim();
+  return t.length ? t : null;
+}
 export type SettingsAction = z.infer<typeof settingsActionSchema>;
 
 async function assetOf(companyId: string, id: string | null | undefined, kind: string) {
@@ -218,10 +234,23 @@ export async function applySettingsAction(body: SettingsAction, actor: Actor) {
       if (body.signatoryId && !(await prisma.signatory.findFirst({ where: { id: body.signatoryId, companyId: company.id }, select: { id: true } }))) {
         throw badRequest('الموقّع لا يتبع هذه الشركة');
       }
-      const data = { enabled: body.enabled, selfService: body.selfService, requiresApproval: body.requiresApproval, validityDays: body.validityDays, signatoryId: body.signatoryId, updatedById: actor.userId };
+      // A locked type (warning) is always approved and never requested from the portal: those two are not settings.
+      const locked = !!def.approvalLocked || def.issuance === 'AUTO';
+      const data = { enabled: body.enabled, selfService: locked ? null : body.selfService, requiresApproval: locked || def.approvalMandatory ? null : body.requiresApproval, validityDays: body.validityDays, signatoryId: body.signatoryId, updatedById: actor.userId };
       await prisma.$transaction(async (tx) => {
         await tx.documentTypeSetting.upsert({ where: { companyId_typeKey: { companyId: company.id, typeKey: def.key } }, create: { companyId: company.id, typeKey: def.key, ...data }, update: data });
         await appendEvent(tx, { type: 'POLICY_CHANGED', actorId: actor.userId, ip: actor.ip, meta: { companyId: company.id, typeKey: def.key, ...data } });
+      });
+      return { ok: true };
+    }
+    case 'text': {
+      const def = getDocumentType(body.typeKey);
+      if (!def) throw badRequest('نوع مستند غير معروف');
+      await prisma.$transaction(async (tx) => {
+        await tx.documentTextOverride.create({
+          data: { companyId: company.id, typeKey: def.key, slot: body.slot, textAr: body.textAr, textEn: body.textEn, createdById: actor.userId },
+        });
+        await appendEvent(tx, { type: 'POLICY_CHANGED', actorId: actor.userId, ip: actor.ip, meta: { companyId: company.id, typeKey: def.key, textSlot: body.slot, cleared: !body.textAr } });
       });
       return { ok: true };
     }

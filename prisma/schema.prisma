@@ -55,6 +55,8 @@ model User {
   twoFactorSecret  String?
   /// Incremented on logout / password change / deactivation: revokes older sessions
   sessionVersion   Int     @default(0)
+  /// موظف انتهت خدمته: الدخول لمستنداته الرسمية فقط (تنزيل وموافقة على المخالصة) حتى هذا الوقت، ثم يُعطَّل الحساب
+  documentsOnlyUntil DateTime?
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -824,6 +826,10 @@ model Payroll {
   leaveDeduction      Float   @default(0)
   otherDeductions     Float   @default(0)
   bonusAmount         Float   @default(0)
+  // تفصيل البدلات المتكررة وقت توليد المسيّر (قسيمة الراتب). null = مسيّر وُلّد قبل التفصيل
+  housingAllowance    Float?
+  transportAllowance  Float?
+  otherAllowances     Float?
   needsReview         Boolean @default(false) // سطر يحتاج مراجعة (مثلاً نظام التأمينات غير مؤكد)
   reviewNote          String?
 
@@ -1256,6 +1262,8 @@ model JobApplication {
   resumeUrl      String? // رابط السيرة الذاتية 
 
   status        String    @default("APPLIED") // APPLIED (تحت الفرز), INTERVIEW (مقابلة), OFFERED (عرض وظيفي), HIRED (تم التوظيف), REJECTED (مرفوض)
+  documentRequests DocumentRequest[]
+  issuedDocuments  IssuedDocument[]
   interviewDate DateTime? // موعد المقابلة إن وجد
   notes         String? // ملاحظات التقييم أو العرض المالي
 
@@ -1580,6 +1588,10 @@ model Settlement {
   // الحالة
   status             String  @default("PENDING_APPROVAL") // PENDING_APPROVAL, OWNER_APPROVED, PAID, REJECTED
   transferReceiptUrl String? // إيصال التحويل
+  // إثبات الصرف، تسجله المالية عند تأكيده (أساس المخالصة في بيان التسوية)
+  paymentMethod      String? // BANK_TRANSFER | CASH_VOUCHER | CHEQUE
+  paymentReference   String? // رقم التحويل أو سند الصرف أو الشيك
+  paidAt             DateTime? // تاريخ الصرف الفعلي
   ownerNotes         String? // سبب الرفض أو ملاحظات صاحب العمل
 
   createdAt DateTime @default(now())
@@ -1640,6 +1652,7 @@ model TerminationRequest {
 
   terminationType String // END_OF_CONTRACT, RESIGNATION, MUTUAL_AGREEMENT
   reasonDetails   String? @db.Text
+  lastWorkingDate DateTime? // آخر يوم عمل، يحدده HR عند الاعتماد (يُطبع في خطاب الموافقة)
 
   status String @default("PENDING") // PENDING, APPROVED, REJECTED
 
@@ -2242,10 +2255,12 @@ model DocumentTypeSetting {
 model DocumentRequest {
   id                String    @id @default(uuid())
   typeKey           String
-  legalCompanyId    String // مشتقة من employee.legalCompanyId، لا يختارها المستخدم (DOC-03)
-  employeeId        String
+  legalCompanyId    String // مشتقة من employee.legalCompanyId، لا يختارها المستخدم (DOC-03)؛ للمرشح يختارها HR ضمن نطاقه
+  employeeId        String? // صاحب المستند: موظف، أو
+  jobApplicationId  String? // مرشح (العرض الوظيفي). واحد منهما بالضبط (CHECK في الترحيل 9k)
   requestedById     String?
   source            String // PORTAL | HR | SYSTEM
+  sourceRef         String? // مصدر طلب النظام، مثل settlement:<id> (لا يتكرر لنفس النوع)
   paramsJson        String    @db.Text
   status            String // DRAFT | PENDING_APPROVAL | APPROVED | ISSUED | REJECTED | CANCELLED (DOC-08)
   currentSnapshotId String?   @unique
@@ -2254,7 +2269,8 @@ model DocumentRequest {
   createdAt         DateTime  @default(now())
   updatedAt         DateTime  @updatedAt
 
-  employee        Employee           @relation(fields: [employeeId], references: [id], onDelete: Restrict)
+  employee        Employee?          @relation(fields: [employeeId], references: [id], onDelete: Restrict)
+  jobApplication  JobApplication?    @relation(fields: [jobApplicationId], references: [id], onDelete: Restrict)
   legalCompany    Company            @relation(fields: [legalCompanyId], references: [id], onDelete: Restrict)
   currentSnapshot DocumentSnapshot?  @relation("CurrentSnapshot", fields: [currentSnapshotId], references: [id], onDelete: Restrict)
   snapshots       DocumentSnapshot[] @relation("RequestSnapshots")
@@ -2262,8 +2278,10 @@ model DocumentRequest {
   renderJob       DocumentRenderJob?
   issuedDocument  IssuedDocument?
 
+  @@unique([typeKey, sourceRef])
   @@index([status, createdAt])
   @@index([employeeId, createdAt])
+  @@index([jobApplicationId])
   @@index([legalCompanyId, status])
 }
 
@@ -2337,7 +2355,8 @@ model IssuedDocument {
   id              String    @id @default(uuid())
   number          String
   legalCompanyId  String
-  employeeId      String
+  employeeId       String?
+  jobApplicationId String?
   typeKey         String
   requestId       String    @unique
   snapshotId      String    @unique
@@ -2367,14 +2386,78 @@ model IssuedDocument {
   purgedAt        DateTime? // انتهاء مدة الاحتفاظ: حُذف الملف، وبقي هذا السجل (DOC-09)
   createdAt       DateTime  @default(now())
 
-  employee     Employee         @relation(fields: [employeeId], references: [id], onDelete: Restrict)
+  employee        Employee?                @relation(fields: [employeeId], references: [id], onDelete: Restrict)
+  jobApplication  JobApplication?          @relation(fields: [jobApplicationId], references: [id], onDelete: Restrict)
   legalCompany Company          @relation(fields: [legalCompanyId], references: [id], onDelete: Restrict)
   request      DocumentRequest  @relation(fields: [requestId], references: [id], onDelete: Restrict)
   snapshot     DocumentSnapshot @relation(fields: [snapshotId], references: [id], onDelete: Restrict)
+  acknowledgement DocumentAcknowledgement?
+  candidateAccess CandidateDocumentAccess?
 
   @@unique([legalCompanyId, number])
   @@index([employeeId, issuedAt])
+  @@index([jobApplicationId])
   @@index([status])
+}
+
+/// إقرار الموظف باستلام مستند (الإنذار): صف واحد لا يُعدَّل، والتعليق يُمسح فقط عند انتهاء مدة الاحتفاظ
+model DocumentAcknowledgement {
+  id             String   @id @default(uuid())
+  documentId     String   @unique
+  employeeId     String? // null: رد مرشح عبر رابط العرض
+  userId         String? // null: رد عبر رابط (بلا حساب)
+  decision       String   @default("RECEIVED") // RECEIVED (استلام) | ACCEPTED (موافقة/قبول) | DISPUTED (اعتراض) | DECLINED (رفض العرض)
+  via            String   @default("PORTAL") // PORTAL | LINK
+  comment        String?  @db.Text
+  acknowledgedAt DateTime @default(now())
+
+  document IssuedDocument @relation(fields: [documentId], references: [id], onDelete: Restrict)
+
+  @@index([employeeId])
+}
+
+/// نص تختاره الشركة يُطبع قبل النص الأساسي لنوع مستند (OPENING) أو بعده (CLOSING). صفوف لا تُعدَّل:
+/// كل تعديل صف جديد، والساري أحدثها لكل (شركة، نوع، موضع)، والنص الفارغ يعني الإزالة
+model DocumentTextOverride {
+  id          String   @id @default(uuid())
+  companyId   String
+  typeKey     String
+  slot        String // OPENING | CLOSING
+  textAr      String?  @db.Text
+  textEn      String?  @db.Text
+  createdById String?
+  createdAt   DateTime @default(now())
+
+  @@index([companyId, typeKey, slot, createdAt])
+}
+
+/// رابط المرشح إلى عرضه الوظيفي: رمز سري (يُخزن هاشه ونسخة مشفرة لنسخه لـHR) ينتهي بانتهاء صلاحية العرض
+model CandidateDocumentAccess {
+  id         String   @id @default(uuid())
+  documentId String   @unique
+  tokenHash  String   @unique
+  tokenEnc   String
+  expiresAt  DateTime
+  createdAt  DateTime @default(now())
+
+  document IssuedDocument @relation(fields: [documentId], references: [id], onDelete: Restrict)
+}
+
+/// أمر تنفيذ قرار ترقية أو زيادة (PROMOTION_DECISION): يُطبَّق على ملف الموظف في تاريخ السريان مرة واحدة
+model EmployeeChangeOrder {
+  id              String    @id @default(uuid())
+  employeeId      String
+  documentId      String    @unique // القرار الصادر الذي أنشأه
+  effectiveDate   DateTime
+  basicSalary     Float? // الراتب الأساسي الجديد (null = بلا تغيير)
+  jobTitle        String? // المسمى الجديد (null = بلا تغيير)
+  jobTitleEnglish String?
+  appliedAt       DateTime?
+  cancelledAt     DateTime? // أُلغي القرار قبل سريانه
+  createdAt       DateTime  @default(now())
+
+  @@index([appliedAt, cancelledAt, effectiveDate])
+  @@index([employeeId])
 }
 
 model DocumentCounter {

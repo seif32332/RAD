@@ -18,7 +18,9 @@ async function resolveLanding(loginRes: Response, next: string | null): Promise<
   let role: AppRole | null = null;
   let allowedPages: string[] | null = null;
   try {
-    const data = (await loginRes.json()) as { user?: { role?: unknown } } | null;
+    const data = (await loginRes.json()) as { user?: { role?: unknown }; documentsOnly?: boolean } | null;
+    // A leaver's documents-only session has one page (the rest of the app treats it as logged out).
+    if (data?.documentsOnly) return '/my-documents';
     const loginRole = data?.user?.role;
     if (isAppRole(loginRole)) role = loginRole;
   } catch {

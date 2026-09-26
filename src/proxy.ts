@@ -4,7 +4,8 @@ import { SESSION_COOKIE, verifySession } from '@/lib/session';
 
 /** Pages reachable without a session. */
 // /v: public verification of issued documents (QR code, docs/document-engine DOC-06).
-const PUBLIC_PAGE_PREFIXES = ['/login', '/apply', '/v'];
+// /offer: a candidate's job offer through its private link (the token is the credential).
+const PUBLIC_PAGE_PREFIXES = ['/login', '/apply', '/v', '/offer'];
 
 /** API routes reachable without a session (each one enforces its own limits). */
 const PUBLIC_API_PREFIXES = [

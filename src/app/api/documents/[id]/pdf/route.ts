@@ -1,5 +1,4 @@
-import { requireUser } from '@/lib/auth';
-import { ROLE_GROUPS } from '@/lib/constants';
+import { requireDocumentsUser } from '@/lib/auth';
 import { handleApiError } from '@/lib/http';
 import { readIssuedDocument } from '@/lib/documents/service';
 import { actorFrom } from '../../_shared';
@@ -13,7 +12,7 @@ export const dynamic = 'force-dynamic';
  */
 export async function GET(req: Request, { params }: { params: Promise<{ id: string }> }) {
   try {
-    const user = await requireUser(ROLE_GROUPS.ALL);
+    const user = await requireDocumentsUser(); // a leaver's documents-only session downloads his own
     const { id } = await params;
     const inline = new URL(req.url).searchParams.get('inline') === '1';
     const { pdf, fileName, sha256 } = await readIssuedDocument(id, actorFrom(user, req));
