@@ -18,6 +18,9 @@ const nextConfig: NextConfig = {
   // Official document templates are read at runtime and sent to radeef-render (docs/document-engine).
   outputFileTracingIncludes: {
     "/api/documents/**": ["./src/lib/documents/templates/**/*.typ"],
+    // Internal workforce PDF reports (docs/workforce-engine/SPEC.md §11).
+    "/api/workforce/report/**": ["./src/lib/workforce/templates/**/*.typ"],
+    "/api/portal/total-rewards/pdf/**": ["./src/lib/workforce/templates/**/*.typ"],
   },
   experimental: {
     // src/proxy.ts buffers request bodies; allow the 10 MB upload limit plus multipart overhead.

@@ -27,6 +27,7 @@ import {
   Card,
   EmptyBlock,
   ErrorBlock,
+  ExportButton,
   LoadingBlock,
   Money,
   Num,
@@ -41,6 +42,7 @@ import {
   inputClass,
   type WhyContent,
 } from '../_components/ui';
+import PdfReportButton from '../_components/PdfReportButton';
 
 const PAGE = 50;
 
@@ -118,6 +120,8 @@ function EmployeeDetail({ detail, horizon, scenario, onClose }: { detail: TrueCo
           <button type="button" onClick={exportCsv} className={buttonClass.secondary}>
             <Download size={16} aria-hidden="true" /> تصدير CSV
           </button>
+          <ExportButton kind="true-cost" query={{ employeeId: s.employeeId, months: horizon, scenario }} />
+          <PdfReportButton kind="true-cost" query={{ employeeId: s.employeeId, months: horizon, scenario }} />
           <button type="button" onClick={save} disabled={saving} className={buttonClass.primary}>
             <Save size={16} aria-hidden="true" /> {saving ? 'جارٍ الحفظ…' : 'حفظ الحساب'}
           </button>
@@ -388,9 +392,13 @@ function TrueCostInner() {
                 title="الموظفون"
                 subtitle={`${data.total} موظف ضمن التصفية، من شهر ${data.startMonth.split("-").reverse().join("/")}.`}
                 actions={
-                  <button type="button" onClick={exportList} disabled={exporting || !data.total} className={buttonClass.secondary}>
-                    <Download size={16} aria-hidden="true" /> {exporting ? 'جارٍ التصدير…' : 'تصدير CSV'}
-                  </button>
+                  <div className="flex flex-wrap gap-2">
+                    <button type="button" onClick={exportList} disabled={exporting || !data.total} className={buttonClass.secondary}>
+                      <Download size={16} aria-hidden="true" /> {exporting ? 'جارٍ التصدير…' : 'تصدير CSV'}
+                    </button>
+                    <ExportButton kind="true-cost" query={{ companyId, branchId, departmentId, months: horizon, scenario, q, sort, flagged }} disabled={list.loading || !data.total} />
+                    <PdfReportButton kind="true-cost" query={{ companyId, months: horizon, scenario }} disabled={list.loading} />
+                  </div>
                 }
               >
                 {data.employees.length ? (

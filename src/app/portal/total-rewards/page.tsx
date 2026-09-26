@@ -14,6 +14,7 @@ import { redirectToLogin } from '../_components/redirect-to-login';
 import UnlinkedAccountCard from '../_components/UnlinkedAccountCard';
 import type { PortalTotalRewardsResponse } from '../_components/TotalRewardsCard';
 import { isUnlinkedAccount } from '../_lib';
+import PdfReportButton from '@/app/workforce/_components/PdfReportButton';
 
 const GROUPS: ReadonlyArray<{ kind: TotalRewardsLineKind; title: string; hint: string; tone: string }> = [
   { kind: 'CASH', title: 'ما صُرف لك', hint: 'من مسيرات الرواتب المعتمدة', tone: 'text-emerald-700' },
@@ -207,6 +208,7 @@ export default function TotalRewardsPage() {
             <button type="button" onClick={() => window.print()} className="inline-flex items-center gap-1.5 rounded-xl border border-slate-200 bg-white px-3 py-2 text-[13px] font-black text-slate-700 hover:bg-slate-50" aria-label="طباعة البيان">
               <Printer size={16} aria-hidden="true" /> <span className="hidden sm:inline">طباعة</span>
             </button>
+            <PdfReportButton endpoint="/api/portal/total-rewards/pdf" query={{ year: shownYear }} label="تنزيل PDF" className="inline-flex items-center gap-1.5 rounded-xl border border-slate-200 bg-white px-3 py-2 text-[13px] font-black text-slate-700 hover:bg-slate-50 disabled:opacity-50" />
           </div>
         )}
       </div>

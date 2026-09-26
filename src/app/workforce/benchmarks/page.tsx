@@ -18,7 +18,7 @@ import {
   type SeriesPoint,
 } from '@/lib/workforce/benchmarks';
 import { useApi } from '../_components/api';
-import { Card, EmptyBlock, ErrorBlock, LoadingBlock, Segmented, SelectField, WfPage } from '../_components/ui';
+import { Card, EmptyBlock, ErrorBlock, ExportButton, LoadingBlock, Segmented, SelectField, WfPage } from '../_components/ui';
 
 interface OptionsResponse {
   companies: Array<{ id: string; name: string }>;
@@ -279,6 +279,7 @@ export default function BenchmarksPage() {
   return (
     <WfPage
       current="/workforce/benchmarks"
+      actions={<ExportButton kind="benchmarks" query={{ months, companyId, branchId, departmentId }} disabled={!d || loading} />}
       icon={<BarChart3 size={24} />}
       title="المؤشرات الداخلية"
       subtitle="مؤشرات محسوبة من بيانات منشأتك في رديف فقط: الدوران، ومدة الخدمة، ومدة التوظيف، والإضافي، والغياب، ونهاية الخدمة المدفوعة، والرسوم الحكومية، وكلفة الموظف. لا أرقام مرجعية خارجية. تُعرض مجمّعة، وتُحجب أي مجموعة أقل من 5 أشخاص."

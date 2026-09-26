@@ -255,6 +255,7 @@ export const MENU_GROUPS: readonly MenuGroup[] = [
       { href: '/workforce/saudization', label: 'مخطط السعودة', iconName: 'ShieldCheck', iconClassName: 'text-green-600', roles: PAGE_ROLES.workforce },
       { href: '/workforce/hire-scenario', label: 'سيناريوهات التوظيف', iconName: 'UserPlus', iconClassName: 'text-sky-500', roles: PAGE_ROLES.workforce },
       { href: '/workforce/plans', label: 'خطة القوى العاملة', iconName: 'ClipboardList', iconClassName: 'text-violet-500', roles: PAGE_ROLES.workforce },
+      { href: '/workforce/sensitivity', label: 'حساسية القرار', iconName: 'Scale', iconClassName: 'text-fuchsia-500', roles: PAGE_ROLES.workforce },
       { href: '/workforce/benchmarks', label: 'المؤشرات الداخلية', iconName: 'ChartColumn', iconClassName: 'text-cyan-600', roles: PAGE_ROLES.workforce },
       { href: '/workforce/nitaqat-register', label: 'سجل نطاقات والتوطين', iconName: 'Landmark', iconClassName: 'text-emerald-700', roles: PAGE_ROLES.workforce },
       { href: '/workforce/assumptions', label: 'الافتراضات', iconName: 'SlidersHorizontal', iconClassName: 'text-amber-500', roles: PAGE_ROLES.workforce },

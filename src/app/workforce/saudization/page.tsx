@@ -15,7 +15,8 @@ import type { NitaqatBand, NitaqatEstimate, RestrictedEstimate } from '@/lib/wor
 import type { ComplianceItem, SolveResult, SolverAction } from '@/lib/workforce/saudization';
 import { callApi, useApi } from '../_components/api';
 import { BAND_TEXT, BandBadge, BandGauge, RowStatusBadge } from '../_components/nitaqat-ui';
-import { Card, EmptyBlock, ErrorBlock, LoadingBlock, Money, Num, Segmented, SelectField, StatusBadge, WfPage, WhyButton, WhyDialog, buttonClass, inputClass, type WhyContent } from '../_components/ui';
+import { Card, EmptyBlock, ErrorBlock, ExportButton, LoadingBlock, Money, Num, Segmented, SelectField, StatusBadge, WfPage, WhyButton, WhyDialog, buttonClass, inputClass, type WhyContent } from '../_components/ui';
+import PdfReportButton from '../_components/PdfReportButton';
 
 interface SaudizationResponse {
   date: string;
@@ -164,14 +165,15 @@ function SolverPanel({ c, date }: { c: CompanySaudization; date: string }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [res, setRes] = useState<SolveResponse | null>(null);
+  const [solveBody, setSolveBody] = useState<unknown>(null);
 
   const run = async (ev: React.FormEvent) => {
     ev.preventDefault();
     setBusy(true);
     setError(null);
-    const r = await callApi<SolveResponse>('/api/workforce/saudization/solve', {
-      json: { companyId: c.companyId, targetBand: target, byDate, options: { documentFirst, raiseHalfWeight: raiseHalf, replaceExpats: replace, hireBasic } },
-    });
+    const json = { companyId: c.companyId, targetBand: target, byDate, options: { documentFirst, raiseHalfWeight: raiseHalf, replaceExpats: replace, hireBasic } };
+    setSolveBody(json);
+    const r = await callApi<SolveResponse>('/api/workforce/saudization/solve', { json });
     setBusy(false);
     if (r.ok) setRes(r.data);
     else {
@@ -205,6 +207,10 @@ function SolverPanel({ c, date }: { c: CompanySaudization; date: string }) {
       {error && <ErrorBlock message={error} />}
       {r && (
         <div className="space-y-3 rounded-2xl border border-indigo-100 bg-indigo-50/40 p-3">
+          <div className="flex justify-end gap-2">
+            <ExportButton kind="saudization" query={{ date }} body={solveBody} disabled={busy} label="تصدير Excel (مع الحل)" />
+            <PdfReportButton kind="saudization" query={{ date }} body={solveBody} disabled={busy} label="تقرير PDF (مع الحل)" />
+          </div>
           {r.status === 'ALREADY_REACHED' || r.status === 'NO_ACTIVITY' || r.status === 'NO_EMPLOYEES' || r.status === 'UNREACHABLE' ? (
             <p className="text-[13px] font-black text-slate-800">{r.message}</p>
           ) : (
@@ -496,6 +502,7 @@ function SaudizationInner() {
       title="مخطط السعودة"
       subtitle="نطاق كل شركة قانونية تقديرياً بأوزان قوى وسقوفها، والهامش قبل الهبوط، وأقل عدد تعيينات للوصول إلى نطاق بكلفته بعد دعم هدف، والتزام قرارات توطين المهن."
       current="/workforce/saudization"
+      actions={<><ExportButton kind="saudization" query={{ date, companyId }} disabled={!data || loading} /><PdfReportButton kind="saudization" query={{ date, companyId }} disabled={!data || loading} /></>}
     >
       <Card>
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 items-end">

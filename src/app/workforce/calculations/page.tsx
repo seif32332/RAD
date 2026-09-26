@@ -9,7 +9,7 @@ import { Archive, ArrowRight } from 'lucide-react';
 import { formatDateTime } from '@/lib/dates';
 import type { MoneyTriple, WfStatus } from '@/lib/workforce/types';
 import { useApi } from '../_components/api';
-import { Card, EmptyBlock, ErrorBlock, LoadingBlock, Money, Num, SelectField, StatusBadge, WfPage, buttonClass } from '../_components/ui';
+import { Card, EmptyBlock, ErrorBlock, ExportButton, LoadingBlock, Money, Num, SelectField, StatusBadge, WfPage, buttonClass } from '../_components/ui';
 
 const KIND_LABELS: Record<string, string> = { TRUE_COST: 'الكلفة الحقيقية', EXIT_COST: 'كلفة الإنهاء', OVERVIEW: 'لوحة القرار', SAUDIZATION: 'مخطط السعودة', HIRE_SCENARIO: 'سيناريو توظيف', WORKFORCE_PLAN: 'خطة القوى العاملة' };
 const BAND_TEXT: Record<string, string> = { RED: 'أحمر', LOW_GREEN: 'أخضر منخفض', MEDIUM_GREEN: 'أخضر متوسط', HIGH_GREEN: 'أخضر مرتفع', PLATINUM: 'بلاتيني' };
@@ -164,9 +164,12 @@ function Detail({ id, onBack }: { id: string; onBack: () => void }) {
   return (
     <div className="space-y-5">
       <Card>
-        <button type="button" onClick={onBack} className={buttonClass.link}>
-          <ArrowRight size={14} aria-hidden="true" /> العودة إلى القائمة
-        </button>
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <button type="button" onClick={onBack} className={buttonClass.link}>
+            <ArrowRight size={14} aria-hidden="true" /> العودة إلى القائمة
+          </button>
+          <ExportButton kind="calculation" query={{ id: data.id }} />
+        </div>
         <h2 className="mt-2 text-[20px] font-black text-slate-900">{data.title ?? KIND_LABELS[data.kind]}</h2>
         <dl className="mt-3 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 text-[12.5px] font-bold">
           <div><dt className="text-slate-400">النوع</dt><dd className="text-slate-800">{KIND_LABELS[data.kind] ?? data.kind}</dd></div>

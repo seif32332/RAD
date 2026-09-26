@@ -15,7 +15,8 @@ import { HORIZONS, evidenceForLine, type Horizon } from '@/app/api/workforce/_li
 import { callApi, useApi } from '../_components/api';
 import type { OptionsResponse } from '../_components/types';
 import { BAND_TEXT, BandBadge } from '../_components/nitaqat-ui';
-import { Card, ErrorBlock, Money, Segmented, SelectField, StatusBadge, WfPage, WhyButton, WhyDialog, buttonClass, inputClass, type WhyContent } from '../_components/ui';
+import { Card, ErrorBlock, ExportButton, Money, Segmented, SelectField, SensitivityButton, StatusBadge, WfPage, WhyButton, WhyDialog, buttonClass, inputClass, type WhyContent } from '../_components/ui';
+import PdfReportButton from '../_components/PdfReportButton';
 
 interface HireResponse {
   result: HireScenarioResult;
@@ -298,9 +299,14 @@ export default function HireScenarioPage() {
       current="/workforce/hire-scenario"
       actions={
         res ? (
-          <button type="button" onClick={save} disabled={saving} className={buttonClass.secondary}>
-            <Save size={15} aria-hidden="true" /> {saving ? 'جارٍ الحفظ…' : 'حفظ السيناريو'}
-          </button>
+          <>
+            <ExportButton kind="hire-scenario" body={body()} disabled={busy} />
+            <PdfReportButton kind="hire-scenario" body={body()} disabled={busy} />
+            <SensitivityButton decision="hire" body={body()} disabled={busy} />
+            <button type="button" onClick={save} disabled={saving} className={buttonClass.secondary}>
+              <Save size={15} aria-hidden="true" /> {saving ? 'جارٍ الحفظ…' : 'حفظ السيناريو'}
+            </button>
+          </>
         ) : undefined
       }
     >

@@ -28,7 +28,8 @@ import { FLAG_TITLES } from '@/app/api/workforce/_lib/shared';
 import { callApi, useApi } from '../../_components/api';
 import type { OptionsResponse } from '../../_components/types';
 import { BandBadge } from '../../_components/nitaqat-ui';
-import { Card, EmptyBlock, ErrorBlock, LoadingBlock, Money, Num, Segmented, SelectField, SeriesChart, WfPage, WhyButton, WhyDialog, buttonClass, inputClass, type WhyContent } from '../../_components/ui';
+import { Card, EmptyBlock, ErrorBlock, ExportButton, LoadingBlock, Money, Num, Segmented, SelectField, SensitivityButton, SeriesChart, WfPage, WhyButton, WhyDialog, buttonClass, inputClass, type WhyContent } from '../../_components/ui';
+import PdfReportButton from '../../_components/PdfReportButton';
 import { HeaderDialog, ItemWhyDialog, PlanStatusBadge, PositionDialog, RaiseDialog, SEVERITY_CLASS, type Lookups, type PlanDetailResponse, type PositionRow, type RaiseRow } from '../_components/plan-ui';
 
 type Tab = 'projection' | 'items' | 'actual';
@@ -660,6 +661,9 @@ export default function PlanDetailPage() {
       actions={
         <>
           <Link href="/workforce/plans" className={buttonClass.secondary}>كل الخطط</Link>
+          <ExportButton kind="plan" query={{ planId: id, live }} disabled={!d || detail.loading} />
+          <PdfReportButton kind="plan" query={{ planId: id, live }} disabled={!d || detail.loading} />
+          <SensitivityButton decision="plan" planId={id} disabled={!d} />
           {d?.permissions.edit && <button type="button" onClick={() => setHeaderOpen(true)} className={buttonClass.secondary}><Pencil size={15} aria-hidden="true" /> بيانات الخطة</button>}
         </>
       }

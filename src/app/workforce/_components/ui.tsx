@@ -2,11 +2,13 @@
 
 // Shared building blocks of the workforce pages («محرك القرارات»): page frame with the disclaimer,
 // status badges, money, selectors, composition bars, a monthly series chart and the «لماذا؟» dialog.
-import React, { useId } from 'react';
+import React, { useId, useState } from 'react';
 import Link from 'next/link';
-import { AlertTriangle, ExternalLink, Info, Loader2, RefreshCw } from 'lucide-react';
+import { useRouter } from 'next/navigation';
+import { AlertTriangle, ExternalLink, FileSpreadsheet, Info, Loader2, RefreshCw, Scale } from 'lucide-react';
 import DashboardLayout from '@/components/DashboardLayout';
 import Modal from '@/components/ui/Modal';
+import { readApiError, toast } from '@/components/ui/feedback';
 import { formatMoney } from '@/lib/money';
 import { ESTIMATE_DISCLAIMER } from '@/lib/workforce/version';
 import type { RuleEvidence, WfStatus } from '@/lib/workforce/types';
@@ -23,6 +25,7 @@ export const WF_NAV = [
   { href: '/workforce/saudization', label: 'مخطط السعودة' },
   { href: '/workforce/hire-scenario', label: 'سيناريوهات التوظيف' },
   { href: '/workforce/plans', label: 'خطة القوى العاملة' },
+  { href: '/workforce/sensitivity', label: 'حساسية القرار' },
   { href: '/workforce/benchmarks', label: 'المؤشرات الداخلية' },
   { href: '/workforce/nitaqat-register', label: 'سجل نطاقات والتوطين' },
   { href: '/workforce/assumptions', label: 'الافتراضات' },
@@ -464,6 +467,97 @@ export function WhyButton({ onClick, label }: { onClick: () => void; label: stri
   return (
     <button type="button" onClick={onClick} aria-label={`لماذا؟ ${label}`} className="rounded-lg border border-indigo-200 bg-indigo-50 px-2 py-0.5 text-[11px] font-black text-indigo-700 hover:bg-indigo-100">
       لماذا؟
+    </button>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Excel export and decision sensitivity buttons (SPEC §11)
+// ---------------------------------------------------------------------------
+
+type QueryValue = string | number | boolean | null | undefined;
+
+/** File name from Content-Disposition (RFC 5987 filename* first). */
+function dispositionName(h: string | null): string | null {
+  if (!h) return null;
+  const star = /filename\*=UTF-8''([^;]+)/i.exec(h);
+  if (star) {
+    try {
+      return decodeURIComponent(star[1]);
+    } catch {
+      /* fall back to the ASCII name */
+    }
+  }
+  return /filename="([^"]+)"/i.exec(h)?.[1] ?? null;
+}
+
+/**
+ * «تصدير Excel»: GET /api/workforce/export?kind=…&query (or POST with `body`, the page's own request body),
+ * then downloads the .xlsx. Disabled while loading; errors as a toast.
+ */
+export function ExportButton({ kind, query, body, disabled, label = 'تصدير Excel' }: { kind: string; query?: Record<string, QueryValue>; body?: unknown; disabled?: boolean; label?: string }) {
+  const [busy, setBusy] = useState(false);
+  const run = async () => {
+    setBusy(true);
+    try {
+      const u = new URLSearchParams({ kind });
+      for (const [k, v] of Object.entries(query ?? {})) if (v !== null && v !== undefined && v !== '' && v !== false) u.set(k, v === true ? '1' : String(v));
+      const res = await fetch(`/api/workforce/export?${u.toString()}`, body === undefined ? { cache: 'no-store' } : { method: 'POST', cache: 'no-store', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+      if (res.status === 401) {
+        window.location.href = '/login';
+        return;
+      }
+      if (!res.ok) {
+        toast.error(await readApiError(res, 'تعذر التصدير'));
+        return;
+      }
+      const blob = await res.blob();
+      const href = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = href;
+      a.download = dispositionName(res.headers.get('Content-Disposition')) ?? `radeef-${kind}.xlsx`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      setTimeout(() => URL.revokeObjectURL(href), 1000);
+    } catch {
+      toast.error('تعذر التصدير: تعذر الاتصال بالخادم');
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <button type="button" onClick={run} disabled={disabled || busy} aria-busy={busy} className={buttonClass.secondary}>
+      {busy ? <Loader2 size={16} className="animate-spin" aria-hidden="true" /> : <FileSpreadsheet size={16} aria-hidden="true" />} {busy ? 'جارٍ التصدير…' : label}
+    </button>
+  );
+}
+
+/** sessionStorage key of the decision handed to «حساسية القرار» (the request body stays out of the URL). */
+export const SENSITIVITY_STORAGE_PREFIX = 'wf-sensitivity:';
+
+/**
+ * «حساسية القرار»: opens /workforce/sensitivity for this decision. A plan goes by id in the URL; a hire
+ * scenario or an exit hands its request body through sessionStorage (no amounts or ids in the URL).
+ */
+export function SensitivityButton({ decision, body, planId, disabled }: { decision: 'hire' | 'exit' | 'plan'; body?: unknown; planId?: string; disabled?: boolean }) {
+  const router = useRouter();
+  const open = () => {
+    if (decision === 'plan') {
+      router.push(`/workforce/sensitivity?decision=plan&planId=${encodeURIComponent(planId ?? '')}`);
+      return;
+    }
+    try {
+      window.sessionStorage.setItem(`${SENSITIVITY_STORAGE_PREFIX}${decision}`, JSON.stringify(body ?? null));
+    } catch {
+      toast.error('تعذر فتح حساسية القرار: التخزين المؤقت للمتصفح غير متاح');
+      return;
+    }
+    router.push(`/workforce/sensitivity?decision=${decision}`);
+  };
+  return (
+    <button type="button" onClick={open} disabled={disabled} className={buttonClass.secondary}>
+      <Scale size={16} aria-hidden="true" /> حساسية القرار
     </button>
   );
 }

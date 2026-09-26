@@ -12,7 +12,7 @@ import type { WfStatus } from '@/lib/workforce/types';
 import type { RuleDomainView, RuleKeyView, RuleVersionView } from '@/app/api/workforce/_lib/views';
 import { RULE_INPUT_STATUSES, STATUS_LABELS, UNIT_LABELS, domainLabel, formatRuleValue } from '@/app/api/workforce/_lib/shared';
 import { callApi, useApi } from '../_components/api';
-import { Card, EmptyBlock, ErrorBlock, LoadingBlock, SelectField, StatusBadge, WfPage, buttonClass, inputClass } from '../_components/ui';
+import { Card, EmptyBlock, ErrorBlock, ExportButton, LoadingBlock, SelectField, StatusBadge, WfPage, buttonClass, inputClass } from '../_components/ui';
 
 interface RulesResponse {
   today: string;
@@ -154,11 +154,14 @@ export default function RulesPage() {
       title="سجل القواعد والأدلة"
       subtitle="كل قيمة نظامية يستخدمها المحرك بإصداراتها وتواريخ سريانها ومصدرها وحالتها. يُضاف إصدار جديد ولا يُعدَّل التاريخ."
       actions={
-        data?.canAddVersion ? (
-          <button type="button" className={buttonClass.primary} onClick={() => setDraft(emptyDraft())}>
-            <Plus size={16} aria-hidden="true" /> إضافة إصدار جديد
-          </button>
-        ) : undefined
+        <>
+          <ExportButton kind="rules" disabled={!data || loading} />
+          {data?.canAddVersion && (
+            <button type="button" className={buttonClass.primary} onClick={() => setDraft(emptyDraft())}>
+              <Plus size={16} aria-hidden="true" /> إضافة إصدار جديد
+            </button>
+          )}
+        </>
       }
     >
       <Card>

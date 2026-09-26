@@ -13,7 +13,8 @@ import { FLAG_TITLES, HORIZONS, SCENARIOS, SCENARIO_LABELS, SEVERITY_LABELS, for
 import type { Scenario } from '@/lib/workforce/types';
 import { companySettingsHref } from '@/lib/workforce/company-settings';
 import { callApi, useApi } from './_components/api';
-import { Card, CompositionBars, EmptyBlock, ErrorBlock, LoadingBlock, Money, Num, Segmented, SeriesChart, StatusBadge, WfPage, buttonClass } from './_components/ui';
+import { Card, CompositionBars, EmptyBlock, ErrorBlock, ExportButton, LoadingBlock, Money, Num, Segmented, SeriesChart, StatusBadge, WfPage, buttonClass } from './_components/ui';
+import PdfReportButton from './_components/PdfReportButton';
 import { BandBadge, RowStatusBadge } from './_components/nitaqat-ui';
 import type { NitaqatBand } from '@/lib/workforce/nitaqat';
 
@@ -216,9 +217,13 @@ export default function WorkforceOverviewPage() {
       title="لوحة القرار"
       subtitle="الكلفة الكلية للمنشأة على صاحب العمل شهراً بشهر، وتركيبتها، وحسب الشركة والفرع والإدارة، مع التغييرات النظامية القادمة وجودة البيانات."
       actions={
-        <button type="button" onClick={save} disabled={saving || !data} className={buttonClass.primary}>
-          <Save size={16} aria-hidden="true" /> {saving ? 'جارٍ الحفظ…' : 'حفظ الحساب'}
-        </button>
+        <>
+          <ExportButton kind="overview" query={{ months: horizon, scenario }} disabled={!data || loading} />
+          <PdfReportButton kind="true-cost" query={{ months: horizon, scenario }} disabled={!data || loading} />
+          <button type="button" onClick={save} disabled={saving || !data} className={buttonClass.primary}>
+            <Save size={16} aria-hidden="true" /> {saving ? 'جارٍ الحفظ…' : 'حفظ الحساب'}
+          </button>
+        </>
       }
     >
       <div className="flex flex-wrap items-end gap-4">

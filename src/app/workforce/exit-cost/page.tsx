@@ -17,7 +17,8 @@ import type { ExitLine, ExitLineKind, Scenario } from '@/lib/workforce/types';
 import { SCENARIOS, SCENARIO_LABELS, evidenceForLine } from '@/app/api/workforce/_lib/shared';
 import { callApi, useApi } from '../_components/api';
 import type { ExitCostResponse, OptionsResponse } from '../_components/types';
-import { Card, EmptyBlock, ErrorBlock, LoadingBlock, Money, Num, Segmented, SelectField, StatusBadge, WfPage, WhyButton, WhyDialog, buttonClass, inputClass, type WhyContent } from '../_components/ui';
+import { Card, EmptyBlock, ErrorBlock, ExportButton, LoadingBlock, Money, Num, Segmented, SelectField, SensitivityButton, StatusBadge, WfPage, WhyButton, WhyDialog, buttonClass, inputClass, type WhyContent } from '../_components/ui';
+import PdfReportButton from '../_components/PdfReportButton';
 
 const COUNSEL_BADGE = 'مؤقت — بانتظار تأكيد المستشار';
 
@@ -222,9 +223,14 @@ function ExitCostInner() {
             <Segmented label="السيناريو" value={scenario} onChange={setScenario} options={SCENARIOS.map((s) => ({ value: s, label: SCENARIO_LABELS[s] }))} />
             <div className="flex flex-wrap gap-2">
               {result && (
-                <button type="button" onClick={save} disabled={saving || busy} className={buttonClass.secondary}>
-                  <Save size={16} aria-hidden="true" /> {saving ? 'جارٍ الحفظ…' : 'حفظ الحساب'}
-                </button>
+                <>
+                  <ExportButton kind="exit-cost" body={body()} disabled={busy} />
+                  <PdfReportButton kind="exit-cost" body={body()} disabled={busy} />
+                  <SensitivityButton decision="exit" body={body()} disabled={busy} />
+                  <button type="button" onClick={save} disabled={saving || busy} className={buttonClass.secondary}>
+                    <Save size={16} aria-hidden="true" /> {saving ? 'جارٍ الحفظ…' : 'حفظ الحساب'}
+                  </button>
+                </>
               )}
               <button type="submit" disabled={busy} className={buttonClass.primary}>
                 <Calculator size={16} aria-hidden="true" /> {busy ? 'جارٍ الحساب…' : 'احسب كلفة الإنهاء'}
