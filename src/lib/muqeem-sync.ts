@@ -6,7 +6,8 @@
 //
 // Categories of the diff:
 //   (a) mismatched   : in both, with differences in the syncable fields (iqama expiry, passport number,
-//                      passport expiry) and/or a name mismatch (information only, never applied);
+//                      passport expiry, occupation, dependents count) and/or a name mismatch
+//                      (information only, never applied);
 //   (b) onlyInMuqeem : active resident of the establishment with no active non-Saudi employee of this
 //                      company in Radeef (possibly unregistered; hints for terminated / Saudi / other company);
 //   (c) onlyInRadeef : active non-Saudi employee of this company not in the report (possibly transferred / left);
@@ -21,13 +22,15 @@ import type { NormalizedResident } from '@/lib/muqeem/types';
 // ---------------------------------------------------------------------------
 
 /** Employee fields that can be copied from Muqeem. */
-export const SYNC_FIELDS = ['iqamaOrIdExp', 'passportNumber', 'passportExp'] as const;
+export const SYNC_FIELDS = ['iqamaOrIdExp', 'passportNumber', 'passportExp', 'occupationName', 'dependentsCount'] as const;
 export type SyncField = (typeof SYNC_FIELDS)[number];
 
 export const SYNC_FIELD_LABELS: Record<SyncField, string> = {
   iqamaOrIdExp: 'تاريخ انتهاء الإقامة',
   passportNumber: 'رقم الجواز',
   passportExp: 'تاريخ انتهاء الجواز',
+  occupationName: 'المهنة',
+  dependentsCount: 'عدد المرافقين',
 };
 
 export function isSyncField(v: unknown): v is SyncField {
@@ -90,6 +93,25 @@ export function normalizePassportNumber(v: unknown): string | null {
   return s || null;
 }
 
+/**
+ * Occupation for comparison: same unification as person names (hamza / taa marbuta / diacritics,
+ * case, punctuation, spaces). Blank -> ''.
+ */
+export function normalizeOccupation(v: unknown): string {
+  return normalizePersonName(v);
+}
+
+/** Occupation to store: trimmed, inner spaces collapsed (as printed by Muqeem). */
+function occupationForStorage(v: string): string {
+  return v.trim().replace(/\s+/g, ' ');
+}
+
+/** Dependents count reported by Muqeem when it is a plausible whole number (0..30), else null. */
+export function muqeemDependentsCount(r: Pick<SyncResident, 'dependentsCount'>): number | null {
+  const n = r.dependentsCount;
+  return typeof n === 'number' && Number.isInteger(n) && n >= 0 && n <= 30 ? n : null;
+}
+
 /** Passport number to store: trimmed, upper-case (as printed by Muqeem). */
 function passportForStorage(v: string): string {
   return latinDigits(v).trim().replace(/\s+/g, '').toUpperCase();
@@ -145,6 +167,10 @@ export interface SyncEmployee {
   iqamaOrIdExp: Date | string | null;
   passportNumber: string | null;
   passportExp: Date | string | null;
+  /** Employee.occupationName (the occupation as recorded in Muqeem / Qiwa). */
+  occupationName: string | null;
+  /** Employee.dependentsCount (null = unknown). */
+  dependentsCount: number | null;
   isTerminated: boolean;
   legalCompanyId: string | null;
 }
@@ -152,7 +178,7 @@ export interface SyncEmployee {
 /** Minimal resident shape (NormalizedResident without `raw`). */
 export type SyncResident = Pick<
   NormalizedResident,
-  'iqamaNumber' | 'name' | 'translatedName' | 'nationality' | 'occupation' | 'iqamaExpiry' | 'passportNumber' | 'passportExpiry'
+  'iqamaNumber' | 'name' | 'translatedName' | 'nationality' | 'occupation' | 'iqamaExpiry' | 'passportNumber' | 'passportExpiry' | 'dependentsCount'
 >;
 
 export interface FieldDiff {
@@ -243,6 +269,16 @@ export function fieldDiffs(e: SyncEmployee, r: SyncResident, fields: readonly Sy
       radeef = e.passportNumber?.trim() || null;
       muqeem = r.passportNumber?.trim() || null;
       differs = !!muqeem && normalizePassportNumber(radeef) !== normalizePassportNumber(muqeem);
+    } else if (field === 'occupationName') {
+      radeef = e.occupationName?.trim() || null;
+      muqeem = r.occupation ? occupationForStorage(r.occupation) || null : null;
+      differs = !!muqeem && normalizeOccupation(radeef) !== normalizeOccupation(muqeem);
+    } else if (field === 'dependentsCount') {
+      // 0 is a real value from Muqeem ("no dependents"); a missing count is never a difference.
+      radeef = e.dependentsCount === null || e.dependentsCount === undefined ? null : String(e.dependentsCount);
+      const count = muqeemDependentsCount(r);
+      muqeem = count === null ? null : String(count);
+      differs = muqeem !== null && radeef !== muqeem;
     } else {
       radeef = dateKey(field === 'iqamaOrIdExp' ? e.iqamaOrIdExp : e.passportExp);
       muqeem = dateKey(field === 'iqamaOrIdExp' ? r.iqamaExpiry : r.passportExpiry);
@@ -397,7 +433,7 @@ export interface FieldChange {
 
 export interface EmployeeUpdatePlan {
   /** Prisma update data (only the fields that really change). */
-  data: { iqamaOrIdExp?: Date; passportNumber?: string; passportExp?: Date };
+  data: { iqamaOrIdExp?: Date; passportNumber?: string; passportExp?: Date; occupationName?: string; dependentsCount?: number };
   changes: FieldChange[];
   /** Requested fields left untouched, with the reason. */
   unchanged: { field: SyncField; reason: 'SAME_VALUE' | 'NO_MUQEEM_VALUE' }[];
@@ -413,15 +449,24 @@ export function planEmployeeUpdate(e: SyncEmployee, r: SyncResident, fields: rea
   for (const field of wanted) {
     const d = diffs.get(field);
     if (!d) {
-      const muqeemValue =
-        field === 'passportNumber' ? r.passportNumber?.trim() : dateKey(field === 'iqamaOrIdExp' ? r.iqamaExpiry : r.passportExpiry);
-      plan.unchanged.push({ field, reason: muqeemValue ? 'SAME_VALUE' : 'NO_MUQEEM_VALUE' });
+      const hasMuqeemValue =
+        field === 'passportNumber'
+          ? !!r.passportNumber?.trim()
+          : field === 'occupationName'
+            ? !!r.occupation?.trim()
+            : field === 'dependentsCount'
+              ? muqeemDependentsCount(r) !== null
+              : !!dateKey(field === 'iqamaOrIdExp' ? r.iqamaExpiry : r.passportExpiry);
+      plan.unchanged.push({ field, reason: hasMuqeemValue ? 'SAME_VALUE' : 'NO_MUQEEM_VALUE' });
       continue;
     }
-    if (field === 'passportNumber') plan.data.passportNumber = passportForStorage(d.muqeem);
+    let after = d.muqeem;
+    if (field === 'passportNumber') plan.data.passportNumber = after = passportForStorage(d.muqeem);
+    else if (field === 'occupationName') plan.data.occupationName = after = occupationForStorage(d.muqeem);
+    else if (field === 'dependentsCount') plan.data.dependentsCount = Number(d.muqeem);
     else if (field === 'iqamaOrIdExp') plan.data.iqamaOrIdExp = utcDay(d.muqeem);
     else plan.data.passportExp = utcDay(d.muqeem);
-    plan.changes.push({ field, before: d.radeef, after: field === 'passportNumber' ? passportForStorage(d.muqeem) : d.muqeem });
+    plan.changes.push({ field, before: d.radeef, after });
   }
   return plan;
 }

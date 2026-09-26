@@ -6,7 +6,7 @@ import { useParams, useRouter } from 'next/navigation';
 import { AlertTriangle, RefreshCw, Save } from 'lucide-react';
 import DashboardLayout from '@/components/DashboardLayout';
 import { toast, readApiError } from '@/components/ui/feedback';
-import { daysBetween, toDateInputValue } from '@/lib/dates';
+import { daysBetween, riyadhDateKey, toDateInputValue } from '@/lib/dates';
 import { SAUDI_BANKS } from '@/lib/banks';
 import {
   EMPTY_EMPLOYEE_FORM,
@@ -70,12 +70,23 @@ interface EmployeeDetail {
   passportCopyUrl?: string | null;
   healthCertificateUrl?: string | null;
   workContractUrl?: string | null;
-  allowances?: { id?: string; name: string; amount: number; isMonthly?: boolean | null; countsTowardGosi?: boolean | null }[];
+  allowances?: { id?: string; name: string; amount: number; isMonthly?: boolean | null; countsTowardGosi?: boolean | null; allowanceType?: string | null }[];
   gosiRegime?: string | null;
   gosiRegistrationSource?: string | null;
   gosiNumber?: string | null;
   idType?: string | null;
   dataReviewNote?: string | null;
+  occupationName?: string | null;
+  occupationCode?: string | null;
+  dependentsCount?: number | null;
+  dependentsFeePaidBy?: string | null;
+  medicalInsuranceClass?: string | null;
+  isDisabled?: boolean | null;
+  muawamaCertExpiry?: string | null;
+  isStudent?: boolean | null;
+  partTimeWeeklyHours?: number | null;
+  qiwaContractDocumented?: boolean | null;
+  qiwaContractDocumentedAt?: string | null;
 }
 
 function toFormData(emp: EmployeeDetail): EmployeeFormData {
@@ -124,6 +135,18 @@ function toFormData(emp: EmployeeDetail): EmployeeFormData {
     gosiRegistrationSource: emp.gosiRegistrationSource || '',
     gosiNumber: emp.gosiNumber || '',
     idType: emp.idType || '',
+    occupationName: emp.occupationName || '',
+    occupationCode: emp.occupationCode || '',
+    dependentsCount: emp.dependentsCount != null ? String(emp.dependentsCount) : '',
+    dependentsFeePaidBy: emp.dependentsFeePaidBy || '',
+    medicalInsuranceClass: emp.medicalInsuranceClass || '',
+    isDisabled: emp.isDisabled === true,
+    muawamaCertExpiry: toDateInputValue(emp.muawamaCertExpiry),
+    isStudent: emp.isStudent === true,
+    partTimeWeeklyHours: emp.partTimeWeeklyHours != null ? String(emp.partTimeWeeklyHours) : '',
+    qiwaContractDocumented: emp.qiwaContractDocumented === true,
+    // Riyadh calendar day of the stored timestamp (auto-set to "now" by the server).
+    qiwaContractDocumentedAt: emp.qiwaContractDocumentedAt ? (riyadhDateKey(emp.qiwaContractDocumentedAt) ?? '') : '',
   };
 }
 
@@ -174,6 +197,7 @@ export default function EditEmployeePage() {
             name: a.name,
             amount: String(a.amount ?? ''),
             countsTowardGosi: typeof a.countsTowardGosi === 'boolean' ? a.countsTowardGosi : defaultCountsTowardGosi(a.name),
+            allowanceType: a.allowanceType || '',
           })),
       );
       if (emp.branchId) loadBranchSchedules(emp.branchId);

@@ -57,6 +57,8 @@ const PAGE_ROLES = {
   hrOrGov: union(ROLE_GROUPS.HR, ROLE_GROUPS.GOV),
   /** GET /api/integrations/muqeem/status, transactions, residents sync: ROLE_GROUPS.GOV */
   muqeem: ROLE_GROUPS.GOV,
+  /** GET /api/workforce/*: ROLE_GROUPS.WORKFORCE (writes are narrower and enforced by the routes) */
+  workforce: ROLE_GROUPS.WORKFORCE,
 } as const;
 
 /**
@@ -109,7 +111,13 @@ export type MenuIconName =
   | 'FileSignature'
   | 'Gavel'
   | 'History'
-  | 'Settings';
+  | 'Settings'
+  | 'Gauge'
+  | 'Calculator'
+  | 'UserMinus'
+  | 'SlidersHorizontal'
+  | 'BookOpenCheck'
+  | 'Archive';
 
 export interface MenuItem {
   href: string;
@@ -230,6 +238,23 @@ export const MENU_GROUPS: readonly MenuGroup[] = [
     legacyHeadings: ['بوابة المحاسب المالي'],
     defaultRoles: ['SUPER_ADMIN', 'COMPANY_ADMIN', 'FINANCE_MANAGER', 'PAYROLL_ADMIN'],
     items: [{ href: '/payments', label: 'شاشة المحاسب المالي', iconName: 'Wallet', iconClassName: 'text-emerald-400', roles: PAGE_ROLES.payments }],
+  },
+  {
+    key: 'workforce',
+    heading: 'محرك القرارات',
+    legacyHeadings: [],
+    defaultRoles: ROLE_GROUPS.WORKFORCE,
+    items: [
+      { href: '/workforce', label: 'لوحة القرار', iconName: 'Gauge', iconClassName: 'text-indigo-500', roles: PAGE_ROLES.workforce },
+      { href: '/workforce/true-cost', label: 'الكلفة الحقيقية', iconName: 'Calculator', iconClassName: 'text-emerald-500', roles: PAGE_ROLES.workforce },
+      { href: '/workforce/exit-cost', label: 'كلفة الإنهاء', iconName: 'UserMinus', iconClassName: 'text-rose-500', roles: PAGE_ROLES.workforce },
+      { href: '/workforce/saudization', label: 'مخطط السعودة', iconName: 'ShieldCheck', iconClassName: 'text-green-600', roles: PAGE_ROLES.workforce },
+      { href: '/workforce/hire-scenario', label: 'سيناريوهات التوظيف', iconName: 'UserPlus', iconClassName: 'text-sky-500', roles: PAGE_ROLES.workforce },
+      { href: '/workforce/nitaqat-register', label: 'سجل نطاقات والتوطين', iconName: 'Landmark', iconClassName: 'text-emerald-700', roles: PAGE_ROLES.workforce },
+      { href: '/workforce/assumptions', label: 'الافتراضات', iconName: 'SlidersHorizontal', iconClassName: 'text-amber-500', roles: PAGE_ROLES.workforce },
+      { href: '/workforce/rules', label: 'سجل القواعد والأدلة', iconName: 'BookOpenCheck', iconClassName: 'text-teal-600', roles: PAGE_ROLES.workforce },
+      { href: '/workforce/calculations', label: 'الحسابات المحفوظة', iconName: 'Archive', iconClassName: 'text-slate-500', roles: PAGE_ROLES.workforce },
+    ],
   },
   {
     key: 'operations-management',

@@ -5,7 +5,7 @@ import Link from 'next/link';
 import { RefreshCw, Loader2, AlertTriangle, Info, CheckCheck, UserX, UserSearch, Users } from 'lucide-react';
 import { toast, confirmDialog } from '@/components/ui/feedback';
 import { formatDateShort, formatDateTime } from '@/lib/dates';
-import type { OnlyInMuqeemHint, ResidentDiff, SyncField } from '@/lib/muqeem-sync';
+import { SYNC_FIELDS, SYNC_FIELD_LABELS, type OnlyInMuqeemHint, type ResidentDiff, type SyncField } from '@/lib/muqeem-sync';
 import { callApi, type MuqeemStatusCompany } from './shared';
 
 interface SyncResponse {
@@ -218,7 +218,7 @@ export default function ResidentsSyncTab({ companies, usable, canApply }: { comp
                   <CheckCheck size={18} className="text-amber-500" /> موجودون في الطرفين مع اختلاف ({d.mismatched.length})
                 </h3>
                 <p className="mt-1 text-[12px] font-bold text-slate-500">
-                  حدد الحقول التي تريد تحديثها في رديف بقيمة مقيم. اختلاف الاسم للعلم فقط ولا يُطبَّق.
+                  حدد الحقول التي تريد تحديثها في رديف بقيمة مقيم (الحقول القابلة للتحديث: {SYNC_FIELDS.map((f) => SYNC_FIELD_LABELS[f]).join('، ')}). اختلاف الاسم للعلم فقط ولا يُطبَّق.
                 </p>
               </div>
               {canApply && applicable.length > 0 && (

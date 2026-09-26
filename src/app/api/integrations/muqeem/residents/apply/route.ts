@@ -39,7 +39,7 @@ const SKIP_MESSAGES: Record<SkipReason, string> = {
 
 /**
  * POST /api/integrations/muqeem/residents/apply  (ROLE_GROUPS.GOV: HR manager + government relations + admins)
- * { companyId, updates: [{ employeeId, fields: ('iqamaOrIdExp'|'passportNumber'|'passportExp')[] }] }
+ * { companyId, updates: [{ employeeId, fields: ('iqamaOrIdExp'|'passportNumber'|'passportExp'|'occupationName'|'dependentsCount')[] }] }
  *
  * Copies the selected fields FROM MUQEEM to the employees. Values sent by the client are never used:
  * the active residents report is read again (read-only on Muqeem) and only the selected fields that

@@ -6,7 +6,7 @@ import Link from 'next/link';
 import {
   ChevronRight, Pencil, Ban, Phone, Mail, Building2, Briefcase, Calendar, CreditCard,
   ShieldCheck, FileText, CheckCircle2, AlertCircle, UserCheck, ShieldAlert, Clock, Upload, ExternalLink, RefreshCw, Calculator,
-  Landmark, X
+  Landmark, X, Scale, Gauge
 } from 'lucide-react';
 import DashboardLayout from '@/components/DashboardLayout';
 import { toast, readApiError, confirmDialog } from '@/components/ui/feedback';
@@ -28,6 +28,14 @@ import { LOAN_DEDUCTIBLE_STATUSES, ROLE_GROUPS, roleIn } from '@/lib/constants';
 import { GOSI_REGIME_LABELS, isSaudiNationalityValue, parseGosiRegime } from '@/lib/employee-shared';
 import { ID_TYPE_LABELS, parseIdType } from '@/lib/identity';
 import { useRole } from '@/context/RoleContext';
+import {
+  DEPENDENTS_FEE_PAYER_LABELS,
+  EXIT_REASONS,
+  EXIT_REASON_LABELS,
+  defaultExitVoluntary,
+  type DependentsFeePayer,
+  type ExitReason,
+} from '@/app/api/employees/_workforce-fields';
 import DataReviewBanner from '../_components/DataReviewBanner';
 
 type DocKey = 'workContractUrl' | 'iqamaCopyUrl' | 'healthCertificateUrl' | 'passportCopyUrl';
@@ -80,7 +88,27 @@ interface EmployeeProfile {
   gosiRegistrationSource?: string | null;
   gosiNumber?: string | null;
   idType?: string | null;
+  // Workforce decision engine data (absent for roles with a reduced view).
+  occupationName?: string | null;
+  occupationCode?: string | null;
+  dependentsCount?: number | null;
+  dependentsFeePaidBy?: string | null;
+  medicalInsuranceClass?: string | null;
+  isDisabled?: boolean;
+  muawamaCertExpiry?: string | null;
+  isStudent?: boolean;
+  partTimeWeeklyHours?: number | null;
+  qiwaContractDocumented?: boolean;
+  qiwaContractDocumentedAt?: string | null;
+  exitReason?: string | null;
+  exitVoluntary?: boolean | null;
 }
+
+/** Roles that see the "محرك القرارات" card (true cost / exit cost pages). */
+const DECISION_ENGINE_ROLES: readonly string[] = ['SUPER_ADMIN', 'COMPANY_ADMIN', 'FINANCE_MANAGER', 'HR_MANAGER'];
+
+const exitReasonLabel = (v: string | null | undefined) => (v && (EXIT_REASONS as readonly string[]).includes(v) ? EXIT_REASON_LABELS[v as ExitReason] : v || '—');
+const yesNo = (v: boolean | null | undefined) => (v === true ? 'نعم' : v === false ? 'لا' : 'غير محدد');
 
 const DOCS: { key: DocKey; label: string; icon: string }[] = [
   { key: 'workContractUrl', label: 'عقد العمل', icon: '📄' },
@@ -104,6 +132,7 @@ export default function EmployeeProfilePage() {
   const canOverrideProtectedLeave = role === 'SUPER_ADMIN' || role === 'LEGAL_ADMIN';
   // Muqeem actions (real government transactions): GOV operators only, enforced by the API too.
   const isGov = roleIn(role, ROLE_GROUPS.GOV);
+  const canSeeDecisionEngine = !!role && DECISION_ENGINE_ROLES.includes(role);
   const [emp, setEmp] = useState<EmployeeProfile | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -112,6 +141,9 @@ export default function EmployeeProfilePage() {
   const [terminateReason, setTerminateReason] = useState('');
   const [protectedLeaveMsg, setProtectedLeaveMsg] = useState<string | null>(null);
   const [overrideProtectedLeave, setOverrideProtectedLeave] = useState(false);
+  const [exitReason, setExitReason] = useState<ExitReason | ''>('');
+  /** 'yes' / 'no' / '' (not set); pre-filled from the reason. */
+  const [exitVoluntary, setExitVoluntary] = useState<'yes' | 'no' | ''>('');
   const [uploadingField, setUploadingField] = useState<DocKey | null>(null);
 
   const load = useCallback(async () => {
@@ -165,12 +197,25 @@ export default function EmployeeProfilePage() {
     setTerminateReason('');
     setProtectedLeaveMsg(null);
     setOverrideProtectedLeave(false);
+    setExitReason('');
+    setExitVoluntary('');
+  };
+
+  const chooseExitReason = (value: string) => {
+    const reason = (EXIT_REASONS as readonly string[]).includes(value) ? (value as ExitReason) : '';
+    setExitReason(reason);
+    const def = reason ? defaultExitVoluntary(reason) : null;
+    setExitVoluntary(def === true ? 'yes' : def === false ? 'no' : '');
   };
 
   const handleTerminate = async () => {
     if (isTerminating) return;
     if (terminateReason.trim().length < 3) {
       toast.warning('اكتب سبب إنهاء الخدمات، فهو يُحفظ في سجل التدقيق');
+      return;
+    }
+    if (!exitReason) {
+      toast.warning('اختر تصنيف سبب الخروج');
       return;
     }
     setIsTerminating(true);
@@ -181,6 +226,8 @@ export default function EmployeeProfilePage() {
         body: JSON.stringify({
           action: 'terminate',
           reason: terminateReason.trim(),
+          exitReason,
+          exitVoluntary: exitVoluntary === 'yes' ? true : exitVoluntary === 'no' ? false : null,
           ...(overrideProtectedLeave ? { overrideProtectedLeave: true } : {}),
         }),
       });
@@ -451,6 +498,58 @@ export default function EmployeeProfilePage() {
             <InfoRow label="رقم الاشتراك في التأمينات" value={emp.gosiNumber || '—'} />
           </InfoCard>
 
+          {/* Workforce decision engine data (roles with a reduced view do not receive these fields) */}
+          {emp.qiwaContractDocumented !== undefined && (
+            <InfoCard title="بيانات الكلفة والسعودة" icon={<Scale size={18} className="text-amber-500" />}>
+              <InfoRow label="المهنة" value={[emp.occupationName, emp.occupationCode ? `(${emp.occupationCode})` : null].filter(Boolean).join(' ') || '—'} />
+              <InfoRow label="عدد المرافقين" value={emp.dependentsCount != null ? String(emp.dependentsCount) : '—'} />
+              <InfoRow
+                label="رسوم المرافقين على"
+                value={emp.dependentsFeePaidBy && emp.dependentsFeePaidBy in DEPENDENTS_FEE_PAYER_LABELS ? DEPENDENTS_FEE_PAYER_LABELS[emp.dependentsFeePaidBy as DependentsFeePayer] : '—'}
+              />
+              <InfoRow label="فئة التأمين الطبي" value={emp.medicalInsuranceClass || '—'} />
+              <InfoRow
+                label="ذو إعاقة"
+                value={emp.isDisabled === undefined ? 'غير متاح لصلاحيتك' : emp.isDisabled ? `نعم${emp.muawamaCertExpiry ? ` — مواءمة حتى ${formatDate(emp.muawamaCertExpiry)}` : ' — بلا شهادة مواءمة'}` : 'لا'}
+                danger={!!emp.isDisabled && (!emp.muawamaCertExpiry || isExpiringSoon(emp.muawamaCertExpiry))}
+              />
+              <InfoRow label="طالب" value={emp.isStudent ? 'نعم' : 'لا'} />
+              {emp.contractType === 'PART_TIME' && (
+                <InfoRow label="ساعات الدوام الجزئي أسبوعياً" value={emp.partTimeWeeklyHours != null ? String(emp.partTimeWeeklyHours) : '—'} danger={emp.partTimeWeeklyHours == null} />
+              )}
+              <InfoRow
+                label="العقد موثّق في قوى"
+                value={emp.qiwaContractDocumented ? `نعم${emp.qiwaContractDocumentedAt ? ` — ${formatDate(emp.qiwaContractDocumentedAt)}` : ''}` : 'لا'}
+                danger={!emp.qiwaContractDocumented && !emp.isTerminated}
+              />
+              {emp.isTerminated && (
+                <>
+                  <InfoRow label="سبب الخروج" value={exitReasonLabel(emp.exitReason)} />
+                  <InfoRow label="خروج طوعي" value={yesNo(emp.exitVoluntary)} />
+                </>
+              )}
+            </InfoCard>
+          )}
+
+          {canSeeDecisionEngine && (
+            <InfoCard title="محرك القرارات" icon={<Gauge size={18} className="text-indigo-500" />}>
+              <div className="flex flex-col gap-3 py-2">
+                <Link
+                  href={`/workforce/true-cost?employeeId=${encodeURIComponent(emp.id)}`}
+                  className="flex items-center justify-between gap-3 px-4 py-3 rounded-xl bg-indigo-50 hover:bg-indigo-100 text-indigo-700 font-extrabold text-[13px] transition-colors"
+                >
+                  الكلفة الحقيقية لهذا الموظف <Calculator size={16} />
+                </Link>
+                <Link
+                  href={`/workforce/exit-cost?employeeId=${encodeURIComponent(emp.id)}`}
+                  className="flex items-center justify-between gap-3 px-4 py-3 rounded-xl bg-slate-50 hover:bg-slate-100 text-slate-700 font-extrabold text-[13px] transition-colors"
+                >
+                  كلفة الإنهاء <Ban size={16} />
+                </Link>
+              </div>
+            </InfoCard>
+          )}
+
         </div>
 
         {/* Muqeem (government residents platform): GOV operators, non-Saudi employees only */}
@@ -522,8 +621,37 @@ export default function EmployeeProfilePage() {
                 <Link href={settlementHref} className="underline font-black">معالج تصفية نهاية الخدمة</Link>
                 {' '}لأن المادة 88 توجب تسوية المستحقات خلال أسبوع من انتهاء العلاقة (وأسبوعين إذا أنهى العامل العقد). ويمكن إنشاء التصفية لاحقاً حتى بعد الإنهاء المباشر.
               </p>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mb-4">
+                <div>
+                  <label htmlFor="terminate-exit-reason" className="block text-[12px] font-extrabold text-slate-700 mb-1.5">
+                    تصنيف سبب الخروج <span className="text-red-500">*</span>
+                  </label>
+                  <select
+                    id="terminate-exit-reason"
+                    value={exitReason}
+                    onChange={(e) => chooseExitReason(e.target.value)}
+                    className="w-full px-3 py-2.5 bg-slate-50 border-2 border-transparent focus:border-red-300 focus:bg-white rounded-xl font-bold text-slate-800 text-[13px] focus:outline-none"
+                  >
+                    <option value="">— اختر —</option>
+                    {EXIT_REASONS.map((r) => <option key={r} value={r}>{EXIT_REASON_LABELS[r]}</option>)}
+                  </select>
+                </div>
+                <div>
+                  <label htmlFor="terminate-exit-voluntary" className="block text-[12px] font-extrabold text-slate-700 mb-1.5">هل الخروج طوعي؟</label>
+                  <select
+                    id="terminate-exit-voluntary"
+                    value={exitVoluntary}
+                    onChange={(e) => setExitVoluntary(e.target.value === 'yes' ? 'yes' : e.target.value === 'no' ? 'no' : '')}
+                    className="w-full px-3 py-2.5 bg-slate-50 border-2 border-transparent focus:border-red-300 focus:bg-white rounded-xl font-bold text-slate-800 text-[13px] focus:outline-none"
+                  >
+                    <option value="">غير محدد</option>
+                    <option value="yes">نعم، بقرار الموظف</option>
+                    <option value="no">لا</option>
+                  </select>
+                </div>
+              </div>
               <label htmlFor="terminate-reason" className="block text-[12px] font-extrabold text-slate-700 mb-1.5">
-                سبب الإنهاء <span className="text-red-500">*</span>
+                سبب الإنهاء (نص) <span className="text-red-500">*</span>
               </label>
               <textarea
                 id="terminate-reason"
@@ -594,7 +722,7 @@ export default function EmployeeProfilePage() {
                   <button
                     type="button"
                     onClick={handleTerminate}
-                    disabled={isTerminating || terminateReason.trim().length < 3 || (!!protectedLeaveMsg && !overrideProtectedLeave)}
+                    disabled={isTerminating || terminateReason.trim().length < 3 || !exitReason || (!!protectedLeaveMsg && !overrideProtectedLeave)}
                     className="flex-1 py-3.5 bg-red-600 hover:bg-red-700 text-white font-bold rounded-xl transition-all disabled:opacity-50 flex items-center justify-center gap-2"
                   >
                     {isTerminating ? <Clock size={16} className="animate-spin" /> : <Ban size={16} />}

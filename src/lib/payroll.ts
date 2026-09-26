@@ -15,6 +15,9 @@
 //   the link becomes final when that payroll is approved and is released when the draft is
 //   regenerated / dropped. Overtime approved after its month's payroll was generated is paid
 //   by the next generated month (overtimeDueInMonth).
+// - The overtime hourly basis is the company setting Company.overtimeHourlyBasis of the employee's
+//   legal company (else actual company; none -> BASIC), read at generation time: only DRAFT rows are
+//   (re)generated, so APPROVED / PAID rows keep the amount computed when they were generated.
 import { randomUUID } from 'crypto';
 import type { Prisma, PrismaClient } from '@prisma/client';
 import { prisma } from '@/lib/prisma';
@@ -36,7 +39,9 @@ import {
   employeeDeductionsTotal,
   monthIndex,
   payrollBreakdownColumns,
+  overtimeBasisForEmployee,
   overtimeDueInMonth,
+  OVERTIME_BASIS_SELECT,
   parsePayrollMonthKey,
   parsePayrollSettings,
   payrollMonthKey,
@@ -432,6 +437,8 @@ export async function generatePayrollMonth(
       // Payment-readiness review flags only (IBAN_MISSING / IBAN_INVALID / CASH).
       ibanNumber: true,
       salaryPaymentMethod: true,
+      // Company cost setting «طريقة حساب أجر العمل الإضافي» (legal company, else actual company).
+      ...OVERTIME_BASIS_SELECT,
       allowances: {
         where: { OR: [{ isMonthly: true }, { isMonthly: false, isPaid: false }] },
         select: {
@@ -579,6 +586,7 @@ export async function generatePayrollMonth(
       leaves: emp.leaves,
       loans,
       settings,
+      overtimeBasis: overtimeBasisForEmployee(emp),
       payment: { method: emp.salaryPaymentMethod, iban: readableIban(emp.ibanNumber) },
     });
 

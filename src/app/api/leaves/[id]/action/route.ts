@@ -22,6 +22,7 @@ import {
   rejectLeave,
   rejectLeaveReturn,
 } from '@/lib/hr-workflows';
+import { defaultExitVoluntary, type ExitReason } from '@/app/api/employees/_workforce-fields';
 
 export const dynamic = 'force-dynamic';
 
@@ -173,6 +174,15 @@ async function abscond(id: string, body: Extract<ActionBody, { action: 'ABSCOND'
       data: { isTerminated: true, terminationDate, employmentStatus: 'EXCLUDED' },
     });
     if (r.count === 0) throw conflict('الموظف مستبعد مسبقاً');
+    // Structured exit (workforce engine): "خرج ولم يعد" = ABSCONDING (انقطاع عن العمل), a voluntary
+    // exit by default (defaultExitVoluntary). Recorded only when the file has no exit reason yet, so a
+    // reason HR set by hand is never overwritten. The settlement reason (ARTICLE_80 or other) is still
+    // chosen by HR in the settlement: ABSCONDING -> ARTICLE_80 is only a reading (EXIT_REASON_TO_TERMINATION).
+    const exitReason: ExitReason = 'ABSCONDING';
+    const exit = await tx.employee.updateMany({
+      where: { id: leave.employeeId, exitReason: null },
+      data: { exitReason, exitVoluntary: defaultExitVoluntary(exitReason) },
+    });
     await deactivateEmployeeUser(tx, leave.employeeId, { reason: 'ABSCONDED', actorId: user.id, ipAddress });
     await logAudit(
       {
@@ -187,6 +197,7 @@ async function abscond(id: string, body: Extract<ActionBody, { action: 'ABSCOND'
           terminationDate: dateKey(terminationDate),
           reason: body.reason,
           writtenWarningAcknowledged: true,
+          exitReasonRecorded: exit.count > 0 ? exitReason : null,
         },
         ipAddress,
       },

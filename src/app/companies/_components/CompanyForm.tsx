@@ -3,9 +3,15 @@
 // Shared fields for the "new company" and "edit company" forms (private folder: not routed).
 
 import React, { useEffect, useState } from 'react';
-import { Building, Link2 } from 'lucide-react';
+import { Building, Factory, Link2 } from 'lucide-react';
 import FileUploadField from '@/components/FileUploadField';
 import { transliterateArabicToEnglish } from '@/lib/transliterate';
+import { useRole } from '@/context/RoleContext';
+import type { MedicalPremiumKey, OvertimeHourlyBasis } from '@/lib/workforce/company-settings';
+import { CostSettingsSection, EMPTY_MEDICAL_PREMIUMS, type IqamaFeeRuleView } from './CostSettingsSection';
+import { NitaqatActivitySelect } from './NitaqatActivitySelect';
+
+export { premiumsToForm, type IqamaFeeRuleView } from './CostSettingsSection';
 
 export interface CompanyFormData {
   nameArabic: string;
@@ -30,6 +36,21 @@ export interface CompanyFormData {
   moiNumber: string;
   /** GovPlatform.id of the Muqeem account ('' = not linked). */
   muqeemPlatformId: string;
+  /** نشاط المنشأة في نطاقات كما كُتب في المرحلة الأولى (نص حر، للقراءة فقط الآن). */
+  nitaqatActivity: string;
+  /**
+   * NitaqatActivity.key المختار من سجل نطاقات. undefined = لم يغيّره المستخدم (لا يُرسل فيبقى المخزَّن كما هو)،
+   * '' = إلغاء الاختيار.
+   */
+  nitaqatActivityKey?: string;
+  /** منشأة صناعية مرخّصة (المقابل المالي ملغى منذ 2025-12-17). */
+  isIndustrialLicensed: boolean;
+  /** «إعدادات الكلفة»: طريقة حساب أجر العمل الإضافي (تُستخدم في المسير ومحرك القرارات). */
+  overtimeHourlyBasis: OvertimeHourlyBasis;
+  /** أقساط التأمين الطبي السنوية لكل فئة ولكل مرافق (نص؛ فارغ = غير مدخل). */
+  medicalPremiums: Record<MedicalPremiumKey, string>;
+  /** رسوم الإقامة السنوية (نص؛ فارغ = قيمة سجل القواعد). */
+  iqamaFeeYear: string;
 }
 
 export const EMPTY_COMPANY_FORM: CompanyFormData = {
@@ -53,15 +74,23 @@ export const EMPTY_COMPANY_FORM: CompanyFormData = {
   trademarkCertUrl: '',
   moiNumber: '',
   muqeemPlatformId: '',
+  nitaqatActivity: '',
+  isIndustrialLicensed: false,
+  overtimeHourlyBasis: 'BASIC',
+  medicalPremiums: EMPTY_MEDICAL_PREMIUMS,
+  iqamaFeeYear: '',
 };
 
 interface CompanyFormFieldsProps {
   mode: 'new' | 'edit';
   formData: CompanyFormData;
   setFormData: React.Dispatch<React.SetStateAction<CompanyFormData>>;
+  /** Overtime basis stored for the company (edit): changing it asks for confirmation. */
+  storedOvertimeBasis?: OvertimeHourlyBasis;
+  iqamaFeeRule?: IqamaFeeRuleView | null;
 }
 
-export function CompanyFormFields({ mode, formData, setFormData }: CompanyFormFieldsProps) {
+export function CompanyFormFields({ mode, formData, setFormData, storedOvertimeBasis, iqamaFeeRule }: CompanyFormFieldsProps) {
   const set = (field: keyof CompanyFormData) => (e: { target: { value: string } }) => {
     const value = e.target.value;
     setFormData((prev) => ({ ...prev, [field]: value }));
@@ -162,6 +191,17 @@ export function CompanyFormFields({ mode, formData, setFormData }: CompanyFormFi
 
       {/* SEGMENT 5: Muqeem link */}
       <MuqeemLinkSection formData={formData} setFormData={setFormData} />
+
+      {/* SEGMENT 6: Workforce decision engine (Nitaqat activity, industrial licence) */}
+      <WorkforceSection mode={mode} formData={formData} setFormData={setFormData} />
+
+      {/* SEGMENT 7: «إعدادات الكلفة» (overtime basis, medical premiums, iqama fee) */}
+      <CostSettingsSection
+        formData={formData}
+        setFormData={setFormData}
+        storedOvertimeBasis={storedOvertimeBasis ?? 'BASIC'}
+        iqamaFeeRule={iqamaFeeRule ?? null}
+      />
     </>
   );
 }
@@ -308,6 +348,65 @@ function MuqeemLinkSection({ formData, setFormData }: Pick<CompanyFormFieldsProp
           )}
         </div>
       </div>
+    </div>
+  );
+}
+
+/** Roles that may change the Nitaqat activity and the industrial licence (same rule as the API: _workforce.ts). */
+const COMPANY_WORKFORCE_ROLES: readonly string[] = ['SUPER_ADMIN', 'COMPANY_ADMIN'];
+
+function WorkforceSection({ mode, formData, setFormData }: Pick<CompanyFormFieldsProps, 'mode' | 'formData' | 'setFormData'>) {
+  const { role } = useRole();
+  const canEdit = !!role && COMPANY_WORKFORCE_ROLES.includes(role);
+
+  return (
+    <div id="company-nitaqat" className="relative pb-8 pt-8 border-t border-slate-100 scroll-mt-32">
+      <div className="flex items-center gap-4 mb-4">
+        <h2 className="text-[1.3rem] font-black text-slate-900">نطاقات والمقابل المالي</h2>
+        <span className="text-[11px] font-black px-3 py-1.5 rounded-xl text-slate-500 bg-slate-100">محرك القرارات</span>
+      </div>
+      <p className="text-[12px] font-bold text-slate-500 mb-8 leading-relaxed">
+        تُستخدم في حساب نطاق المنشأة والكلفة الحقيقية للموظفين. اختر النشاط من سجل نطاقات (أنشطة ملحق دليل نطاقات المطوّر الصادر عن وزارة الموارد البشرية).
+      </p>
+
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-x-8 gap-y-10">
+        <NitaqatActivitySelect
+          mode={mode}
+          value={formData.nitaqatActivityKey}
+          legacyText={formData.nitaqatActivity}
+          canEdit={canEdit}
+          onChange={(key) => setFormData((prev) => ({ ...prev, nitaqatActivityKey: key }))}
+        />
+
+        <div className="flex flex-col gap-2">
+          <label
+            className={`flex items-start gap-3 p-4 rounded-[1.25rem] border-2 transition-colors ${formData.isIndustrialLicensed ? 'border-blue-200 bg-blue-50/50' : 'border-slate-100 bg-[#F4F4F6]'} ${canEdit ? 'cursor-pointer' : 'opacity-60 cursor-not-allowed'}`}
+          >
+            <input
+              type="checkbox"
+              name="isIndustrialLicensed"
+              checked={formData.isIndustrialLicensed}
+              disabled={!canEdit}
+              onChange={(e) => {
+                const checked = e.target.checked;
+                setFormData((prev) => ({ ...prev, isIndustrialLicensed: checked }));
+              }}
+              className="mt-1 w-4 h-4 rounded border-slate-300 accent-blue-600"
+            />
+            <span>
+              <span className="flex items-center gap-2 text-[13px] font-extrabold text-slate-800">
+                <Factory size={15} className="text-slate-400" /> منشأة صناعية مرخّصة
+              </span>
+              <span className="block text-[11px] font-bold text-slate-500 mt-1 leading-relaxed">
+                المقابل المالي ملغى للمنشآت الصناعية المرخّصة منذ 17 ديسمبر 2025
+              </span>
+            </span>
+          </label>
+        </div>
+      </div>
+      {!canEdit && (
+        <p className="mt-4 text-[11px] font-bold text-slate-500">تعديل نشاط نطاقات والترخيص الصناعي متاح لمدير النظام وصاحب العمل فقط.</p>
+      )}
     </div>
   );
 }

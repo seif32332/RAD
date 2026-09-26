@@ -16,6 +16,7 @@
 // - NEW-regime rows are PROVISIONAL (awaiting the counsel's confirmation); results computed
 //   from them carry `provisional: true`. They do not block anything.
 import { roundMoney, sumMoney } from '@/lib/money';
+import { isSaudiNational } from '@/lib/nationality';
 
 export type GosiRegimeValue = 'OLD' | 'NEW' | 'UNKNOWN';
 
@@ -67,20 +68,12 @@ export const DEFAULT_GOSI_RATES: ReadonlyArray<GosiRateLike> = [
   },
 ];
 
-/** Saudi detection for GOSI: 'سعودي' / 'سعودية' / 'SAUDI' / 'Saudi Arabia' ... (not 'غير سعودي'). */
+/**
+ * Saudi detection for GOSI. Thin wrapper kept for existing callers: delegates to THE canonical rule in
+ * src/lib/nationality.ts ('سعودي' / 'سعودية' / 'SAUDI' / 'Saudi Arabia' ... not 'غير سعودي').
+ */
 export function isSaudiForGosi(nationality: string | null | undefined): boolean {
-  const nat = (nationality ?? '').trim().toLowerCase();
-  if (!nat) return false;
-  // "غير سعودي" / "non-saudi" mean the opposite even though they contain the word.
-  if (nat.includes('غير') || /\bnon[\s-]?saudi\b/.test(nat)) return false;
-  return (
-    nat === 'saudi' ||
-    nat === 'saudi arabia' ||
-    nat === 'sa' ||
-    nat === 'ksa' ||
-    nat === 'السعودية' ||
-    nat.includes('سعودي')
-  );
+  return isSaudiNational(nationality);
 }
 
 export interface GosiAllowanceLike {

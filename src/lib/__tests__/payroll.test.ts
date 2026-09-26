@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { roundMoney } from '@/lib/money';
 import {
   basicHourlyRate,
   computePayrollLine,
@@ -12,6 +13,11 @@ import {
   leaveDeductionForMonth,
   monthlyWage,
   overtimeAmount,
+  overtimeBasisForEmployee,
+  overtimeHourlyRate,
+  normalizeOvertimeBasis,
+  payrollCompanyId,
+  totalHourlyRate,
   parsePayrollMonthKey,
   parsePayrollSettings,
   payrollMonthKey,
@@ -86,6 +92,73 @@ describe('overtime', () => {
   it('lump sum requests pay the fixed amount; negative input is ignored', () => {
     expect(overtimeAmount({ date: d('2026-09-23'), type: 'LUMP_SUM', hours: 5, amount: 300 }, emp)).toBe(300);
     expect(overtimeAmount({ date: d('2026-09-23'), type: 'HOURS', hours: -3, amount: null }, emp)).toBe(0);
+  });
+});
+
+describe('overtime hourly basis (company setting Company.overtimeHourlyBasis)', () => {
+  // basic 6,000 + recurring allowances 2,000 (+ a one-off bonus that never counts), 8 h/day.
+  // basic hourly = 6,000 / 240 = 25; total hourly = 8,000 / 240 = 33.333...
+  const worker = { basicSalary: 6000, allowances: [housing, bonus] };
+  const weekday = { date: d('2026-09-23'), type: 'HOURS', hours: 10, amount: null };
+  const friday = { date: d('2026-09-25'), type: 'HOURS', hours: 10, amount: null };
+
+  it('BASIC (default) reproduces the historical amount exactly, allowances ignored', () => {
+    // The expression overtimeAmount used before the setting existed.
+    const historical = (h: number, basic: number, m: number) => roundMoney(h * (basic / (30 * 8)) * m);
+    for (const [ot, m] of [[weekday, 1.5], [friday, 2]] as const) {
+      expect(overtimeAmount(ot, worker)).toBe(historical(10, 6000, m));
+      expect(overtimeAmount(ot, worker, DEFAULT_PAYROLL_SETTINGS, 'BASIC')).toBe(overtimeAmount(ot, { basicSalary: 6000 }));
+    }
+    expect(overtimeAmount(weekday, worker)).toBe(375);
+    expect(overtimeAmount(friday, worker)).toBe(500);
+    // Odd rates: same float expression as before the setting existed.
+    for (const basic of [3333.33, 7777, 12345.67]) {
+      for (const hours of [0.5, 1.25, 7, 13.3]) {
+        const ot = { date: d('2026-09-23'), type: 'HOURS', hours, amount: null };
+        expect(overtimeAmount(ot, { basicSalary: basic, allowances: [housing] }, DEFAULT_PAYROLL_SETTINGS, 'BASIC')).toBe(historical(hours, basic, 1.5));
+      }
+    }
+  });
+
+  it('TOTAL_PLUS_HALF_BASIC: total hourly + (multiplier − 1) × basic hourly', () => {
+    const w = { basicSalary: 6000, allowances: [{ amount: 2000, isMonthly: true }, bonus] };
+    expect(totalHourlyRate(w)).toBeCloseTo(33.3333, 4);
+    // weekday 1.5: 10 × (33.333 + 0.5 × 25) = 458.33
+    expect(overtimeHourlyRate(w, 1.5, DEFAULT_PAYROLL_SETTINGS, 'TOTAL_PLUS_HALF_BASIC')).toBeCloseTo(45.8333, 4);
+    expect(overtimeAmount(weekday, w, DEFAULT_PAYROLL_SETTINGS, 'TOTAL_PLUS_HALF_BASIC')).toBe(458.33);
+    // weekend 2.0: 10 × (33.333 + 1.0 × 25) = 583.33
+    expect(overtimeAmount(friday, w, DEFAULT_PAYROLL_SETTINGS, 'TOTAL_PLUS_HALF_BASIC')).toBe(583.33);
+    // Custom multipliers / hours per day.
+    const s = { ...DEFAULT_PAYROLL_SETTINGS, overtimeMultiplier: 1.75, workHoursPerDay: 10 };
+    expect(overtimeAmount(weekday, w, s, 'TOTAL_PLUS_HALF_BASIC')).toBe(416.67); // 10 × (8,000/300 + 0.75 × 20)
+    // No allowances: total = basic -> basic hourly × multiplier (same as BASIC).
+    expect(overtimeAmount(weekday, { basicSalary: 6000 }, DEFAULT_PAYROLL_SETTINGS, 'TOTAL_PLUS_HALF_BASIC')).toBe(375);
+    // Lump sums are unaffected by the basis.
+    expect(overtimeAmount({ date: d('2026-09-23'), type: 'LUMP_SUM', hours: 5, amount: 300 }, w, DEFAULT_PAYROLL_SETTINGS, 'TOTAL_PLUS_HALF_BASIC')).toBe(300);
+  });
+
+  it('company resolution: legal company, else actual company, else BASIC; unknown values are BASIC', () => {
+    expect(normalizeOvertimeBasis('total_plus_half_basic')).toBe('TOTAL_PLUS_HALF_BASIC');
+    expect(normalizeOvertimeBasis('X')).toBe('BASIC');
+    expect(normalizeOvertimeBasis(null)).toBe('BASIC');
+    const T = { overtimeHourlyBasis: 'TOTAL_PLUS_HALF_BASIC' };
+    const B = { overtimeHourlyBasis: 'BASIC' };
+    expect(overtimeBasisForEmployee({ legalCompany: B, actualCompany: T })).toBe('BASIC');
+    expect(overtimeBasisForEmployee({ legalCompany: null, actualCompany: T })).toBe('TOTAL_PLUS_HALF_BASIC');
+    expect(overtimeBasisForEmployee({ legalCompany: null, actualCompany: null })).toBe('BASIC');
+    expect(payrollCompanyId({ legalCompanyId: null, actualCompanyId: 'a' })).toBe('a');
+    expect(payrollCompanyId({ legalCompanyId: 'l', actualCompanyId: 'a' })).toBe('l');
+  });
+
+  it('payroll line: BASIC / omitted basis give the historical overtime; TOTAL_PLUS_HALF_BASIC uses the recurring allowances', () => {
+    const overtimes = [weekday, friday];
+    const employee = { basicSalary: 6000, allowances: [{ name: 'بدل سكن', amount: 2000, isMonthly: true }] };
+    const omitted = line({ overtimes, employee });
+    expect(omitted.overtimeCost).toBe(875); // 375 + 500
+    expect(line({ overtimes, employee, overtimeBasis: 'BASIC' }).overtimeCost).toBe(875);
+    const lit = line({ overtimes, employee, overtimeBasis: 'TOTAL_PLUS_HALF_BASIC' });
+    expect(lit.overtimeCost).toBe(1041.66); // 458.33 + 583.33
+    expect(lit.netSalary - omitted.netSalary).toBeCloseTo(1041.66 - 875, 2);
   });
 });
 

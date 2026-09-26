@@ -1,0 +1,1728 @@
+[
+ {
+  "groupNameAr": "مهن المحاسبة",
+  "groupNameEn": "Accounting professions",
+  "occupations": [
+   {
+    "code": "1112131",
+    "nameEn": "Director of Financial Affairs and Accounting",
+    "nameAr": null
+   },
+   {
+    "code": "1217131",
+    "nameEn": "Director of Accounts and Budget",
+    "nameAr": null
+   },
+   {
+    "code": "1217281",
+    "nameEn": "Director of Financial Reporting",
+    "nameAr": null
+   },
+   {
+    "code": "1217331",
+    "nameEn": "Director of Zakat and Tax Management",
+    "nameAr": null
+   },
+   {
+    "code": "1217381",
+    "nameEn": "Director of Internal Audit",
+    "nameAr": null
+   },
+   {
+    "code": "1217661",
+    "nameEn": "Director General of Audit",
+    "nameAr": null
+   },
+   {
+    "code": "2218191",
+    "nameEn": "Head of Internal Audit Programs",
+    "nameAr": null
+   },
+   {
+    "code": "2621031",
+    "nameEn": "Financial Controller",
+    "nameAr": null
+   },
+   {
+    "code": "2621151",
+    "nameEn": "Senior Financial Auditor",
+    "nameAr": null
+   },
+   {
+    "code": "2621141",
+    "nameEn": "Financial Audit Supervisor",
+    "nameAr": null
+   },
+   {
+    "code": "3621141",
+    "nameEn": "Financial Audit Supervisor",
+    "nameAr": null
+   },
+   {
+    "code": "3621151",
+    "nameEn": "Senior Financial Auditor",
+    "nameAr": null
+   },
+   {
+    "code": "2622011",
+    "nameEn": "General Accountant",
+    "nameAr": null
+   },
+   {
+    "code": "2622021",
+    "nameEn": "Cost Accountant",
+    "nameAr": null
+   },
+   {
+    "code": "2622031",
+    "nameEn": "Auditor",
+    "nameAr": null
+   },
+   {
+    "code": "2621081",
+    "nameEn": "Internal Auditing",
+    "nameAr": null
+   },
+   {
+    "code": "3621012",
+    "nameEn": "General Accounting Technician",
+    "nameAr": null
+   },
+   {
+    "code": "3621022",
+    "nameEn": "Audit Technician",
+    "nameAr": null
+   },
+   {
+    "code": "3621032",
+    "nameEn": "Cost Accounting Technician",
+    "nameAr": null
+   },
+   {
+    "code": "4211173",
+    "nameEn": "Cost Clerk",
+    "nameAr": null
+   },
+   {
+    "code": "4211183",
+    "nameEn": "Finance Clerk",
+    "nameAr": null
+   },
+   {
+    "code": "4121044",
+    "nameEn": "Bookkeeping Clerk",
+    "nameAr": null
+   },
+   {
+    "code": "121101",
+    "nameEn": "Finance Manager",
+    "nameAr": null
+   },
+   {
+    "code": "121102",
+    "nameEn": "Accounts Manager",
+    "nameAr": null
+   },
+   {
+    "code": "121103",
+    "nameEn": "Tariff Accounts Manager",
+    "nameAr": null
+   },
+   {
+    "code": "121104",
+    "nameEn": "Treasury Manager",
+    "nameAr": null
+   },
+   {
+    "code": "121105",
+    "nameEn": "Budget Manager",
+    "nameAr": null
+   },
+   {
+    "code": "121106",
+    "nameEn": "Audit Manager",
+    "nameAr": null
+   },
+   {
+    "code": "121107",
+    "nameEn": "Internal Audit Manager",
+    "nameAr": null
+   },
+   {
+    "code": "121113",
+    "nameEn": "Collections Manager",
+    "nameAr": null
+   },
+   {
+    "code": "121116",
+    "nameEn": "Treasury Manager",
+    "nameAr": null
+   },
+   {
+    "code": "241102",
+    "nameEn": "Cost Accountant",
+    "nameAr": null
+   },
+   {
+    "code": "241106",
+    "nameEn": "Financial Controller",
+    "nameAr": null
+   },
+   {
+    "code": "241103",
+    "nameEn": "Internal Auditing",
+    "nameAr": null
+   },
+   {
+    "code": "431101",
+    "nameEn": "Accounts Clerk",
+    "nameAr": null
+   },
+   {
+    "code": "241101",
+    "nameEn": "Accountant",
+    "nameAr": null
+   },
+   {
+    "code": "241107",
+    "nameEn": "Financial Budgeting Specialist",
+    "nameAr": null
+   },
+   {
+    "code": "241108",
+    "nameEn": "Tax Accounting Specialist",
+    "nameAr": null
+   },
+   {
+    "code": "241105",
+    "nameEn": "Certified Public Accountant",
+    "nameAr": null
+   },
+   {
+    "code": "335202",
+    "nameEn": "Tax Officer",
+    "nameAr": null
+   },
+   {
+    "code": "331301",
+    "nameEn": "Accounting Assistant",
+    "nameAr": null
+   },
+   {
+    "code": "241109",
+    "nameEn": "Inventory Control Specialist",
+    "nameAr": null
+   },
+   {
+    "code": "241110",
+    "nameEn": "Warehouse Specialist",
+    "nameAr": null
+   },
+   {
+    "code": "331302",
+    "nameEn": "Inventory Controller",
+    "nameAr": null
+   }
+  ],
+  "phases": [
+   {
+    "pct": 40,
+    "effectiveFrom": "2025-10-27",
+    "appliesTo": "establishments with >=5 workers in accounting professions"
+   },
+   {
+    "pct": 50,
+    "effectiveFrom": "2026-10-27",
+    "appliesTo": ">=5"
+   },
+   {
+    "pct": 60,
+    "effectiveFrom": "2027-10-27",
+    "appliesTo": ">=5"
+   },
+   {
+    "pct": 70,
+    "effectiveFrom": "2028-10-27",
+    "appliesTo": ">=5 (continues after phase 5)"
+   },
+   {
+    "pct": 30,
+    "effectiveFrom": "2029-10-27",
+    "appliesTo": "establishments with 3 or 4 workers in accounting professions"
+   }
+  ],
+  "minEstablishmentSize": 5,
+  "minEstablishmentSizeNote": "5+ workers in accounting professions for phases 1-4; phase 5 (27/10/2029) extends a 30% rate to establishments with 3-4",
+  "minWage": {
+   "bachelor": 6000,
+   "diploma": 4500,
+   "currency": "SAR",
+   "basis": "GOSI contributory wage (monthly)"
+  },
+  "otherConditions": [
+   "Accountant must hold SOCPA professional accreditation or is not counted",
+   "Accounting firms (licensed CPA offices / professional accounting & audit firms) follow the executive regulations of the Accounting and Auditing Profession Law (Ministerial Resolution 658 dated 14/11/1442H) instead",
+   "Higher rate applies if another decision targets the same profession",
+   "Applies to job title and actual work"
+  ],
+  "rounding": "nearest integer (examples: 9.2->9, 11.5->12)",
+  "scope": "All private-sector establishments in KSA (nationwide); all activities",
+  "calculationLevel": "establishment (no entity wording in this guide)",
+  "decisionNo": "103108",
+  "decisionDate": "2025-01-26",
+  "gracePeriod": "9 months (26/01/2025 -> 27/10/2025)",
+  "sourceFile": "acct.pdf",
+  "sourceUrl": "https://www.hrsd.gov.sa/sites/default/files/2025-03/Procedural%20Manual%20for%20the%20Saudization%20Resolution%20of%20Accounting%20Professions_1.pdf",
+  "page": "p1 (decision no/date), p5 (3.1-3.4 scope, accreditation, wage), p6-7 (Table 1 codes; p6 visually verified), p8 (rounding example), p9 (phase table, visually verified)",
+  "status": "VERIFIED_PRIMARY",
+  "note": "This file is the English version of the procedural manual; Arabic occupation names are not in it (nameAr=null). Some titles repeat under two codes (e.g. Treasury Manager 121104/121116; Financial Audit Supervisor 2621141/3621141). Penalties per Ministerial Resolutions 75913 (19/05/1445H) and 44558 (03/04/1446H).",
+  "occupationCount": 44
+ },
+ {
+  "groupNameAr": "مهن طب الأسنان",
+  "occupations": [
+   {
+    "code": "226105",
+    "nameAr": "طبيب صحة عامة أسنان"
+   },
+   {
+    "code": "226103",
+    "nameAr": "جراح فم ووجه وفكين"
+   },
+   {
+    "code": "226108",
+    "nameAr": "طبيب تقويم أسنان ووجه وفكين"
+   },
+   {
+    "code": "226104",
+    "nameAr": "طبيب معالجة لبية"
+   },
+   {
+    "code": "226101",
+    "nameAr": "طبيب أسنان عام"
+   },
+   {
+    "code": "226107",
+    "nameAr": "طبيب أسنان الأسرة"
+   },
+   {
+    "code": "2313021",
+    "nameAr": "طبيب اختصاصي جراحة فم وأسنان"
+   },
+   {
+    "code": "2313101",
+    "nameAr": "أخصائي الاستعاضة السنية"
+   },
+   {
+    "code": "2313091",
+    "nameAr": "أخصائي طب أسنان أطفال"
+   },
+   {
+    "code": "2313111",
+    "nameAr": "أخصائي أمراض اللثة"
+   },
+   {
+    "code": "226102",
+    "nameAr": "طبيب فم ووجه وفكين"
+   },
+   {
+    "code": "2313041",
+    "nameAr": "استشاري طب أسنان"
+   },
+   {
+    "code": "2313031",
+    "nameAr": "طبيب اسنان صحة عام"
+   },
+   {
+    "code": "226109",
+    "nameAr": "طبيب تخدير أسنان"
+   },
+   {
+    "code": "226106",
+    "nameAr": "طبيب أسنان أطفال"
+   },
+   {
+    "code": "2313061",
+    "nameAr": "استشاري أسنان صحة عامة"
+   },
+   {
+    "code": "2313071",
+    "nameAr": "اخصائي تقويم أسنان"
+   },
+   {
+    "code": "2313051",
+    "nameAr": "استشاري جراحة فم وأسنان"
+   },
+   {
+    "code": "2421251",
+    "nameAr": "أستاذ طب أسنان"
+   },
+   {
+    "code": "2313011",
+    "nameAr": "طبيب أسنان عام"
+   }
+  ],
+  "phases": [
+   {
+    "pct": 45,
+    "effectiveFrom": "2025-07-27"
+   },
+   {
+    "pct": 55,
+    "effectiveFrom": "2026-01-27"
+   }
+  ],
+  "minEstablishmentSize": 3,
+  "minEstablishmentSizeNote": "3+ workers in the listed dental professions",
+  "minWage": {
+   "amount": 9000,
+   "currency": "SAR",
+   "basis": "GOSI contributory wage (monthly)"
+  },
+  "otherConditions": [
+   "SCFHS professional accreditation required",
+   "Applied to all actual workers in dental professions",
+   "Higher rate applies if another decision targets the same profession"
+  ],
+  "rounding": "0.5 rounds up to 1 (lookup tables for 3-40 workers; example 6.75->7)",
+  "scope": "All private-sector establishments in KSA (nationwide)",
+  "calculationLevel": "establishment",
+  "decisionNo": "103107",
+  "decisionDate": "2025-01-26",
+  "gracePeriod": "6 months to phase 1",
+  "sourceFile": "dental.pdf",
+  "sourceUrl": "https://www.hrsd.gov.sa/sites/default/files/2025-01/%D8%A7%D9%84%D8%AF%D9%84%D9%8A%D9%84%20%D8%A7%D9%84%D8%A5%D8%AC%D8%B1%D8%A7%D8%A6%D9%8A%20%D9%84%D9%82%D8%B1%D8%A7%D8%B1%20%D8%AA%D9%88%D8%B7%D9%8A%D9%86%20%D9%85%D9%87%D9%86%D8%A9%20%D8%B7%D8%A8%20%D8%A7%D9%84%D8%A3%D8%B3%D9%86%D8%A7%D9%86_1.pdf",
+  "page": "p1, p4 (phases table, scope, wage, Table 1 - visually verified), p5 (rounding tables), p6 (example, timeline - visually verified)",
+  "status": "VERIFIED_PRIMARY",
+  "note": "Occupation names transcribed from the rendered page (the text layer has broken Arabic ligatures). Penalties per Ministerial Resolutions 75913 (19/05/1445H) and 44558 (03/04/1446H).",
+  "occupationCount": 20
+ },
+ {
+  "groupNameAr": "مهن الصيدلة",
+  "occupations": [
+   {
+    "code": "2321011",
+    "nameAr": "اختصاصي ادوية عام"
+   },
+   {
+    "code": "2321021",
+    "nameAr": "اختصاصي أدوية طبيعية"
+   },
+   {
+    "code": "2321031",
+    "nameAr": "اختصاصي امصال"
+   },
+   {
+    "code": "2321051",
+    "nameAr": "اختصاصي أدوية كيميائية"
+   },
+   {
+    "code": "2321061",
+    "nameAr": "أخصائي سموم"
+   },
+   {
+    "code": "2321071",
+    "nameAr": "استشاري أدوية"
+   },
+   {
+    "code": "2321081",
+    "nameAr": "مدرب علوم مخبرية"
+   },
+   {
+    "code": "2322011",
+    "nameAr": "صيدلي"
+   },
+   {
+    "code": "2322021",
+    "nameAr": "اختصاصي بكتيريا وعقاقير-الاخرون"
+   },
+   {
+    "code": "2322031",
+    "nameAr": "مدرب صيدلة"
+   },
+   {
+    "code": "134211",
+    "nameAr": "مدير صيدلة"
+   },
+   {
+    "code": "134212",
+    "nameAr": "مدير رقابة صيدلية"
+   },
+   {
+    "code": "211303",
+    "nameAr": "أخصائي علوم صيدلانية"
+   },
+   {
+    "code": "213109",
+    "nameAr": "أخصائي علوم أدوية"
+   },
+   {
+    "code": "213112",
+    "nameAr": "أخصائي علوم بكتيريا"
+   },
+   {
+    "code": "213113",
+    "nameAr": "أخصائي علوم أوبئة"
+   },
+   {
+    "code": "226201",
+    "nameAr": "صيدلي"
+   },
+   {
+    "code": "226202",
+    "nameAr": "صيدلي رعاية صيدلانية"
+   },
+   {
+    "code": "223003",
+    "nameAr": "أخصائي أدوية طبيعية"
+   },
+   {
+    "code": "242112",
+    "nameAr": "أخصائي إدارة صيدلانية"
+   },
+   {
+    "code": "243302",
+    "nameAr": "أخصائي مبيعات منتجات صيدلانية"
+   }
+  ],
+  "phases": [
+   {
+    "pct": 35,
+    "effectiveFrom": "2025-07-27",
+    "activity": "الصيدليات المجتمعية والمجمعات الطبية",
+    "activityCodes": [
+     "477211 أنشطة الصيدليات",
+     "862063 المجمعات الطبية العامة",
+     "862040 المجمعات الطبية المتخصصة"
+    ]
+   },
+   {
+    "pct": 65,
+    "effectiveFrom": "2025-07-27",
+    "activity": "المستشفيات",
+    "activityCodes": [
+     "861011 المستشفيات"
+    ]
+   },
+   {
+    "pct": 55,
+    "effectiveFrom": "2025-07-27",
+    "activity": "باقي أنشطة الصيدلة الأخرى وتشمل (مصانع الأدوية، شركات توزيع الأدوية والمكاتب العلمية وغيرها)",
+    "activityCodes": []
+   }
+  ],
+  "minEstablishmentSize": 5,
+  "minEstablishmentSizeNote": "5+ workers in pharmacy professions (Table 1)",
+  "minWage": {
+   "amount": 7000,
+   "currency": "SAR",
+   "basis": "GOSI contributory wage (monthly)"
+  },
+  "otherConditions": [
+   "SCFHS professional accreditation required",
+   "Higher rate applies if another decision targets the same profession"
+  ],
+  "rounding": "0.5 rounds up to 1 (lookup tables for 5-38 workers per activity group; example 5.25->5)",
+  "scope": "All private-sector establishments in KSA operating in pharmacy activities; the % depends on the activity (activity codes printed)",
+  "calculationLevel": "establishment",
+  "decisionNo": "103111",
+  "decisionDate": "2025-01-26",
+  "gracePeriod": "6 months",
+  "sourceFile": "pharm.pdf",
+  "sourceUrl": "https://www.hrsd.gov.sa/sites/default/files/2025-01/%D8%A7%D9%84%D8%AF%D9%84%D9%8A%D9%84%20%D8%A7%D9%84%D8%A5%D8%AC%D8%B1%D8%A7%D8%A6%D9%8A%20%D9%84%D9%82%D8%B1%D8%A7%D8%B1%20%D8%AA%D9%88%D8%B7%D9%8A%D9%86%20%D9%85%D9%87%D9%86%D8%A9%20%D8%A7%D9%84%D8%B5%D9%8A%D8%AF%D9%84%D8%A9_1.pdf",
+  "page": "p1, p3 (intro), p4 (activity/% table, scope, wage - visually verified), p5 (Table 1 + rounding tables - visually verified), p6 (example, timeline - visually verified)",
+  "status": "VERIFIED_PRIMARY",
+  "note": "The worked example on p6 labels the step \"(%45)\" but computes 15 x 35% = 5.25 (internal typo in the guide). Penalties per Ministerial Resolutions 75913 (19/05/1445H) and 44558 (03/04/1446H).",
+  "occupationCount": 21
+ },
+ {
+  "groupNameAr": "المهن الهندسية",
+  "occupations": [
+   {
+    "code": "215104",
+    "nameAr": "مهندس كهروميكانيكي"
+   },
+   {
+    "code": "215105",
+    "nameAr": "مهندس أتمتة"
+   },
+   {
+    "code": "215106",
+    "nameAr": "مهندس توليد طاقة"
+   },
+   {
+    "code": "216102",
+    "nameAr": "مهندس معماري داخلي"
+   },
+   {
+    "code": "214206",
+    "nameAr": "مهندس طرق"
+   },
+   {
+    "code": "214207",
+    "nameAr": "مهندس جسور"
+   },
+   {
+    "code": "214404",
+    "nameAr": "مهندس طيران"
+   },
+   {
+    "code": "215108",
+    "nameAr": "مهندس كهربائي تمديدات"
+   },
+   {
+    "code": "214602",
+    "nameAr": "مهندس معادن"
+   },
+   {
+    "code": "214407",
+    "nameAr": "مهندس ميكانيكي لحام"
+   },
+   {
+    "code": "214102",
+    "nameAr": "مهندس إنتاج"
+   },
+   {
+    "code": "215101",
+    "nameAr": "مهندس كهربائي"
+   },
+   {
+    "code": "214401",
+    "nameAr": "مهندس ميكانيكي"
+   },
+   {
+    "code": "216201",
+    "nameAr": "مهندس تصميم مواقع"
+   },
+   {
+    "code": "214101",
+    "nameAr": "مهندس صناعي"
+   },
+   {
+    "code": "215201",
+    "nameAr": "مهندس إلكترونيات"
+   },
+   {
+    "code": "214301",
+    "nameAr": "مهندس بيئي"
+   },
+   {
+    "code": "214406",
+    "nameAr": "مهندس تدفئة وتهوية وتكييف"
+   },
+   {
+    "code": "214410",
+    "nameAr": "مهندس مركبات"
+   },
+   {
+    "code": "214501",
+    "nameAr": "مهندس كيميائي"
+   },
+   {
+    "code": "214915",
+    "nameAr": "مهندس نووي"
+   },
+   {
+    "code": "214405",
+    "nameAr": "مهندس بحري"
+   },
+   {
+    "code": "215107",
+    "nameAr": "مهندس نقل وتوزيع طاقة"
+   },
+   {
+    "code": "214904",
+    "nameAr": "مهندس مواد"
+   },
+   {
+    "code": "214201",
+    "nameAr": "مهندس مدني"
+   },
+   {
+    "code": "214601",
+    "nameAr": "مهندس تعدين"
+   },
+   {
+    "code": "216101",
+    "nameAr": "مهندس معماري"
+   },
+   {
+    "code": "214409",
+    "nameAr": "مهندس ميكانيكي آليات ثقيلة"
+   },
+   {
+    "code": "214103",
+    "nameAr": "مهندس إنتاج تقني"
+   },
+   {
+    "code": "214202",
+    "nameAr": "مهندس مدني تقني"
+   },
+   {
+    "code": "214204",
+    "nameAr": "مهندس جيوتقني"
+   },
+   {
+    "code": "214205",
+    "nameAr": "مهندس إنشائي"
+   },
+   {
+    "code": "214302",
+    "nameAr": "مهندس معالجة مياه"
+   },
+   {
+    "code": "214303",
+    "nameAr": "مهندس صحي"
+   },
+   {
+    "code": "214402",
+    "nameAr": "مهندس ميكانيكي تقني"
+   },
+   {
+    "code": "214408",
+    "nameAr": "مهندس ميكانيكي قطارات"
+   },
+   {
+    "code": "214411",
+    "nameAr": "مهندس توربينات"
+   },
+   {
+    "code": "214412",
+    "nameAr": "مهندس ميكاترونكس"
+   },
+   {
+    "code": "214502",
+    "nameAr": "مهندس كيميائي تقني"
+   },
+   {
+    "code": "214504",
+    "nameAr": "مهندس تحلية مياه"
+   },
+   {
+    "code": "214603",
+    "nameAr": "مهندس نفط وغاز"
+   },
+   {
+    "code": "214902",
+    "nameAr": "مهندس تكاليف"
+   },
+   {
+    "code": "214903",
+    "nameAr": "مهندس متفجرات"
+   },
+   {
+    "code": "214906",
+    "nameAr": "مهندس ضبط وتحكم في الجودة"
+   },
+   {
+    "code": "214908",
+    "nameAr": "مهندس بحث وتطوير"
+   },
+   {
+    "code": "215102",
+    "nameAr": "مهندس كهربائي تقني"
+   }
+  ],
+  "phases": [
+   {
+    "pct": 30,
+    "effectiveFrom": "2026-06-30"
+   }
+  ],
+  "minEstablishmentSize": 5,
+  "minEstablishmentSizeNote": "5+ workers in the engineering professions of Table 1",
+  "minWage": {
+   "amount": 8000,
+   "currency": "SAR",
+   "basis": "GOSI contributory wage (monthly)"
+  },
+  "otherConditions": [
+   "Saudi Council of Engineers accreditation required",
+   "Higher rate applies if another decision targets the same profession"
+  ],
+  "rounding": "nearest integer (example 11.3->11)",
+  "scope": "All private-sector establishments in KSA (nationwide)",
+  "calculationLevel": "entity (الكيان) per 3.1",
+  "decisionNo": "93483",
+  "decisionDate": "2025-12-31",
+  "gracePeriod": "6 months",
+  "sourceFile": "eng2026.pdf",
+  "sourceUrl": "https://www.hrsd.gov.sa/sites/default/files/2026-01/aldlyl-alajrayy-lqrar-almhn-alhndsyt.pdf",
+  "page": "p1, p4 (3.1-3.4, visually verified), p5 (Table 1, 46 occupations, visually verified), p7 (timeline 31/12/2025 -> 30/06/2026, visually verified)",
+  "status": "VERIFIED_PRIMARY",
+  "note": "Updated engineering decision (the guide calls it an update of the engineering procedural guide). Penalties per Ministerial Resolutions 75913 (19/05/1445H) and 44558 (03/04/1446H).",
+  "occupationCount": 46
+ },
+ {
+  "groupNameAr": "المهن الفنية الهندسية",
+  "occupations": [
+   {
+    "code": "3212152",
+    "nameAr": "مساح تصويري"
+   },
+   {
+    "code": "216507",
+    "nameAr": "مساح تصويري"
+   },
+   {
+    "code": "3212242",
+    "nameAr": "مساح كميات"
+   },
+   {
+    "code": "214905",
+    "nameAr": "مساح كميات"
+   },
+   {
+    "code": "3212092",
+    "nameAr": "فني مختبر ميكانيكا التربة"
+   },
+   {
+    "code": "3212102",
+    "nameAr": "فني مختبر مواد إنشائية"
+   },
+   {
+    "code": "3212122",
+    "nameAr": "رسام هندسة مدنية"
+   },
+   {
+    "code": "3212132",
+    "nameAr": "مساح-عام"
+   },
+   {
+    "code": "3212142",
+    "nameAr": "مساح مناجم"
+   },
+   {
+    "code": "3212162",
+    "nameAr": "رسام خرائط ومخططات"
+   },
+   {
+    "code": "3212172",
+    "nameAr": "معاون مساح"
+   },
+   {
+    "code": "3212182",
+    "nameAr": "فني رسم خرائط رقمية"
+   },
+   {
+    "code": "3212232",
+    "nameAr": "فني رسم خرائط بحرية"
+   },
+   {
+    "code": "3213012",
+    "nameAr": "رسام كهربائي"
+   },
+   {
+    "code": "3212072",
+    "nameAr": "مساح أراضي"
+   },
+   {
+    "code": "216505",
+    "nameAr": "مساح أراضي"
+   },
+   {
+    "code": "3215322",
+    "nameAr": "فني هندسة إنتاج"
+   },
+   {
+    "code": "311906",
+    "nameAr": "فني هندسة إنتاج"
+   },
+   {
+    "code": "3211012",
+    "nameAr": "معماري"
+   },
+   {
+    "code": "3211022",
+    "nameAr": "صانع نماذج معمارية (ماكيت)"
+   },
+   {
+    "code": "3212012",
+    "nameAr": "رسام إنشائي أبنية"
+   },
+   {
+    "code": "3212022",
+    "nameAr": "رسام إنشائي طرق"
+   },
+   {
+    "code": "3212042",
+    "nameAr": "فني طرق (مراقب طرق)"
+   },
+   {
+    "code": "3212052",
+    "nameAr": "مساح ابنية"
+   },
+   {
+    "code": "3212062",
+    "nameAr": "مساح طرق"
+   },
+   {
+    "code": "3215202",
+    "nameAr": "فني صيانة آلات زراعية"
+   },
+   {
+    "code": "3215222",
+    "nameAr": "فني صيانة طائرات مروحية"
+   },
+   {
+    "code": "3215232",
+    "nameAr": "فني في هندسة الطيران"
+   },
+   {
+    "code": "3213022",
+    "nameAr": "رسام ميكانيكي"
+   },
+   {
+    "code": "3213032",
+    "nameAr": "رسام تصاميم كهربائية"
+   },
+   {
+    "code": "3213052",
+    "nameAr": "فني محطات توليد تشغيل وصيانة"
+   },
+   {
+    "code": "3213082",
+    "nameAr": "فني كهرباء خطوط هوائية"
+   },
+   {
+    "code": "3213092",
+    "nameAr": "فني كهرباء كبلات ارضية"
+   },
+   {
+    "code": "3213102",
+    "nameAr": "فني كهربائي خدمات مشتركين"
+   },
+   {
+    "code": "3213112",
+    "nameAr": "فني كهرباء تمديدات"
+   },
+   {
+    "code": "3213122",
+    "nameAr": "فني كهربائي صيانة الات"
+   },
+   {
+    "code": "3213132",
+    "nameAr": "فني كهربائي اجهزة دقيقة"
+   },
+   {
+    "code": "3213142",
+    "nameAr": "فني في الهندسة الكهربائية-عام"
+   },
+   {
+    "code": "3213152",
+    "nameAr": "فني إليكترونيات"
+   },
+   {
+    "code": "3213172",
+    "nameAr": "فني اجهزة انذار حريق في تحلية المياه المالحة"
+   },
+   {
+    "code": "3213192",
+    "nameAr": "فني كهربائي مولدات وموترات الطائرات"
+   },
+   {
+    "code": "3213212",
+    "nameAr": "فني كهرباء"
+   },
+   {
+    "code": "3214012",
+    "nameAr": "رسام الكتروني"
+   },
+   {
+    "code": "3214032",
+    "nameAr": "فني إلكتروني بث تلفزيوني"
+   },
+   {
+    "code": "3214062",
+    "nameAr": "فني إلكتروني صيانة تلفزيون"
+   },
+   {
+    "code": "3214082",
+    "nameAr": "فني إلكتروني اجهزة تحكم"
+   },
+   {
+    "code": "3215012",
+    "nameAr": "رسام ميكانيكي عام"
+   },
+   {
+    "code": "3215022",
+    "nameAr": "رسام ميكانيك بتمديدات صحية وتدفئة"
+   },
+   {
+    "code": "3215032",
+    "nameAr": "رسام ميكانيكي تكييف وتبريد"
+   },
+   {
+    "code": "3215042",
+    "nameAr": "رسام ميكانيكي لحام وصفيح"
+   },
+   {
+    "code": "3215052",
+    "nameAr": "فني في الهندسة الميكانيكة -عام"
+   },
+   {
+    "code": "3215062",
+    "nameAr": "فني ميكانيكي انتاج"
+   },
+   {
+    "code": "3215072",
+    "nameAr": "فني لحام"
+   },
+   {
+    "code": "3215083",
+    "nameAr": "فاحص لحام"
+   },
+   {
+    "code": "3215102",
+    "nameAr": "فني قوالب"
+   },
+   {
+    "code": "3215122",
+    "nameAr": "فني تمديدات صحية وتدفئة /تركيب"
+   },
+   {
+    "code": "3215132",
+    "nameAr": "فني تمديدات صحية وتدفئة / تشغيل وصيانة"
+   },
+   {
+    "code": "3215142",
+    "nameAr": "فني تكييف وتبريد / تركيب"
+   },
+   {
+    "code": "3215152",
+    "nameAr": "فني تكييف وتبريد / تشغيل وصيانة"
+   },
+   {
+    "code": "3215162",
+    "nameAr": "فني الهندسة الميكانيكية والمحركات البخارية"
+   },
+   {
+    "code": "3215172",
+    "nameAr": "فني صيانة مركبات خفيفة"
+   },
+   {
+    "code": "3215182",
+    "nameAr": "فني صيانة حافلات وشاحنات"
+   },
+   {
+    "code": "3215192",
+    "nameAr": "فني صيانة آلات طرق"
+   },
+   {
+    "code": "311805",
+    "nameAr": "رسام معماري"
+   },
+   {
+    "code": "311804",
+    "nameAr": "فني مجسمات معمارية"
+   },
+   {
+    "code": "216502",
+    "nameAr": "رسام خرائط"
+   },
+   {
+    "code": "311802",
+    "nameAr": "رسام مخططات طرق"
+   },
+   {
+    "code": "3215242",
+    "nameAr": "فني صيانة طائرات نفاثة"
+   },
+   {
+    "code": "3215252",
+    "nameAr": "فني صيانة محركات سفن"
+   },
+   {
+    "code": "3215262",
+    "nameAr": "فني صيانة قاطرات"
+   },
+   {
+    "code": "3215272",
+    "nameAr": "فني موائع (هيدروليك)"
+   },
+   {
+    "code": "3215312",
+    "nameAr": "فني ميكانيك صيانة عامة"
+   },
+   {
+    "code": "3215332",
+    "nameAr": "فني دراسة الوقت والحركة"
+   },
+   {
+    "code": "3215342",
+    "nameAr": "فني وقاية مهبطية"
+   },
+   {
+    "code": "3215352",
+    "nameAr": "فني صيانة مسابح"
+   },
+   {
+    "code": "3216022",
+    "nameAr": "فني كيميائي تكرير نفط"
+   },
+   {
+    "code": "3216032",
+    "nameAr": "فني صناعة منظفات كيميائية"
+   },
+   {
+    "code": "3216052",
+    "nameAr": "فني صناعات دهان"
+   },
+   {
+    "code": "3217042",
+    "nameAr": "فني حفر"
+   },
+   {
+    "code": "3218012",
+    "nameAr": "رسام تخطيط مصانع"
+   },
+   {
+    "code": "3218022",
+    "nameAr": "فني تركيب معدات صناعية"
+   },
+   {
+    "code": "3218052",
+    "nameAr": "فني مكافحة الحرائق"
+   },
+   {
+    "code": "3219012",
+    "nameAr": "فني مياه شبكات"
+   },
+   {
+    "code": "3212192",
+    "nameAr": "فني توقيع مسح جوي رقمي"
+   },
+   {
+    "code": "3212202",
+    "nameAr": "مساح و محقق حقلي"
+   },
+   {
+    "code": "3212212",
+    "nameAr": "مشغل أجهزة مسح جوي رقمي"
+   },
+   {
+    "code": "3212222",
+    "nameAr": "مشرف أول طباعة خرائط"
+   },
+   {
+    "code": "3215212",
+    "nameAr": "فني خراطة محركات"
+   },
+   {
+    "code": "2218181",
+    "nameAr": "منسق أنظمة جودة"
+   },
+   {
+    "code": "2213101",
+    "nameAr": "ملاحظ متابعة مواد"
+   },
+   {
+    "code": "2212251",
+    "nameAr": "مشرف فحص جودة مسح جوي"
+   },
+   {
+    "code": "2212181",
+    "nameAr": "مشرف أول مسح جوي رقمي"
+   },
+   {
+    "code": "2212281",
+    "nameAr": "مشرف أول المسح الجوي"
+   },
+   {
+    "code": "2218161",
+    "nameAr": "مدقق داخلي أنظمة جودة"
+   },
+   {
+    "code": "2215241",
+    "nameAr": "كبير مفتشين فحص غير الائتلافي للطائرات"
+   },
+   {
+    "code": "2218171",
+    "nameAr": "كبير مدققي أنظمة جودة"
+   },
+   {
+    "code": "2215201",
+    "nameAr": "كبير فني أنظمة المراقبة البيئية"
+   },
+   {
+    "code": "2212201",
+    "nameAr": "خبير جيوديسي"
+   },
+   {
+    "code": "2212231",
+    "nameAr": "أخصائي مسح جوي رقمي"
+   },
+   {
+    "code": "2212241",
+    "nameAr": "أخصائي كارتوغرافي رقمي"
+   },
+   {
+    "code": "2212171",
+    "nameAr": "أخصائي خرائط رقمية"
+   },
+   {
+    "code": "2218141",
+    "nameAr": "أخصائي براءة الاختراع"
+   },
+   {
+    "code": "2212221",
+    "nameAr": "أخصائي أول فحص جودة / كارتوغرافي"
+   },
+   {
+    "code": "2215291",
+    "nameAr": "اختصاصي إمدادات طائرات"
+   },
+   {
+    "code": "3216042",
+    "nameAr": "فني صناعات غذائية"
+   },
+   {
+    "code": "311509",
+    "nameAr": "فني ميكانيكي معدات زراعية"
+   },
+   {
+    "code": "311801",
+    "nameAr": "رسام هندسي"
+   },
+   {
+    "code": "311210",
+    "nameAr": "فني صيانة طرق"
+   },
+   {
+    "code": "311201",
+    "nameAr": "فني هندسة مدنية"
+   },
+   {
+    "code": "311203",
+    "nameAr": "فني مواد إنشائية"
+   },
+   {
+    "code": "216501",
+    "nameAr": "مسّاح جوي"
+   },
+   {
+    "code": "216506",
+    "nameAr": "مساح تعدين"
+   },
+   {
+    "code": "311211",
+    "nameAr": "فني مساحة"
+   },
+   {
+    "code": "311803",
+    "nameAr": "رسام فني مواصفات"
+   },
+   {
+    "code": "311301",
+    "nameAr": "فني هندسة كهربائية"
+   },
+   {
+    "code": "311305",
+    "nameAr": "فني صيانة آلات كهربائية"
+   },
+   {
+    "code": "313103",
+    "nameAr": "فني توزيع طاقة كهربائية"
+   },
+   {
+    "code": "311308",
+    "nameAr": "فني كهروميكانيك"
+   },
+   {
+    "code": "313104",
+    "nameAr": "فني نقل طاقة كهربائية"
+   },
+   {
+    "code": "313102",
+    "nameAr": "فني لوحات تحكم محطة طاقة"
+   },
+   {
+    "code": "313101",
+    "nameAr": "مشغل محطة توليد طاقة"
+   },
+   {
+    "code": "311302",
+    "nameAr": "فني كهربائي شبكات توزيع هوائية"
+   },
+   {
+    "code": "311304",
+    "nameAr": "فني كهربائي تمديدات كهربائية"
+   },
+   {
+    "code": "311303",
+    "nameAr": "فني كهربائي شبكات توزيع أرضية"
+   },
+   {
+    "code": "311306",
+    "nameAr": "فني صيانة أجهزة كهربائية"
+   },
+   {
+    "code": "311307",
+    "nameAr": "فني صيانة شبكات كهربائية"
+   },
+   {
+    "code": "311309",
+    "nameAr": "فني كهربائي أنظمة حماية كهربائية"
+   },
+   {
+    "code": "311405",
+    "nameAr": "فني أجهزة دقيقة"
+   },
+   {
+    "code": "311403",
+    "nameAr": "فني أجهزة إلكترونية"
+   },
+   {
+    "code": "742101",
+    "nameAr": "إلكتروني طائرات"
+   },
+   {
+    "code": "741208",
+    "nameAr": "كهربائي طائرات"
+   },
+   {
+    "code": "741301",
+    "nameAr": "موصل كابلات كهربائية"
+   },
+   {
+    "code": "352202",
+    "nameAr": "فني هندسة اتصالات لاسلكية"
+   },
+   {
+    "code": "311404",
+    "nameAr": "فني صيانة أجهزة إلكترونية"
+   },
+   {
+    "code": "311409",
+    "nameAr": "فني هندسة إلكترونية"
+   },
+   {
+    "code": "311501",
+    "nameAr": "فني هندسة ميكانيكية"
+   },
+   {
+    "code": "721202",
+    "nameAr": "لحّام تحت الماء"
+   },
+   {
+    "code": "754302",
+    "nameAr": "فاحص ومقيّم منتجات"
+   },
+   {
+    "code": "311510",
+    "nameAr": "فني ميكانيكي تمديدات صحية وتدفئة وغاز"
+   },
+   {
+    "code": "311502",
+    "nameAr": "فني تدفئة وتهوية وتكييف"
+   },
+   {
+    "code": "311506",
+    "nameAr": "فني ميكانيكي محركات"
+   },
+   {
+    "code": "311507",
+    "nameAr": "فني ميكانيكي مركبات"
+   },
+   {
+    "code": "311505",
+    "nameAr": "فني ميكانيكي هياكل"
+   },
+   {
+    "code": "311508",
+    "nameAr": "فني ميكانيكي معدات ثقيلة"
+   },
+   {
+    "code": "235105",
+    "nameAr": "أخصائي قياس وتقويم"
+   },
+   {
+    "code": "242113",
+    "nameAr": "أخصائي شؤون طيران"
+   },
+   {
+    "code": "216503",
+    "nameAr": "مسّاح جيوديسي"
+   },
+   {
+    "code": "311513",
+    "nameAr": "فني ميكانيكي طائرات مروحية"
+   },
+   {
+    "code": "311514",
+    "nameAr": "فني ميكانيكي طائرات نفاثة"
+   },
+   {
+    "code": "723202",
+    "nameAr": "ميكانيكي إصلاح هيكل الطائرة"
+   },
+   {
+    "code": "723201",
+    "nameAr": "ميكانيكي طائرات"
+   },
+   {
+    "code": "723203",
+    "nameAr": "ميكانيكي محرك طائرة"
+   },
+   {
+    "code": "311512",
+    "nameAr": "فني ميكانيكي قطارات"
+   },
+   {
+    "code": "712703",
+    "nameAr": "ميكانيكي برادات"
+   },
+   {
+    "code": "712702",
+    "nameAr": "ميكانيكي تدفئة وتهوية وتكييف"
+   },
+   {
+    "code": "712701",
+    "nameAr": "ميكانيكي ضاغطة"
+   },
+   {
+    "code": "311511",
+    "nameAr": "فني صيانة ميكانيكية"
+   },
+   {
+    "code": "311101",
+    "nameAr": "فني فلكي"
+   },
+   {
+    "code": "311106",
+    "nameAr": "فني فيزيائي"
+   },
+   {
+    "code": "311602",
+    "nameAr": "فني مصانع كيميائية"
+   },
+   {
+    "code": "311205",
+    "nameAr": "فني صيانة انشاءات"
+   },
+   {
+    "code": "311207",
+    "nameAr": "فني صيانة مباني"
+   },
+   {
+    "code": "311601",
+    "nameAr": "فني هندسة كيميائية"
+   },
+   {
+    "code": "313402",
+    "nameAr": "فني تكرير نفط"
+   },
+   {
+    "code": "311208",
+    "nameAr": "فني تدعيم حفريات"
+   },
+   {
+    "code": "723306",
+    "nameAr": "ميكانيكي منصة حفر"
+   },
+   {
+    "code": "311213",
+    "nameAr": "فني إطفاء"
+   },
+   {
+    "code": "311202",
+    "nameAr": "مفتش حرائق"
+   },
+   {
+    "code": "311204",
+    "nameAr": "فني إنشاءات"
+   },
+   {
+    "code": "351103",
+    "nameAr": "فني طباعة رقمية"
+   },
+   {
+    "code": "242122",
+    "nameAr": "أخصائي مواصفات ومقاييس وجودة"
+   },
+   {
+    "code": "242120",
+    "nameAr": "أخصائي جودة"
+   },
+   {
+    "code": "313905",
+    "nameAr": "فني ضبط جودة منتجات"
+   },
+   {
+    "code": "754301",
+    "nameAr": "مراقب الجودة"
+   },
+   {
+    "code": "312301",
+    "nameAr": "مشرف إنشاء مباني"
+   },
+   {
+    "code": "312302",
+    "nameAr": "مشرف إنشاء طرق"
+   },
+   {
+    "code": "312201",
+    "nameAr": "مشرف تصنيع"
+   },
+   {
+    "code": "312203",
+    "nameAr": "مشرف صيانة"
+   },
+   {
+    "code": "312304",
+    "nameAr": "مشرف صيانة إنشاءات"
+   },
+   {
+    "code": "312303",
+    "nameAr": "مشرف موقع إنشائي"
+   },
+   {
+    "code": "313202",
+    "nameAr": "مشغل محرقة مخلفات"
+   },
+   {
+    "code": "313201",
+    "nameAr": "مشغل محطة تحلية مياه"
+   },
+   {
+    "code": "311705",
+    "nameAr": "مشغل وحدات تحكم مناجم ومحاجر"
+   },
+   {
+    "code": "315306",
+    "nameAr": "مفتش عمليات طيران"
+   },
+   {
+    "code": "226903",
+    "nameAr": "أخصائي ضمان الجودة الطبية"
+   },
+   {
+    "code": "213301",
+    "nameAr": "أخصائي بيئي"
+   },
+   {
+    "code": "226301",
+    "nameAr": "أخصائي حماية بيئة"
+   },
+   {
+    "code": "325702",
+    "nameAr": "مفتش حماية بيئية"
+   }
+  ],
+  "phases": [
+   {
+    "pct": 30,
+    "effectiveFrom": "2025-07-27"
+   }
+  ],
+  "minEstablishmentSize": 5,
+  "minEstablishmentSizeNote": "5+ workers in the engineering-technical professions of Table 1",
+  "minWage": {
+   "amount": 5000,
+   "currency": "SAR",
+   "basis": "GOSI contributory wage (monthly)"
+  },
+  "otherConditions": [
+   "Saudi Council of Engineers accreditation required for technicians",
+   "Higher rate applies if another decision targets the same profession"
+  ],
+  "rounding": "nearest integer (example 11.3->11)",
+  "scope": "All private-sector establishments in KSA (nationwide)",
+  "calculationLevel": "establishment (\"في المنشأة\")",
+  "decisionNo": "103105",
+  "decisionDate": "2025-01-26",
+  "gracePeriod": "6 months",
+  "sourceFile": "engtech.pdf",
+  "sourceUrl": "https://www.hrsd.gov.sa/sites/default/files/2025-01/%D8%A7%D9%84%D8%AF%D9%84%D9%8A%D9%84%20%D8%A7%D9%84%D8%A5%D8%AC%D8%B1%D8%A7%D8%A6%D9%8A%20%D9%84%D9%82%D8%B1%D8%A7%D8%B1%20%D8%AA%D9%88%D8%B7%D9%8A%D9%86%20%D8%A7%D9%84%D9%85%D9%87%D9%86%20%D8%A7%D9%84%D9%81%D9%86%D9%8A%D8%A9%20%D8%A7%D9%84%D9%87%D9%86%D8%AF%D8%B3%D9%8A%D8%A9_1.pdf",
+  "page": "p1, p4 (3.1-3.5 + table start, visually verified), p5-p6 (table, visually verified), p7 (example + timeline, text layer)",
+  "status": "VERIFIED_PRIMARY",
+  "note": "188 codes. Some names are shared by two codes (merged cells): مساح تصويري 3212152/216507; مساح أراضي 3212072/216505; مساح كميات 3212242/214905; فني هندسة إنتاج 3215322/311906. Names were transcribed from rendered images because the text layer swaps ligature characters (e.g. \"فين\" for \"فني\"). The cover page prints the date as \"62/01/2025\" (typo); body text says 26/01/2025. Penalties per Ministerial Resolutions 75913 (19/05/1445H) and 44558 (03/04/1446H).",
+  "occupationCount": 188
+ },
+ {
+  "groupNameAr": "مهن التسويق",
+  "occupations": [
+   {
+    "code": "122103",
+    "nameAr": "مدير تسويق"
+   },
+   {
+    "code": "333901",
+    "nameAr": "وكيل دعاية وإعلان"
+   },
+   {
+    "code": "122201",
+    "nameAr": "مدير دعاية وإعلان"
+   },
+   {
+    "code": "216601",
+    "nameAr": "مصمم جرافيك"
+   },
+   {
+    "code": "216604",
+    "nameAr": "مصمم إعلان"
+   },
+   {
+    "code": "264204",
+    "nameAr": "أخصائي إعلامي"
+   },
+   {
+    "code": "243202",
+    "nameAr": "أخصائي علاقات عامة"
+   },
+   {
+    "code": "243101",
+    "nameAr": "أخصائي دعاية وإعلان"
+   },
+   {
+    "code": "243110",
+    "nameAr": "أخصائي تسويق"
+   },
+   {
+    "code": "122203",
+    "nameAr": "مدير علاقات عامة"
+   },
+   {
+    "code": "343101",
+    "nameAr": "مصور فوتوغرافي"
+   }
+  ],
+  "phases": [
+   {
+    "pct": 60,
+    "effectiveFrom": "2026-04-19"
+   }
+  ],
+  "minEstablishmentSize": 3,
+  "minEstablishmentSizeNote": "entities with 3+ workers in marketing professions; calculated at entity level",
+  "minWage": {
+   "amount": 5500,
+   "currency": "SAR",
+   "basis": "GOSI contributory wage (monthly)"
+  },
+  "otherConditions": [
+   "Higher rate applies if another decision (including regional MoUs with the emirates of regions) targets the same profession"
+  ],
+  "rounding": "<=0.49 rounds down, >=0.5 rounds up",
+  "scope": "All private-sector entities in KSA (nationwide)",
+  "calculationLevel": "entity (الكيان)",
+  "decisionNo": "101319",
+  "decisionDate": "2026-01-19 (30/07/1447H)",
+  "gracePeriod": "3 months",
+  "sourceFile": "mkt.pdf",
+  "sourceUrl": "https://www.hrsd.gov.sa/sites/default/files/2026-04/aldlyl-ala-jray-y-lqrar-twtyn-mhn-altswyq-v5.pdf",
+  "page": "p1, p3 (definitions), p4 (3.1-3.4 + table, visually verified), p5 (rounding + example), p6 (timeline, visually verified)",
+  "status": "VERIFIED_PRIMARY",
+  "note": "The text layer splits code 243202 as \"202 243\"; the visual read is 243202. The example on p5 ends with \"مهن المبيعات\" (copy-paste from the sales guide). Penalties per Ministerial Resolutions 75913 (19/05/1445H) and 44558 (03/04/1446H).",
+  "occupationCount": 11
+ },
+ {
+  "groupNameAr": "مهن المبيعات",
+  "occupations": [
+   {
+    "code": "122104",
+    "nameAr": "مدير مبيعات"
+   },
+   {
+    "code": "142001",
+    "nameAr": "مدير مبيعات تجزئة"
+   },
+   {
+    "code": "142003",
+    "nameAr": "مدير مبيعات جملة"
+   },
+   {
+    "code": "332201",
+    "nameAr": "مندوب مبيعات"
+   },
+   {
+    "code": "332401",
+    "nameAr": "وسيط سلع مستقبلية"
+   },
+   {
+    "code": "243401",
+    "nameAr": "أخصائي مبيعات أجهزة تقنية المعلومات والاتصالات"
+   },
+   {
+    "code": "243109",
+    "nameAr": "أخصائي مبيعات"
+   },
+   {
+    "code": "243106",
+    "nameAr": "أخصائي تجاري"
+   },
+   {
+    "code": "332402",
+    "nameAr": "وسيط سلع"
+   }
+  ],
+  "phases": [
+   {
+    "pct": 60,
+    "effectiveFrom": "2026-04-19"
+   }
+  ],
+  "minEstablishmentSize": 3,
+  "minEstablishmentSizeNote": "entities with 3+ workers in sales professions; calculated at entity level",
+  "minWage": null,
+  "minWageStatus": "UNKNOWN - the sales procedural guide has no minimum-wage clause (its 3.3 is scope); do not assume the marketing 5,500",
+  "otherConditions": [
+   "Higher rate applies if another decision (including regional MoUs) targets the same profession"
+  ],
+  "rounding": "<=0.49 rounds down, >=0.5 rounds up",
+  "scope": "All private-sector entities in KSA (nationwide)",
+  "calculationLevel": "entity (الكيان)",
+  "decisionNo": "101278",
+  "decisionDate": "2026-01-19 (30/07/1447H)",
+  "gracePeriod": "3 months",
+  "sourceFile": "sales.pdf",
+  "sourceUrl": "https://www.hrsd.gov.sa/sites/default/files/2026-01/aldlyl-ala-jray-y-lqrar-twtyn-mhn-almby-at.pdf",
+  "page": "p1, p3, p4 (3.1-3.3 + table, visually verified), p5 (rounding + example), p6 (timeline, visually verified)",
+  "status": "PARTIAL",
+  "note": "Everything verified except the minimum wage, which this guide does not state. Penalties per Ministerial Resolutions 75913 (19/05/1445H) and 44558 (03/04/1446H).",
+  "occupationCount": 9
+ },
+ {
+  "groupNameAr": "مهن إدارة المشاريع",
+  "occupations": [
+   {
+    "code": "121314",
+    "nameAr": "مدير إدارة مشاريع"
+   },
+   {
+    "code": "214909",
+    "nameAr": "مهندس إدارة مشاريع"
+   },
+   {
+    "code": "242108",
+    "nameAr": "اخصائي إدارة مشاريع"
+   }
+  ],
+  "phases": [
+   {
+    "pct": 70,
+    "effectiveFrom": "2027-02-14"
+   }
+  ],
+  "minEstablishmentSize": 3,
+  "minEstablishmentSizeNote": "3+ workers in PM professions; calculated at entity level",
+  "minWage": null,
+  "minWageStatus": "UNKNOWN - no minimum-wage clause in this guide",
+  "otherConditions": [
+   "Occupations per the Saudi Standard Classification of Occupations issued by GASTAT",
+   "Higher rate applies if another decision targets the same profession"
+  ],
+  "rounding": "nearest integer (example 3.5->4)",
+  "scope": "All private-sector establishments in KSA (nationwide)",
+  "calculationLevel": "entity (الكيان) per 3.1",
+  "decisionNo": "41454",
+  "decisionDate": "2026-08-13",
+  "gracePeriod": "6 months",
+  "sourceFile": "pm.pdf",
+  "sourceUrl": "https://www.hrsd.gov.sa/sites/default/files/2026-08/aldlyl-alajrayy-lqrar-almhn-adart-almshary--alnhayy-v.1.pdf",
+  "page": "p1, p3, p4 (3.1-3.3 + table, visually verified), p5 (example), p6 (timeline + penalties, visually verified)",
+  "status": "PARTIAL",
+  "note": "Penalties reference Ministerial Resolution 112377 dated 21/8/1447H (a newer violations table), not 75913/44558. Minimum wage not stated. The worked example refers to \"جدول رقم 2\" although only Table 1 exists. Not yet in force on 2026-09-26.",
+  "occupationCount": 3
+ }
+]

@@ -2,13 +2,15 @@
 
 import React, { useState, useEffect, useCallback, use } from 'react';
 import {
-  Building2, ChevronRight, FileText, Edit, Trash2, Calendar, Hash, MapPin, ShieldCheck, Globe, AlertTriangle, RefreshCw, Link2
+  Building2, ChevronRight, FileText, Edit, Trash2, Calendar, Hash, MapPin, ShieldCheck, Globe, AlertTriangle, RefreshCw, Link2, Calculator
 } from 'lucide-react';
 import { useRouter } from 'next/navigation';
 import Link from 'next/link';
 import DashboardLayout from '@/components/DashboardLayout';
 import { toast, confirmDialog, readApiError } from '@/components/ui/feedback';
 import { formatDate } from '@/lib/dates';
+import { MEDICAL_PREMIUM_KEYS, MEDICAL_PREMIUM_LABELS, OVERTIME_BASIS_SHORT, normalizeOvertimeBasis, parseMedicalPremiums } from '@/lib/workforce/company-settings';
+import { iqamaRuleText, money, type IqamaFeeRuleView } from '../_components/CostSettingsSection';
 
 interface CompanyDetails {
   id: string;
@@ -35,6 +37,10 @@ interface CompanyDetails {
   muqeemPlatformId?: string | null;
   muqeemLinked?: boolean;
   muqeemPlatform?: { id: string; platformName: string } | null;
+  overtimeHourlyBasis?: string | null;
+  medicalPremiumsJson?: string | null;
+  iqamaFeeYear?: number | null;
+  iqamaFeeRule?: IqamaFeeRuleView | null;
 }
 
 type Tone = 'blue' | 'indigo' | 'emerald' | 'violet' | 'amber' | 'slate';
@@ -251,6 +257,9 @@ export default function CompanyDetailsPage({ params }: { params: Promise<{ id: s
             )}
           </InfoCard>
 
+          {/* إعدادات الكلفة */}
+          <CostSettingsCard company={company} />
+
           {/* تاريخ التسجيل */}
           <InfoCard icon={<Calendar size={20} className="text-slate-500" />} title="تاريخ التسجيل في النظام" color="slate">
             <InfoRow label="تاريخ الإنشاء" value={formatDate(company.createdAt)} />
@@ -289,6 +298,36 @@ function InfoCard({ icon, title, color, children }: { icon: React.ReactNode; tit
       </div>
       <div className="p-5 space-y-3">{children}</div>
     </div>
+  );
+}
+
+/** «إعدادات الكلفة» (read-only; edited in the company form by SUPER_ADMIN / COMPANY_ADMIN). */
+function CostSettingsCard({ company }: { company: CompanyDetails }) {
+  const premiums = parseMedicalPremiums(company.medicalPremiumsJson ?? null);
+  const fee = typeof company.iqamaFeeYear === 'number' ? company.iqamaFeeYear : null;
+  return (
+    <InfoCard icon={<Calculator size={20} className="text-indigo-500" />} title="إعدادات الكلفة" color="indigo">
+      <InfoRow label="أجر العمل الإضافي" value={OVERTIME_BASIS_SHORT[normalizeOvertimeBasis(company.overtimeHourlyBasis)]} />
+      <div>
+        <p className="text-[11px] font-bold text-slate-400 mb-1.5">أقساط التأمين الطبي السنوية (ريال)</p>
+        <dl className="grid grid-cols-3 gap-x-3 gap-y-1">
+          {MEDICAL_PREMIUM_KEYS.map((k) => (
+            <div key={k} className="flex items-center justify-between gap-1 min-w-0">
+              <dt className="text-[11px] font-bold text-slate-500" dir={k === 'DEPENDENT' ? undefined : 'ltr'}>
+                {k === 'DEPENDENT' ? 'مرافق' : MEDICAL_PREMIUM_LABELS[k]}
+              </dt>
+              <dd className={`text-[12px] font-black ${typeof premiums[k] === 'number' ? 'text-slate-700' : 'text-slate-300'}`}>
+                {typeof premiums[k] === 'number' ? money(premiums[k] as number) : '—'}
+              </dd>
+            </div>
+          ))}
+        </dl>
+      </div>
+      <InfoRow label="رسوم الإقامة السنوية" value={fee !== null ? `${money(fee)} ريال` : `سجل القواعد: ${iqamaRuleText(company.iqamaFeeRule)}`} />
+      <Link href={`/companies/${company.id}/edit#company-cost-settings`} className="text-[11px] font-bold text-indigo-600 hover:underline block">
+        تعديل إعدادات الكلفة ←
+      </Link>
+    </InfoCard>
   );
 }
 

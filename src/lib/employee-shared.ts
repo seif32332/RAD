@@ -2,6 +2,7 @@
 // (re-exported by src/lib/employee.ts). NO server imports here: no prisma, no next/server.
 import { ibanWarning } from '@/lib/iban';
 import { idNumberWarning, nationalityIdMismatch, parseIdType, type IdTypeValue } from '@/lib/identity';
+import { isSaudiNational } from '@/lib/nationality';
 
 // ---------------------------------------------------------------------------
 // Nationality
@@ -34,9 +35,13 @@ export function normalizeNationality(v: unknown): string | null {
   return SAUDI_NATIONALITY_ALIASES.has(s.toLowerCase()) ? SAUDI_NATIONALITY : s;
 }
 
-/** True when the stored nationality (any legacy spelling) is Saudi. */
+/**
+ * True when the stored nationality (any legacy spelling) is Saudi. Delegates to THE classifier
+ * (src/lib/nationality.ts isSaudiNational), a superset of SAUDI_NATIONALITY_ALIASES: it also accepts
+ * e.g. 'سعودي الجنسية', 'Saudi national', diacritics / tatweel, and rejects negations ('غير سعودي').
+ */
 export function isSaudiNationalityValue(v: unknown): boolean {
-  return normalizeNationality(v) === SAUDI_NATIONALITY;
+  return isSaudiNational(v);
 }
 
 // ---------------------------------------------------------------------------

@@ -102,6 +102,13 @@ model Company {
   gosiEstablishmentNumber String? // رقم المنشأة في التأمينات الاجتماعية
   moiNumber               String? // رقم المنشأة في الجوازات (700) المستخدم في مقيم
   muqeemPlatformId        String? // حساب مقيم المخزن مشفراً في خزنة المنصات الحكومية
+  nitaqatActivity         String? // نشاط المنشأة في نطاقات (سطر ملحق الدليل)
+  nitaqatActivityKey      String? // مفتاح نشاط نطاقات في جدول NitaqatActivity (منحنى النطاقات الرسمي)
+  isIndustrialLicensed    Boolean @default(false) // منشأة صناعية مرخّصة (المقابل المالي ملغى)
+  // --- إعدادات الكلفة للشركة (تُضبط مرة واحدة وتُستخدم في الرواتب والمحرك) ---
+  overtimeHourlyBasis     String  @default("BASIC") // BASIC: الساعة × 150% من الأساسي؛ TOTAL_PLUS_HALF_BASIC: أجر الساعة الإجمالي + 50% من الأساسي (المادة 107)
+  iqamaFeeYear            Float? // رسوم الإقامة السنوية (فارغ = قيمة سجل القواعد)
+  medicalPremiumsJson     String? @db.Text // أقساط التأمين الطبي السنوية لكل فئة: {"VIP":0,"A+":0,"A":0,"B":0,"C":0,"DEPENDENT":0}
   taxCertificateUrl       String? // مرفق الشهادة الضريبية
   nationalAddress         String? // العنوان الوطني (الرقم المختصر)
   nationalAddressUrl      String? // مرفق العنوان الوطني
@@ -381,6 +388,21 @@ model Employee {
   terminationDate  DateTime?
   employmentStatus String    @default("ACTIVE") // ACTIVE, ON_LEAVE, EXCLUDED
 
+  // --- محرك القرارات (الكلفة الحقيقية والسعودة) ---
+  occupationCode           String? // رمز المهنة (التصنيف السعودي الموحد للمهن)
+  occupationName           String? // المهنة كما في مقيم/قوى
+  dependentsCount          Int? // عدد المرافقين (من مقيم أو إدخال يدوي)
+  dependentsFeePaidBy      String? // COMPANY / EMPLOYEE (رسوم المرافقين)
+  isDisabled               Boolean   @default(false) // ذو إعاقة (وزن نطاقات)
+  muawamaCertExpiry        DateTime? // انتهاء شهادة مواءمة
+  isStudent                Boolean   @default(false) // طالب (وزن نطاقات)
+  partTimeWeeklyHours      Float? // ساعات الدوام الجزئي أسبوعياً
+  qiwaContractDocumented   Boolean   @default(false) // العقد موثّق في قوى
+  qiwaContractDocumentedAt DateTime?
+  medicalInsuranceClass    String? // فئة التأمين الطبي (VIP, A, B, C ...)
+  exitReason               String? // سبب الخروج المنظّم
+  exitVoluntary            Boolean? // خروج طوعي؟
+
   // الحضور الذاتي من البوابة (GPS + التحقق من الوجه)
   attendanceGeoExempt    Boolean @default(false) // مستثنى من شرط الموقع (ميداني) — الوجه يبقى مطلوباً
   attendanceFaceExempt   Boolean @default(false) // مستثنى من التحقق من الوجه (قرار المالك فقط) — الموقع يبقى مطلوباً
@@ -433,6 +455,7 @@ model Employee {
   onboardingRequestsMade OnboardingRequest[]    @relation("RequesterToOnboarding")
   assetRequestsMade      AssetRequest[]         @relation("RequesterToAssetRequest")
   assetRequestsFor       AssetRequest[]         @relation("RequestedForToAssetRequest")
+  salaryChanges          SalaryChange[]
 
   @@index([legalCompanyId])
   @@index([actualCompanyId])
@@ -746,6 +769,7 @@ model Allowance {
   amount           Float
   isMonthly        Boolean  @default(true)
   countsTowardGosi Boolean  @default(false) // يدخل في وعاء اشتراك التأمينات (مثل بدل السكن)
+  allowanceType    String? // HOUSING / TRANSPORT / FOOD / OTHER (فارغ = يُستنتج من الاسم)
   // المكافآت لمرة واحدة (isMonthly=false) تُصرف في مسير شهر محدد ثم تُعلَّم مصروفة
   payrollMonth     Int?
   payrollYear      Int?
@@ -2023,4 +2047,131 @@ model MuqeemTransaction {
   @@index([employeeId])
   @@index([entityType, entityId])
   @@index([status])
+}
+
+// --- محرك القرارات: سجل القواعد المؤرخة بمصادرها ---
+model RuleParameter {
+  id            String    @id @default(uuid())
+  key           String // مثال: EXPAT_LEVY_ABOVE_SAUDI_COUNT
+  domain        String // GOSI, LABOR_LAW, EXPAT_FEES, NITAQAT, HRDF, ...
+  label         String // الاسم العربي
+  value         Float?
+  valueJson     String?   @db.Text // قيم مركّبة (جداول)
+  unit          String? // SAR_MONTH, SAR_YEAR, PERCENT, DAYS, HOURS ...
+  effectiveFrom DateTime
+  effectiveTo   DateTime?
+  status        String // VERIFIED_PRIMARY, CORROBORATED_SECONDARY, PROVISIONAL, CONFLICTING, USER_INPUT
+  sourceUrl     String?   @db.Text
+  sourceQuote   String?   @db.Text
+  notes         String?   @db.Text
+  verifiedAt    DateTime?
+  verifiedBy    String?
+  createdById   String?
+  createdAt     DateTime  @default(now())
+
+  @@unique([key, effectiveFrom])
+  @@index([domain])
+}
+
+// افتراضات المنشأة التي لا تنشرها جهة رسمية (أقساط التأمين، كلفة التوظيف، سياسات الرسوم...)
+model WorkforceAssumption {
+  id          String   @id @default(uuid())
+  key         String
+  companyId   String   @default("") // "" = لكل الشركات
+  value       Float?
+  valueJson   String?  @db.Text
+  note        String?  @db.Text
+  updatedById String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @default(now()) @updatedAt
+
+  @@unique([key, companyId])
+}
+
+// لقطة لكل حساب محفوظ: لماذا ظهر هذا الرقم في هذا اليوم؟
+model WorkforceCalculation {
+  id            String   @id @default(uuid())
+  kind          String // TRUE_COST, EXIT_COST, OVERVIEW
+  subjectType   String? // EMPLOYEE, COMPANY, BRANCH, DEPARTMENT, ALL
+  subjectId     String?
+  title         String?
+  engineVersion String
+  ruleVersions  String   @db.Text // JSON: key -> effectiveFrom/status
+  inputs        String   @db.Text // JSON
+  outputs       String   @db.Text // JSON
+  createdById   String?
+  createdAt     DateTime @default(now())
+
+  @@index([kind, createdAt])
+  @@index([subjectType, subjectId])
+}
+
+// سجل تغييرات الراتب المؤرخ (للزيادات المخططة والفعلية)
+model SalaryChange {
+  id            String   @id @default(uuid())
+  employeeId    String
+  effectiveDate DateTime
+  basicSalary   Float
+  reason        String?
+  isPlanned     Boolean  @default(false) // مخطط (سيناريو) أم مطبّق فعلاً
+  createdById   String?
+  createdAt     DateTime @default(now())
+  employee      Employee @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+
+  @@index([employeeId, effectiveDate])
+}
+
+// --- محرك القرارات (المرحلة 2): نطاقات المطوّر 2026 وقرارات توطين المهن ---
+// أنشطة نطاقات كما في ملحق الدليل الإجرائي الرسمي، مع مصدر كل صف وحالته.
+model NitaqatActivity {
+  key         String         @id // مفتاح ثابت (slug)
+  nameAr      String // اسم النشاط كما في الملحق
+  code        String? // رمز النشاط إن وُجد
+  sizeSegment String? // شريحة الحجم إن كان الملحق يقسّم النشاط حسب الحجم
+  status      String // VERIFIED_PRIMARY, AMBIGUOUS, PROVISIONAL, USER_INPUT
+  sourceUrl   String?        @db.Text
+  page        Int?
+  notes       String?        @db.Text
+  createdAt   DateTime       @default(now())
+  curves      NitaqatCurve[]
+}
+
+// ثوابت المنحنى: الحد الأدنى للنطاق Y = m·ln(X) + c لكل نشاط ونطاق وسنة.
+model NitaqatCurve {
+  id          String          @id @default(uuid())
+  activityKey String
+  band        String // LOW_GREEN, MEDIUM_GREEN, HIGH_GREEN, PLATINUM
+  year        Int
+  m           Float
+  c           Float
+  status      String // VERIFIED_PRIMARY, AMBIGUOUS, PROVISIONAL, USER_INPUT
+  sourceUrl   String?         @db.Text
+  page        Int?
+  note        String?         @db.Text
+  createdById String?
+  createdAt   DateTime        @default(now())
+  activity    NitaqatActivity @relation(fields: [activityKey], references: [key], onDelete: Cascade)
+
+  @@unique([activityKey, band, year])
+}
+
+// قرارات توطين المهن (نسبة ومراحل وحد أدنى للأجر وحجم المنشأة)
+model LocalizationDecision {
+  id                   String    @id @default(uuid())
+  groupNameAr          String // مثال: مهن المحاسبة
+  occupationsJson      String    @db.Text // ["محاسب", ...] (والرموز إن وُجدت)
+  phasesJson           String    @db.Text // [{"pct":40,"effectiveFrom":"2025-10-27"}, ...]
+  minEstablishmentSize Int? // الحد الأدنى لعدد العاملين في المهن المستهدفة
+  minWage              Float? // الحد الأدنى للأجر ليُحتسب السعودي
+  scope                String?   @db.Text // النطاق الجغرافي أو الأنشطة
+  decisionNo           String?
+  decisionDate         DateTime?
+  status               String // VERIFIED_PRIMARY, PARTIAL, PROVISIONAL, USER_INPUT
+  sourceUrl            String?   @db.Text
+  page                 Int?
+  notes                String?   @db.Text
+  createdById          String?
+  createdAt            DateTime  @default(now())
+
+  @@index([groupNameAr])
 }

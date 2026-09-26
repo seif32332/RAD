@@ -1,0 +1,74 @@
+[
+ {
+  "sourceFile": "acct.pdf",
+  "officialUrl": "https://www.hrsd.gov.sa/sites/default/files/2025-03/Procedural%20Manual%20for%20the%20Saudization%20Resolution%20of%20Accounting%20Professions_1.pdf",
+  "landingPage": "https://www.hrsd.gov.sa/en/knowledge-centre/decisions-and-regulations/regulation-and-procedures/%D8%A7%D9%84%D8%AF%D9%84%D9%8A%D9%84-%D8%A7%D9%84%D8%A5%D8%AC%D8%B1%D8%A7%D8%A6%D9%8A-%D9%84%D9%82%D8%B1%D8%A7%D8%B1-%D8%AA%D9%88%D8%B7%D9%8A%D9%86-%D8%A7%D9%84%D9%85%D9%87%D9%86-%D8%A7%D9%84%D9%85%D8%AD%D8%A7%D8%B3%D8%A8%D9%8A%D8%A9",
+  "sha256Local": "ac079ecfab612f52bde5ecd398758929d20018e391f4256f879a61b7b051ea40",
+  "sha256Remote": "ac079ecfab612f52bde5ecd398758929d20018e391f4256f879a61b7b051ea40",
+  "match": "BYTE_IDENTICAL",
+  "note": "This is the English-language version of the guide (matches the note in localization_decisions.json that acct.pdf has nameAr=null). English PDF found via the /en/ landing page's language toggle, filed under 2025-03 although the decision (103108) is dated 26/01/2025. Two Arabic re-publications also exist on hrsd.gov.sa (2025-01 original and a shorter 2026-04 update explicitly citing decision 103108) but neither matches the local file's bytes or size; the local file is specifically the English manual."
+ },
+ {
+  "sourceFile": "dental.pdf",
+  "officialUrl": "https://www.hrsd.gov.sa/sites/default/files/2025-01/%D8%A7%D9%84%D8%AF%D9%84%D9%8A%D9%84%20%D8%A7%D9%84%D8%A5%D8%AC%D8%B1%D8%A7%D8%A6%D9%8A%20%D9%84%D9%82%D8%B1%D8%A7%D8%B1%20%D8%AA%D9%88%D8%B7%D9%8A%D9%86%20%D9%85%D9%87%D9%86%D8%A9%20%D8%B7%D8%A8%20%D8%A7%D9%84%D8%A3%D8%B3%D9%86%D8%A7%D9%86_1.pdf",
+  "landingPage": "https://www.hrsd.gov.sa/en/knowledge-centre/decisions-and-regulations/regulation-and-procedures/%D8%A7%D9%84%D8%AF%D9%84%D9%8A%D9%84-%D8%A7%D9%84%D8%A5%D8%AC%D8%B1%D8%A7%D8%A6%D9%8A-%D9%84%D9%82%D8%B1%D8%A7%D8%B1-%D8%AA%D9%88%D8%B7%D9%8A%D9%86-%D9%85%D9%87%D9%86%D8%A9-%D8%B7%D8%A8-%D8%A7%D9%84%D8%A3%D8%B3%D9%86%D8%A7%D9%86",
+  "sha256Local": "47457d03d7b8b77494413996111b14f7ba595731d3f0e2e8e83de04524ade5c6",
+  "sha256Remote": "47457d03d7b8b77494413996111b14f7ba595731d3f0e2e8e83de04524ade5c6",
+  "match": "BYTE_IDENTICAL",
+  "note": "Filename decoded: \"الدليل الإجرائي لقرار توطين مهنة طب الأسنان_1.pdf\", its search-result title explicitly reads \"الصادر بالقرار الوزاري رقم 103107 وتاريخ 26/...\" matching decisionNo/decisionDate exactly. A newer 2026-01 re-publication (aldlyl-alajrayy-lqrar-twtyn-mhn-tb-alasnan-45-w-55.pdf) also exists but has a different hash/size; the local file matches this 2025-01 original."
+ },
+ {
+  "sourceFile": "pharm.pdf",
+  "officialUrl": "https://www.hrsd.gov.sa/sites/default/files/2025-01/%D8%A7%D9%84%D8%AF%D9%84%D9%8A%D9%84%20%D8%A7%D9%84%D8%A5%D8%AC%D8%B1%D8%A7%D8%A6%D9%8A%20%D9%84%D9%82%D8%B1%D8%A7%D8%B1%20%D8%AA%D9%88%D8%B7%D9%8A%D9%86%20%D9%85%D9%87%D9%86%D8%A9%20%D8%A7%D9%84%D8%B5%D9%8A%D8%AF%D9%84%D8%A9_1.pdf",
+  "landingPage": "https://www.hrsd.gov.sa/en/knowledge-centre/decisions-and-regulations/regulation-and-procedures/%D8%A7%D9%84%D8%AF%D9%84%D9%8A%D9%84-%D8%A7%D9%84%D8%A5%D8%AC%D8%B1%D8%A7%D8%A6%D9%8A-%D9%84%D9%82%D8%B1%D8%A7%D8%B1-%D8%AA%D9%88%D8%B7%D9%8A%D9%86-%D9%85%D9%87%D9%86%D8%A9-%D8%A7%D9%84%D8%B5%D9%8A%D8%AF%D9%84%D8%A9",
+  "sha256Local": "0bab02d5e04c8d154e8a9d92da0b046a8a3790d0837704de517444912850780b",
+  "sha256Remote": "0bab02d5e04c8d154e8a9d92da0b046a8a3790d0837704de517444912850780b",
+  "match": "BYTE_IDENTICAL",
+  "note": "Filename decoded: \"الدليل الإجرائي لقرار توطين مهنة الصيدلة_1.pdf\", its search-result title explicitly reads \"الصادر بالقرار الوزاري رقم 103111 وتاريخ 26/01/...\" matching decisionNo/decisionDate exactly. A moh.gov.sa mirror also exists but was not used (task asked for hrsd.gov.sa)."
+ },
+ {
+  "sourceFile": "eng2026.pdf",
+  "officialUrl": "https://www.hrsd.gov.sa/sites/default/files/2026-01/aldlyl-alajrayy-lqrar-almhn-alhndsyt.pdf",
+  "landingPage": "https://www.hrsd.gov.sa/knowledge-centre/decisions-and-regulations/regulation-and-procedures/%D8%A7%D9%84%D8%AF%D9%84%D9%8A%D9%84-%D8%A7%D9%84%D8%A5%D8%AC%D8%B1%D8%A7%D8%A6%D9%8A-%D9%84%D9%82%D8%B1%D8%A7%D8%B1-%D8%AA%D9%88%D8%B7%D9%8A%D9%86-%D8%A7%D9%84%D9%85%D9%87%D9%86-%D8%A7%D9%84%D9%87%D9%86%D8%AF%D8%B3%D9%8A%D8%A9",
+  "sha256Local": "ab1fb638c27852a64b9d6de904790aeae2ac51dc2f009a775ed20aa43e7de231",
+  "sha256Remote": "ab1fb638c27852a64b9d6de904790aeae2ac51dc2f009a775ed20aa43e7de231",
+  "match": "BYTE_IDENTICAL",
+  "note": "Landing page lists this as the current procedural guide for decision 93483 (dated 31/12/2025). A differently-named file on the same page (qrar-twtyn-almhn-alhndsyt_6.pdf) is the decision text itself, not the guide. A third, larger file found via search (aldlyl-alajrayy-lqrar-twtyn-almhn-alhndsyt_3.pdf) is an older/different revision that does NOT match the local file's hash."
+ },
+ {
+  "sourceFile": "engtech.pdf",
+  "officialUrl": "https://www.hrsd.gov.sa/sites/default/files/2025-01/%D8%A7%D9%84%D8%AF%D9%84%D9%8A%D9%84%20%D8%A7%D9%84%D8%A5%D8%AC%D8%B1%D8%A7%D8%A6%D9%8A%20%D9%84%D9%82%D8%B1%D8%A7%D8%B1%20%D8%AA%D9%88%D8%B7%D9%8A%D9%86%20%D8%A7%D9%84%D9%85%D9%87%D9%86%20%D8%A7%D9%84%D9%81%D9%86%D9%8A%D8%A9%20%D8%A7%D9%84%D9%87%D9%86%D8%AF%D8%B3%D9%8A%D8%A9_1.pdf",
+  "landingPage": "https://www.hrsd.gov.sa/en/knowledge-centre/decisions-and-regulations/regulation-and-procedures/%D8%A7%D9%84%D8%AF%D9%84%D9%8A%D9%84-%D8%A7%D9%84%D8%A5%D8%AC%D8%B1%D8%A7%D8%A6%D9%8A-%D9%84%D9%82%D8%B1%D8%A7%D8%B1-%D8%AA%D9%88%D8%B7%D9%8A%D9%86-%D8%A7%D9%84%D9%85%D9%87%D9%86-%D8%A7%D9%84%D9%81%D9%86%D9%8A%D8%A9-%D8%A7%D9%84%D9%87%D9%86%D8%AF%D8%B3%D9%8A%D8%A9",
+  "sha256Local": "24e3309bec3c2ebf271fb16e8d7440ba675e6b21f4e9298a0d7b9ba404fabca3",
+  "sha256Remote": "24e3309bec3c2ebf271fb16e8d7440ba675e6b21f4e9298a0d7b9ba404fabca3",
+  "match": "BYTE_IDENTICAL",
+  "note": "Filename decoded: \"الدليل الإجرائي لقرار توطين المهن الفنية الهندسية_1.pdf\" (decisionNo 103105, decisionDate 26/01/2025). A newer 2026-01 re-publication (aldlyl-alajrayy-lqrar-twtyn-mhn-alfnyt-alhndsyt.pdf) also exists but has a different hash/size; the local file matches this 2025-01 original."
+ },
+ {
+  "sourceFile": "mkt.pdf",
+  "officialUrl": "https://www.hrsd.gov.sa/sites/default/files/2026-04/aldlyl-ala-jray-y-lqrar-twtyn-mhn-altswyq-v5.pdf",
+  "landingPage": "https://www.hrsd.gov.sa/knowledge-centre/decisions-and-regulations/regulation-and-procedures/%D8%A7%D9%84%D8%AF%D9%84%D9%8A%D9%84-%D8%A7%D9%84%D8%A7%D9%95%D8%AC%D8%B1%D8%A7%D9%8A%D9%94%D9%8A-%D9%84%D8%AA%D9%88%D8%B7%D9%8A%D9%86-%D9%85%D9%87%D9%86-%D8%A7%D9%84%D8%AA%D8%B3%D9%88%D9%8A%D9%82",
+  "sha256Local": "35877c56119306a051a9443502ca41f152180cfb43dee136d03fa092315fe5da",
+  "sha256Remote": "35877c56119306a051a9443502ca41f152180cfb43dee136d03fa092315fe5da",
+  "match": "BYTE_IDENTICAL",
+  "note": "Landing page lists this \"v5\" file (filename says v5, dated 2026-04) as the current procedural guide for decision 101319 (dated 19/01/2026). An earlier 2026-01 re-publication found via search (aldlyl-ala-jray-y-lqrar-twtyn-mhn-altswyq.pdf, no version suffix) does NOT match the local file's hash/size -- the local file is the later v5 revision."
+ },
+ {
+  "sourceFile": "sales.pdf",
+  "officialUrl": "https://www.hrsd.gov.sa/sites/default/files/2026-01/aldlyl-ala-jray-y-lqrar-twtyn-mhn-almby-at.pdf",
+  "landingPage": "https://www.hrsd.gov.sa/knowledge-centre/decisions-and-regulations/regulation-and-procedures/%D8%A7%D9%84%D8%AF%D9%84%D9%8A%D9%84-%D8%A7%D9%84%D8%A5%D8%AC%D8%B1%D8%A7%D8%A6%D9%8A-%D9%84%D8%AA%D9%88%D8%B7%D9%8A%D9%86-%D9%85%D9%87%D9%86-%D8%A7%D9%84%D9%85%D8%A8%D9%8A%D8%B9%D8%A7%D8%AA",
+  "sha256Local": "d3f093d71113fe9dd1b4b1f12c106ee9a5a9c325c1582578fc69f12dda4d653e",
+  "sha256Remote": "d3f093d71113fe9dd1b4b1f12c106ee9a5a9c325c1582578fc69f12dda4d653e",
+  "match": "BYTE_IDENTICAL",
+  "note": "Search-result title explicitly reads \"الصادر بالقرار الوزاري رقم 101278\" matching decisionNo exactly (decision dated 19/01/2026)."
+ },
+ {
+  "sourceFile": "pm.pdf",
+  "officialUrl": "https://www.hrsd.gov.sa/sites/default/files/2026-08/aldlyl-alajrayy-lqrar-almhn-adart-almshary--alnhayy-v.1.pdf",
+  "landingPage": "https://www.hrsd.gov.sa/knowledge-centre/decisions-and-regulations/regulation-and-procedures/%D8%A7%D9%84%D8%AF%D9%84%D9%8A%D9%84-%D8%A7%D9%84%D8%A5%D8%AC%D8%B1%D8%A7%D8%A6%D9%8A-%D9%84%D8%AA%D9%88%D8%B7%D9%8A%D9%86-%D9%85%D9%87%D9%86-%D8%A5%D8%AF%D8%A7%D8%B1%D8%A9-%D8%A7%D9%84%D9%85%D8%B4%D8%A7%D8%B1%D9%8A%D8%B9",
+  "sha256Local": "bcf5f5788299e5db7b46de6b18e6a9c39942113769acf91152e410964ff5d433",
+  "sha256Remote": "bcf5f5788299e5db7b46de6b18e6a9c39942113769acf91152e410964ff5d433",
+  "match": "BYTE_IDENTICAL",
+  "note": "Filename says \"alnhayy-v.1\" (final, v1), dated 2026-08, matching decision 41454 dated 13/08/2026. The landing page also links the raw decision text PDF (rqm-alqrar-41454.pdf), separate from this procedural guide."
+ }
+]

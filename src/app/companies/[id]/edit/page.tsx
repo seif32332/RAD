@@ -7,9 +7,17 @@ import Link from 'next/link';
 import DashboardLayout from '@/components/DashboardLayout';
 import { toast, readApiError } from '@/components/ui/feedback';
 import { toDateInputValue } from '@/lib/dates';
-import { CompanyFormFields, EMPTY_COMPANY_FORM, type CompanyFormData } from '../../_components/CompanyForm';
+import { CompanyFormFields, EMPTY_COMPANY_FORM, premiumsToForm, type CompanyFormData, type IqamaFeeRuleView } from '../../_components/CompanyForm';
+import { normalizeOvertimeBasis, type OvertimeHourlyBasis } from '@/lib/workforce/company-settings';
 
-type CompanyResponse = Partial<Record<keyof CompanyFormData, string | null>>;
+type TextField = Exclude<keyof CompanyFormData, 'isIndustrialLicensed' | 'overtimeHourlyBasis' | 'medicalPremiums' | 'iqamaFeeYear'>;
+type CompanyResponse = Partial<Record<TextField, string | null>> & {
+  isIndustrialLicensed?: boolean | null;
+  overtimeHourlyBasis?: string | null;
+  medicalPremiumsJson?: string | null;
+  iqamaFeeYear?: number | null;
+  iqamaFeeRule?: IqamaFeeRuleView | null;
+};
 
 export default function EditCompanyPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = use(params);
@@ -20,6 +28,8 @@ export default function EditCompanyPage({ params }: { params: Promise<{ id: stri
   const [isFetching, setIsFetching] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  const [storedBasis, setStoredBasis] = useState<OvertimeHourlyBasis>('BASIC');
+  const [iqamaFeeRule, setIqamaFeeRule] = useState<IqamaFeeRuleView | null>(null);
 
   const load = useCallback(async () => {
     setIsFetching(true);
@@ -35,7 +45,9 @@ export default function EditCompanyPage({ params }: { params: Promise<{ id: stri
         return;
       }
       const data = (await res.json()) as CompanyResponse;
-      const text = (k: keyof CompanyFormData) => data[k] || '';
+      const text = (k: TextField) => data[k] || '';
+      setStoredBasis(normalizeOvertimeBasis(data.overtimeHourlyBasis));
+      setIqamaFeeRule(data.iqamaFeeRule ?? null);
       setFormData({
         nameArabic: text('nameArabic'),
         nameEnglish: text('nameEnglish'),
@@ -57,6 +69,11 @@ export default function EditCompanyPage({ params }: { params: Promise<{ id: stri
         trademarkCertUrl: text('trademarkCertUrl'),
         moiNumber: text('moiNumber'),
         muqeemPlatformId: text('muqeemPlatformId'),
+        nitaqatActivity: text('nitaqatActivity'),
+        isIndustrialLicensed: data.isIndustrialLicensed === true,
+        overtimeHourlyBasis: normalizeOvertimeBasis(data.overtimeHourlyBasis),
+        medicalPremiums: premiumsToForm(data.medicalPremiumsJson),
+        iqamaFeeYear: typeof data.iqamaFeeYear === 'number' ? String(data.iqamaFeeYear) : '',
       });
     } catch {
       setLoadError('تعذر الاتصال بالخادم. تحقق من الاتصال ثم أعد المحاولة.');
@@ -68,6 +85,12 @@ export default function EditCompanyPage({ params }: { params: Promise<{ id: stri
   useEffect(() => {
     load();
   }, [load]);
+
+  // Links from the decision engine open «إعدادات الكلفة» directly (#company-cost-settings).
+  useEffect(() => {
+    if (isFetching || typeof window === 'undefined' || window.location.hash !== '#company-cost-settings') return;
+    document.getElementById('company-cost-settings')?.scrollIntoView({ block: 'start' });
+  }, [isFetching]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -165,7 +188,7 @@ export default function EditCompanyPage({ params }: { params: Promise<{ id: stri
                 </div>
               )}
 
-              <CompanyFormFields mode="edit" formData={formData} setFormData={setFormData} />
+              <CompanyFormFields mode="edit" formData={formData} setFormData={setFormData} storedOvertimeBasis={storedBasis} iqamaFeeRule={iqamaFeeRule} />
             </form>
           </div>
 

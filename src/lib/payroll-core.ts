@@ -10,9 +10,20 @@
 //                      Used for EVERY per-day charge: unpaid leave, sick-leave tiers,
 //                      penalty days, settlement working days / leave compensation.
 // - basicHourlyRate  = basic / (30 * default_work_hours_per_day)   (8h by default).
-//                      Overtime hour = basicHourlyRate * overtime_rate_multiplier
-//                      (overtime_weekend_multiplier on Friday/Saturday for a 5-day week,
-//                      Friday only for a 6-day week).
+//                      totalHourlyRate = (basic + recurring allowances) / (30 * hours per day).
+//                      multiplier = overtime_rate_multiplier (overtime_weekend_multiplier on
+//                      Friday/Saturday for a 5-day week, Friday only for a 6-day week).
+//                      The overtime hour depends on the COMPANY setting Company.overtimeHourlyBasis
+//                      (set once per company, «إعدادات الكلفة»; see overtimeHourlyRate):
+//                      BASIC (default, Radeef's historical behaviour) = basicHourlyRate * multiplier;
+//                      TOTAL_PLUS_HALF_BASIC (literal reading of Labor Law art. 107, «أجر الساعة
+//                      مضافاً إليه 50% من الأجر الأساسي») = totalHourlyRate + (multiplier - 1) *
+//                      basicHourlyRate, i.e. + 50% of the basic hourly for the normal 1.5
+//                      multiplier and + 100% for a 2.0 weekend multiplier.
+//                      The employee's company is legalCompanyId ?? actualCompanyId (no company ->
+//                      BASIC): overtimeBasisForEmployee. Amounts are computed when a DRAFT payroll /
+//                      a settlement is generated; APPROVED / PAID payroll rows and saved settlement
+//                      amounts are stored and never recomputed when the setting changes.
 // - Proration of the monthly salary for joiners / leavers is on a CALENDAR-DAY basis:
 //                      basic * eligibleDays / daysInMonth (same for recurring allowances).
 // - GOSI (payroll generation): src/lib/gosi.ts calculateGosi with the dated GosiRate table
@@ -29,6 +40,7 @@ import { roundMoney, sumMoney } from '@/lib/money';
 import { addDays, dateKey, monthRange, today, todayKey } from '@/lib/dates';
 import { SETTLEMENT_STATUS } from '@/lib/constants';
 import { validateSaudiIban } from '@/lib/iban';
+import { isSaudiNational as isSaudiNationalCanonical } from '@/lib/nationality';
 import {
   calculateGosi,
   gosiBaseWage,
@@ -158,9 +170,9 @@ export function housingAllowance(allowances: ReadonlyArray<AllowanceLike> | null
   );
 }
 
-/** Saudi nationality detection (single implementation in src/lib/gosi.ts). */
+/** Saudi nationality detection (thin wrapper; THE rule is src/lib/nationality.ts). */
 export function isSaudiNational(nationality: string | null | undefined): boolean {
-  return isSaudiForGosi(nationality);
+  return isSaudiNationalCanonical(nationality);
 }
 
 /** Friday (and Saturday for a 5-day week) are weekend days. Dates are date-only (UTC midnight). */
@@ -177,17 +189,91 @@ export interface OvertimeLike {
   amount: number | null;
 }
 
-/** Amount of one approved overtime request. LUMP_SUM / MAX_AMOUNT pay the fixed amount. */
+// ---------------------------------------------------------------------------
+// Overtime hourly basis (company setting Company.overtimeHourlyBasis)
+// ---------------------------------------------------------------------------
+
+/**
+ * How the overtime hour is paid (Company.overtimeHourlyBasis, one value per company):
+ * - BASIC: basic hourly × multiplier (Radeef's behaviour before the setting existed; the default).
+ * - TOTAL_PLUS_HALF_BASIC: literal reading of Labor Law art. 107 («أجر الساعة مضافاً إليه 50% من
+ *   الأجر الأساسي»): hourly of the TOTAL wage (basic + recurring allowances) + (multiplier − 1) × basic
+ *   hourly = total hourly + 50% of the basic hourly with the normal 1.5 multiplier, + 100% with a 2.0
+ *   weekend multiplier. The interpretation is to be confirmed by the company's legal counsel.
+ */
+export const OVERTIME_HOURLY_BASES = ['BASIC', 'TOTAL_PLUS_HALF_BASIC'] as const;
+export type OvertimeHourlyBasis = (typeof OVERTIME_HOURLY_BASES)[number];
+export const DEFAULT_OVERTIME_HOURLY_BASIS: OvertimeHourlyBasis = 'BASIC';
+
+/** Stored value -> basis; anything unknown (null, '', typo) is BASIC (today's behaviour). */
+export function normalizeOvertimeBasis(v: unknown): OvertimeHourlyBasis {
+  const s = typeof v === 'string' ? v.trim().toUpperCase() : '';
+  return (OVERTIME_HOURLY_BASES as ReadonlyArray<string>).includes(s) ? (s as OvertimeHourlyBasis) : DEFAULT_OVERTIME_HOURLY_BASIS;
+}
+
+/** Company whose settings apply to an employee: the legal company, else the actual one (null = none). */
+export function payrollCompanyId(emp: { legalCompanyId?: string | null; actualCompanyId?: string | null }): string | null {
+  return emp.legalCompanyId || emp.actualCompanyId || null;
+}
+
+/**
+ * The overtime basis of an employee from the selected company relations
+ * (legalCompany ?? actualCompany, see payrollCompanyId). No company -> BASIC.
+ */
+export function overtimeBasisForEmployee(emp: {
+  legalCompany?: { overtimeHourlyBasis?: string | null } | null;
+  actualCompany?: { overtimeHourlyBasis?: string | null } | null;
+}): OvertimeHourlyBasis {
+  const company = emp.legalCompany ?? emp.actualCompany ?? null;
+  return normalizeOvertimeBasis(company?.overtimeHourlyBasis);
+}
+
+/** Prisma select of the company relations overtimeBasisForEmployee reads. */
+export const OVERTIME_BASIS_SELECT = {
+  legalCompany: { select: { overtimeHourlyBasis: true } },
+  actualCompany: { select: { overtimeHourlyBasis: true } },
+} as const;
+
+/** Hourly rate of the total wage: (basic + recurring allowances) / (30 * hoursPerDay). Not rounded. */
+export function totalHourlyRate(emp: SalaryLike, settings: PayrollSettings = DEFAULT_PAYROLL_SETTINGS): number {
+  return monthlyWage(emp, 'total') / (30 * settings.workHoursPerDay);
+}
+
+/**
+ * Pay of ONE overtime hour for a multiplier (not rounded; see OvertimeHourlyBasis).
+ * TOTAL_PLUS_HALF_BASIC: total hourly + max(0, multiplier − 1) × basic hourly (the settings screen
+ * refuses a multiplier below 1; the pay never falls below the total hourly).
+ */
+export function overtimeHourlyRate(
+  emp: SalaryLike,
+  multiplier: number,
+  settings: PayrollSettings = DEFAULT_PAYROLL_SETTINGS,
+  basis: OvertimeHourlyBasis = DEFAULT_OVERTIME_HOURLY_BASIS,
+): number {
+  if (basis === 'TOTAL_PLUS_HALF_BASIC') {
+    return totalHourlyRate(emp, settings) + Math.max(0, multiplier - 1) * basicHourlyRate(emp, settings);
+  }
+  return basicHourlyRate(emp, settings) * multiplier;
+}
+
+/**
+ * Amount of one approved overtime request. LUMP_SUM / MAX_AMOUNT pay the fixed amount.
+ * `basis` = the company setting (overtimeBasisForEmployee); the default BASIC reproduces the historical
+ * numbers exactly (same expression: hours × basic hourly × multiplier). TOTAL_PLUS_HALF_BASIC reads the
+ * recurring allowances of `emp` (none given = basic only).
+ */
 export function overtimeAmount(
   ot: OvertimeLike,
-  emp: Pick<SalaryLike, 'basicSalary'>,
+  emp: SalaryLike,
   settings: PayrollSettings = DEFAULT_PAYROLL_SETTINGS,
+  basis: OvertimeHourlyBasis = DEFAULT_OVERTIME_HOURLY_BASIS,
 ): number {
   if (ot.type === 'LUMP_SUM' || ot.type === 'MAX_AMOUNT') return roundMoney(Math.max(0, ot.amount ?? 0));
   const hours = Math.max(0, ot.hours ?? 0);
   const multiplier = isWeekend(ot.date, settings.workDaysPerWeek)
     ? settings.overtimeWeekendMultiplier
     : settings.overtimeMultiplier;
+  if (basis === 'TOTAL_PLUS_HALF_BASIC') return roundMoney(hours * overtimeHourlyRate(emp, multiplier, settings, basis));
   return roundMoney(hours * basicHourlyRate(emp, settings) * multiplier);
 }
 
@@ -465,6 +551,11 @@ export interface PayrollLineInput {
   loans: ReadonlyArray<{ id: string; monthlyInstallment: number; remaining: number }>;
   settings: PayrollSettings;
   /**
+   * Overtime hourly basis of the employee's company (Company.overtimeHourlyBasis via
+   * overtimeBasisForEmployee). Omitted = BASIC (historical behaviour).
+   */
+  overtimeBasis?: OvertimeHourlyBasis;
+  /**
    * How the salary is paid (payment-readiness flags only, never changes a number). Omitted =
    * not checked. `iban` must be the DECRYPTED value (null / '' = none on file).
    */
@@ -707,7 +798,7 @@ export function computePayrollLine(input: PayrollLineInput): PayrollLineResult {
   const bonuses = sumMoney(input.bonuses.map((b) => b.amount));
   const totalAllowances = roundMoney(recurringAllowances + bonuses);
 
-  const overtimeCost = sumMoney(input.overtimes.map((ot) => overtimeAmount(ot, emp, settings)));
+  const overtimeCost = sumMoney(input.overtimes.map((ot) => overtimeAmount(ot, emp, settings, input.overtimeBasis)));
 
   const rate = dailyRate({ basicSalary: basicFull, allowances: emp.allowances });
   const leaveDeductions = sumMoney(

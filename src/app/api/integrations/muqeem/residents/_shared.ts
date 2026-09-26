@@ -17,13 +17,14 @@ export async function loadCompany(companyId: string) {
 
 /**
  * Reads the whole active residents report of the company (pages of 500, capped at 5000 residents).
- * Read-only on Muqeem. Throws MuqeemError (NOT_CONFIGURED / NOT_LINKED / AUTH / REJECTED / UNAVAILABLE).
+ * Read-only on Muqeem. Dependents are requested so each row carries a dependents count (only the count
+ * is compared / stored, never the dependents' details). Throws MuqeemError (NOT_CONFIGURED / NOT_LINKED / AUTH / REJECTED / UNAVAILABLE).
  */
 export async function fetchAllResidents(companyId: string): Promise<CollectedReport<NormalizedResident>> {
   const client = await createMuqeemClient({ companyId });
   return collectReportPages<NormalizedResident>(
     async (page, size) => {
-      const raw = await client.getActiveResidentsReport({ page, size, withDependents: false });
+      const raw = await client.getActiveResidentsReport({ page, size, withDependents: true });
       return { rows: normalizeActiveResidents(raw), rawCount: findResidentRows(raw).length, total: activeResidentsTotal(raw) };
     },
     { pageSize: SYNC_PAGE_SIZE, cap: MAX_SYNC_RESIDENTS, keyOf: (r) => r.iqamaNumber },
@@ -42,6 +43,8 @@ const EMPLOYEE_SELECT = {
   iqamaOrIdExp: true,
   passportNumber: true,
   passportExp: true,
+  occupationName: true,
+  dependentsCount: true,
   isTerminated: true,
   legalCompanyId: true,
 } as const;
@@ -58,6 +61,8 @@ type EmployeeRow = {
   iqamaOrIdExp: Date;
   passportNumber: string | null;
   passportExp: Date | null;
+  occupationName: string | null;
+  dependentsCount: number | null;
   isTerminated: boolean;
   legalCompanyId: string | null;
 };
@@ -74,6 +79,8 @@ export function toSyncEmployee(e: EmployeeRow): SyncEmployee {
     iqamaOrIdExp: e.iqamaOrIdExp,
     passportNumber: e.passportNumber,
     passportExp: e.passportExp,
+    occupationName: e.occupationName,
+    dependentsCount: e.dependentsCount,
     isTerminated: e.isTerminated,
     legalCompanyId: e.legalCompanyId,
   };

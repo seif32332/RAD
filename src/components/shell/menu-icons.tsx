@@ -37,6 +37,12 @@ import {
   Users,
   Wallet,
   Zap,
+  Gauge,
+  Calculator,
+  UserMinus,
+  SlidersHorizontal,
+  BookOpenCheck,
+  Archive,
 } from "lucide-react";
 import type { MenuIconName } from "@/lib/menu";
 
@@ -78,4 +84,10 @@ export const MENU_ICONS: Record<MenuIconName, LucideIcon> = {
   Users,
   Wallet,
   Zap,
+  Gauge,
+  Calculator,
+  UserMinus,
+  SlidersHorizontal,
+  BookOpenCheck,
+  Archive,
 };

@@ -29,6 +29,7 @@ import {
   orgPlacementErrors,
 } from '@/lib/employee';
 import { daysBetween } from '@/lib/dates';
+import { employeeWorkforceFieldsSchema, redactWorkforceForPayroll, resolveWorkforceFields, zAllowanceType } from './_workforce-fields';
 
 export const dynamic = 'force-dynamic';
 
@@ -52,6 +53,8 @@ const allowanceSchema = z.object({
   name: z.string().trim().max(200),
   amount: zMoney,
   countsTowardGosi: z.boolean().optional().nullable(),
+  /** HOUSING / TRANSPORT / FOOD / OTHER; null = inferred from the name. */
+  allowanceType: zAllowanceType,
 });
 
 const createEmployeeSchema = z.object({
@@ -96,7 +99,10 @@ const createEmployeeSchema = z.object({
   healthCertDocUrl: zOptText(2000),
   passportDocUrl: zOptText(2000),
   allowances: z.array(allowanceSchema).max(50).optional(),
-}).merge(employeeGosiFieldsSchema);
+})
+  .merge(employeeGosiFieldsSchema)
+  // Workforce decision engine data (occupation, dependents, Nitaqat flags, Qiwa, medical class).
+  .merge(employeeWorkforceFieldsSchema);
 
 export async function POST(req: Request) {
   try {
@@ -125,6 +131,8 @@ export async function POST(req: Request) {
     }
     const dateIssues = employeeDateIssues({ dateOfBirth: b.dateOfBirth, joinDate: b.joinDate, contractEndDate: b.contractEndDate });
     dateErrors.push(...dateIssues.errors);
+    const workforce = resolveWorkforceFields(b, null, b.contractType);
+    dateErrors.push(...workforce.errors);
     if (dateErrors.length) throw badRequest(dateErrors.join(' — '));
 
     const [branch, department] = await Promise.all([
@@ -143,6 +151,7 @@ export async function POST(req: Request) {
         amount: roundMoney(a.amount),
         isMonthly: true,
         countsTowardGosi: typeof a.countsTowardGosi === 'boolean' ? a.countsTowardGosi : defaultCountsTowardGosi(a.name),
+        allowanceType: a.allowanceType ?? null,
       }));
 
     const data: Omit<Prisma.EmployeeUncheckedCreateInput, 'employeeId'> = {
@@ -190,6 +199,7 @@ export async function POST(req: Request) {
       gosiRegistrationSource: b.gosiRegistrationSource ?? null,
       gosiNumber: b.gosiNumber ?? null,
       idType: b.idType ?? null,
+      ...workforce.data,
       allowances: allowances.length ? { create: allowances } : undefined,
     };
 
@@ -277,7 +287,7 @@ export async function GET(req: Request) {
     }
 
     const rows = await prisma.employee.findMany({ include: EMPLOYEE_LIST_FULL_INCLUDE, orderBy, ...page });
-    return NextResponse.json(level === 'payroll' ? rows.map(redactForPayroll) : rows);
+    return NextResponse.json(level === 'payroll' ? rows.map((r) => redactWorkforceForPayroll(redactForPayroll(r))) : rows);
   } catch (err) {
     return handleApiError(err, 'employees:GET');
   }

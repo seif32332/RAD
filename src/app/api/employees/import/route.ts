@@ -416,16 +416,17 @@ export async function POST(req: Request) {
       const gosiDeduction = cellNumber(raw.gosiDeduction);
 
       // Monthly allowances from the row (housing counts toward the GOSI base: Allowance.countsTowardGosi).
-      const allowances: Array<{ name: string; amount: number; countsTowardGosi: boolean }> = [];
+      // The template has one column per allowance kind, so the type is known (Allowance.allowanceType).
+      const allowances: Array<{ name: string; amount: number; countsTowardGosi: boolean; allowanceType: 'HOUSING' | 'TRANSPORT' | 'OTHER' }> = [];
       const housing = cellNumber(raw.housingAllowance);
       const transport = cellNumber(raw.transportAllowance);
       const other = cellNumber(raw.otherAllowances);
-      const addAllowance = (name: string, amount: number | null) => {
-        if (amount && amount > 0) allowances.push({ name, amount: roundMoney(amount), countsTowardGosi: defaultCountsTowardGosi(name) });
+      const addAllowance = (name: string, amount: number | null, allowanceType: 'HOUSING' | 'TRANSPORT' | 'OTHER') => {
+        if (amount && amount > 0) allowances.push({ name, amount: roundMoney(amount), countsTowardGosi: defaultCountsTowardGosi(name), allowanceType });
       };
-      addAllowance(ALLOWANCE_NAMES.HOUSING, housing);
-      addAllowance(ALLOWANCE_NAMES.TRANSPORT, transport);
-      addAllowance(ALLOWANCE_NAMES.OTHER, other);
+      addAllowance(ALLOWANCE_NAMES.HOUSING, housing, 'HOUSING');
+      addAllowance(ALLOWANCE_NAMES.TRANSPORT, transport, 'TRANSPORT');
+      addAllowance(ALLOWANCE_NAMES.OTHER, other, 'OTHER');
 
       // Non-empty cells that cannot be read are reported instead of being silently dropped
       // (a date or amount is never invented or skipped without telling the user).

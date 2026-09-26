@@ -8,6 +8,9 @@ import {
   isNameMismatch,
   isSyncField,
   MUQEEM_OPERATION_LABELS,
+  muqeemDependentsCount,
+  normalizeOccupation,
+  SYNC_FIELDS,
   namesLooselyMatch,
   normalizeIqamaNumber,
   normalizePassportNumber,
@@ -31,6 +34,8 @@ function emp(over: Partial<SyncEmployee> = {}): SyncEmployee {
     iqamaOrIdExp: utc('2027-03-15'),
     passportNumber: 'AB1234567',
     passportExp: utc('2029-01-10'),
+    occupationName: 'محاسب',
+    dependentsCount: null,
     isTerminated: false,
     legalCompanyId: CO,
     ...over,
@@ -47,6 +52,7 @@ function res(over: Partial<SyncResident> = {}): SyncResident {
     iqamaExpiry: utc('2027-03-15'),
     passportNumber: 'AB1234567',
     passportExpiry: utc('2029-01-10'),
+    dependentsCount: null,
     ...over,
   };
 }
@@ -77,6 +83,9 @@ describe('normalization', () => {
   it('isSyncField', () => {
     expect(isSyncField('passportExp')).toBe(true);
     expect(isSyncField('basicSalary')).toBe(false);
+    expect(isSyncField('occupationName')).toBe(true);
+    expect(isSyncField('dependentsCount')).toBe(true);
+    expect([...SYNC_FIELDS]).toEqual(['iqamaOrIdExp', 'passportNumber', 'passportExp', 'occupationName', 'dependentsCount']);
   });
 
   it('every Muqeem operation has an Arabic label', async () => {
@@ -274,5 +283,65 @@ describe('collectReportPages', () => {
       { pageSize: 10, cap: 1000 },
     );
     expect(calls).toEqual([0, 1]);
+  });
+});
+
+describe('occupation and dependents count (workforce engine data)', () => {
+  it('occupation compares after Arabic / spacing normalization; a missing Muqeem value is not a difference', () => {
+    expect(normalizeOccupation(' فنّي  كهرباء ')).toBe(normalizeOccupation('فني كهرباء'));
+    expect(fieldDiffs(emp({ occupationName: 'محاسب ' }), res())).toEqual([]);
+    expect(fieldDiffs(emp({ occupationName: 'محاسب' }), res({ occupation: null }))).toEqual([]);
+    expect(fieldDiffs(emp({ occupationName: null }), res(), ['occupationName'])).toEqual([
+      { field: 'occupationName', label: 'المهنة', radeef: null, muqeem: 'محاسب' },
+    ]);
+    expect(fieldDiffs(emp({ occupationName: 'سائق' }), res({ occupation: '  فني   كهرباء ' }), ['occupationName'])[0]).toMatchObject({ radeef: 'سائق', muqeem: 'فني كهرباء' });
+  });
+
+  it('dependents count: 0 is a value, null / implausible counts are not', () => {
+    expect(muqeemDependentsCount({ dependentsCount: 0 })).toBe(0);
+    expect(muqeemDependentsCount({ dependentsCount: 3 })).toBe(3);
+    expect(muqeemDependentsCount({ dependentsCount: null })).toBeNull();
+    expect(muqeemDependentsCount({ dependentsCount: -1 })).toBeNull();
+    expect(muqeemDependentsCount({ dependentsCount: 2.5 })).toBeNull();
+    expect(muqeemDependentsCount({ dependentsCount: 31 })).toBeNull();
+    expect(fieldDiffs(emp({ dependentsCount: null }), res({ dependentsCount: 0 }), ['dependentsCount'])).toEqual([
+      { field: 'dependentsCount', label: 'عدد المرافقين', radeef: null, muqeem: '0' },
+    ]);
+    expect(fieldDiffs(emp({ dependentsCount: 2 }), res({ dependentsCount: 2 }))).toEqual([]);
+    expect(fieldDiffs(emp({ dependentsCount: 2 }), res({ dependentsCount: null }))).toEqual([]);
+    expect(fieldDiffs(emp({ dependentsCount: 2 }), res({ dependentsCount: 99 }))).toEqual([]);
+  });
+
+  it('computeResidentDiff lists the new fields as applicable diffs', () => {
+    const d = computeResidentDiff(CO, [res({ occupation: 'مهندس', dependentsCount: 2 })], [emp()]);
+    expect(d.counts.mismatched).toBe(1);
+    expect(d.mismatched[0].diffs.map((x) => [x.field, x.radeef, x.muqeem])).toEqual([
+      ['occupationName', 'محاسب', 'مهندس'],
+      ['dependentsCount', null, '2'],
+    ]);
+  });
+
+  it('planEmployeeUpdate writes only the selected new fields, with Muqeem values', () => {
+    const e = emp({ occupationName: null, dependentsCount: 1 });
+    const r = res({ occupation: ' مهندس  مدني ', dependentsCount: 3 });
+    const onlyOccupation = planEmployeeUpdate(e, r, ['occupationName']);
+    expect(onlyOccupation.data).toEqual({ occupationName: 'مهندس مدني' });
+    expect(onlyOccupation.changes).toEqual([{ field: 'occupationName', before: null, after: 'مهندس مدني' }]);
+
+    const both = planEmployeeUpdate(e, r, ['dependentsCount', 'occupationName']);
+    expect(both.data).toEqual({ occupationName: 'مهندس مدني', dependentsCount: 3 });
+    expect(both.changes.map((c) => c.field)).toEqual(['occupationName', 'dependentsCount']);
+
+    // Idempotent once applied.
+    expect(planEmployeeUpdate({ ...e, ...both.data }, r, ['dependentsCount', 'occupationName']).changes).toEqual([]);
+  });
+
+  it('reports unchanged new fields with the reason', () => {
+    const plan = planEmployeeUpdate(emp({ dependentsCount: 0 }), res({ occupation: null, dependentsCount: 0 }), ['occupationName', 'dependentsCount']);
+    expect(plan.data).toEqual({});
+    expect(plan.unchanged).toEqual([
+      { field: 'occupationName', reason: 'NO_MUQEEM_VALUE' },
+      { field: 'dependentsCount', reason: 'SAME_VALUE' },
+    ]);
   });
 });

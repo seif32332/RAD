@@ -60,6 +60,8 @@ export const ROLE_GROUPS = {
   MANAGERS: ['SUPER_ADMIN', 'COMPANY_ADMIN', 'HR_MANAGER', 'BRANCH_MANAGER', 'DEPT_MANAGER'] as readonly AppRole[],
   /** Logistics: vehicles, claims, telecom, utilities, assets. */
   LOGISTICS: ['SUPER_ADMIN', 'COMPANY_ADMIN', 'HR_MANAGER', 'PURCHASING_AGENT', 'GOV_RELATIONS'] as readonly AppRole[],
+  /** Workforce decision engine ("محرك القرارات", docs/workforce-engine/SPEC.md): owner, finance and HR management. */
+  WORKFORCE: ['SUPER_ADMIN', 'COMPANY_ADMIN', 'FINANCE_MANAGER', 'HR_MANAGER'] as readonly AppRole[],
 } as const;
 
 export function isAppRole(v: unknown): v is AppRole {

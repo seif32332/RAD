@@ -19,7 +19,7 @@ import { decryptField } from '@/lib/crypto';
 import { addDays, dateKey, daysBetween, today } from '@/lib/dates';
 import { formatMoney, roundMoney, sumMoney } from '@/lib/money';
 import { BALANCE_CONSUMING_STATUSES, BALANCE_LEAVE_TYPES, leaveTypeLabel } from '@/lib/leave';
-import { loadPayrollSettings, overtimeAmount, overtimeHolders, overtimeLegacyCutoff } from '@/lib/payroll';
+import { loadPayrollSettings, overtimeAmount, overtimeBasisForEmployee, OVERTIME_BASIS_SELECT, overtimeHolders, overtimeLegacyCutoff } from '@/lib/payroll';
 import {
   computeSettlement,
   COUNSEL_PENDING_NOTE,
@@ -364,6 +364,8 @@ async function computeForRequest(body: CreateSettlementBody) {
         nationality: true,
         isTerminated: true,
         leaveAccrualStartDate: true,
+        // Company cost setting: overtime hourly basis (legal company, else actual company).
+        ...OVERTIME_BASIS_SELECT,
         allowances: { where: { isMonthly: true }, select: { name: true, amount: true, isMonthly: true } },
         leaves: {
           where: {
@@ -421,7 +423,8 @@ async function computeForRequest(body: CreateSettlementBody) {
     body.type === 'END_OF_SERVICE'
       ? employee.overtimeRequests.filter((ot) => overtimeDueInSettlement(ot, employee.payrolls, lastDate, { legacyCutoff, holders }))
       : [];
-  const unpaidOvertime = sumMoney(dueOvertime.map((ot) => overtimeAmount(ot, employee, settings)));
+  const overtimeBasis = overtimeBasisForEmployee(employee);
+  const unpaidOvertime = sumMoney(dueOvertime.map((ot) => overtimeAmount(ot, employee, settings, overtimeBasis)));
   const outstandingLoans = outstandingLoansForSettlement(employee.loans, lastDate);
 
   const flightTicketAllowance = body.flightTicketOption === 'amount' ? roundMoney(body.flightTicketAmount ?? 0) : 0;

@@ -28,6 +28,16 @@ import {
   gosiRegimeSourceError,
 } from '@/lib/employee';
 import { deactivateEmployeeUser } from '@/lib/access';
+import {
+  defaultExitVoluntary,
+  employeeExitFieldsSchema,
+  employeeWorkforceFieldsSchema,
+  redactWorkforceForPayroll,
+  resolveWorkforceFields,
+  zAllowanceType,
+  zExitReason,
+  zExitVoluntary,
+} from '../_workforce-fields';
 
 export const dynamic = 'force-dynamic';
 
@@ -44,7 +54,8 @@ export async function GET(_req: Request, { params }: Ctx) {
     if (level === 'full' || level === 'payroll') {
       const employee = await prisma.employee.findUnique({ where: { id }, include: EMPLOYEE_DETAIL_INCLUDE });
       if (!employee) throw notFound('الموظف غير موجود');
-      return NextResponse.json(level === 'payroll' ? redactForPayroll(employee) : employee);
+      // Payroll / finance: no identity documents and no disability data (redactWorkforceForPayroll).
+      return NextResponse.json(level === 'payroll' ? redactWorkforceForPayroll(redactForPayroll(employee)) : employee);
     }
 
     const scope = level === 'team' ? await managedEmployeesWhere(prisma, user) : null;
@@ -132,11 +143,30 @@ const updateEmployeeSchema = z.object({
         name: z.string().trim().max(200),
         amount: zMoney,
         countsTowardGosi: z.boolean().optional().nullable(),
+        /** HOUSING / TRANSPORT / FOOD / OTHER; null = inferred from the name. */
+        allowanceType: zAllowanceType,
       }),
     )
     .max(50)
     .optional(),
-}).merge(employeeGosiFieldsSchema);
+})
+  .merge(employeeGosiFieldsSchema)
+  // Workforce decision engine data; exitReason / exitVoluntary only for a terminated employee.
+  .merge(employeeWorkforceFieldsSchema)
+  .merge(employeeExitFieldsSchema);
+
+/** Stored values the workforce-field rules depend on (see resolveWorkforceFields). */
+const WORKFORCE_STATE_SELECT = {
+  contractType: true,
+  isTerminated: true,
+  isDisabled: true,
+  muawamaCertExpiry: true,
+  partTimeWeeklyHours: true,
+  qiwaContractDocumented: true,
+  qiwaContractDocumentedAt: true,
+  exitReason: true,
+  exitVoluntary: true,
+} as const;
 
 export async function PUT(req: Request, { params }: Ctx) {
   try {
@@ -146,9 +176,22 @@ export async function PUT(req: Request, { params }: Ctx) {
 
     const existing = await prisma.employee.findUnique({
       where: { id },
-      select: { ...REVIEW_STATE_SELECT, gosiRegime: true, gosiRegistrationSource: true, idType: true, probationEndDate: true, joinDate: true, contractEndDate: true },
+      select: {
+        ...REVIEW_STATE_SELECT,
+        ...WORKFORCE_STATE_SELECT,
+        gosiRegime: true,
+        gosiRegistrationSource: true,
+        idType: true,
+        probationEndDate: true,
+        joinDate: true,
+        contractEndDate: true,
+      },
     });
     if (!existing) throw notFound('الموظف غير موجود');
+    // Workforce fields: part-time hours only for PART_TIME, Muawama only when disabled, Qiwa date
+    // auto-set when documented, exit reason only once terminated (Arabic errors, nothing written).
+    const workforce = resolveWorkforceFields(b, existing, b.contractType ?? existing.contractType);
+    if (workforce.errors.length) throw badRequest(workforce.errors.join(' — '));
     // Same date gates as creation: no future birth date, no contract ending before the join date.
     const todayDate = today();
     if (b.dateOfBirth && b.dateOfBirth > todayDate) throw badRequest('تاريخ الميلاد لا يمكن أن يكون في المستقبل');
@@ -218,6 +261,7 @@ export async function PUT(req: Request, { params }: Ctx) {
       gosiNumber: b.gosiNumber,
       idType: b.idType,
       dataReviewNote,
+      ...workforce.data,
     });
 
     let updated;
@@ -235,7 +279,11 @@ export async function PUT(req: Request, { params }: Ctx) {
           // Only recurring allowances are replaced; one-off bonuses (isMonthly=false) are kept,
           // including when the form echoes them back.
           const oneOff = await tx.allowance.findMany({ where: { employeeId: id, isMonthly: false }, select: { id: true } });
-          const toCreate = monthlyAllowanceRows(b.allowances, oneOff.map((a) => a.id));
+          // Row by row so each kept row keeps its own allowanceType (monthlyAllowanceRows drops it).
+          const oneOffIds = oneOff.map((a) => a.id);
+          const toCreate = b.allowances.flatMap((a) =>
+            monthlyAllowanceRows([a], oneOffIds).map((row) => ({ ...row, allowanceType: a.allowanceType ?? null })),
+          );
           await tx.allowance.deleteMany({ where: { employeeId: id, isMonthly: true } });
           if (toCreate.length) {
             await tx.allowance.createMany({
@@ -245,6 +293,7 @@ export async function PUT(req: Request, { params }: Ctx) {
                 amount: roundMoney(a.amount),
                 isMonthly: true,
                 countsTowardGosi: a.countsTowardGosi,
+                allowanceType: a.allowanceType,
               })),
             });
           }
@@ -331,6 +380,10 @@ const patchSchema = z.object({
   terminationDate: zOptDate,
   /** Required with action=terminate: the written reason (kept in the audit log). */
   reason: zOptText(1000),
+  /** action=terminate: structured exit reason (Employee.exitReason, fixed list) and whether the exit is voluntary. */
+  exitReason: zExitReason,
+  /** Missing -> defaultExitVoluntary(exitReason) (null when the reason is ambiguous). */
+  exitVoluntary: zExitVoluntary,
   /** SUPER_ADMIN / LEGAL_ADMIN only: terminate despite an approved maternity / sick leave in effect. */
   overrideProtectedLeave: z.preprocess((v) => (v === 'true' ? true : v === 'false' ? false : v), z.boolean().optional()),
   workContractUrl: zOptText(2000),
@@ -353,6 +406,11 @@ export async function PATCH(req: Request, { params }: Ctx) {
       if (reason.length < 3) throw badRequest('سبب إنهاء الخدمات مطلوب (نص مكتوب يُحفظ في سجل التدقيق)');
       const terminationDate = b.terminationDate ?? today();
       const canOverride = PROTECTED_LEAVE_OVERRIDE_ROLES.includes(user.role);
+      const exitReason = b.exitReason ?? null;
+      if (!exitReason && b.exitVoluntary !== undefined && b.exitVoluntary !== null) {
+        throw badRequest('حدد سبب الخروج قبل تحديد هل الخروج طوعي');
+      }
+      const exitVoluntary = b.exitVoluntary !== undefined && b.exitVoluntary !== null ? b.exitVoluntary : defaultExitVoluntary(exitReason);
       if (b.overrideProtectedLeave === true && !canOverride) {
         throw forbidden('تجاوز حماية إجازة الوضع أو الإجازة المرضية متاح لمدير النظام أو الإدارة القانونية فقط');
       }
@@ -378,7 +436,8 @@ export async function PATCH(req: Request, { params }: Ctx) {
         }
         const res = await tx.employee.updateMany({
           where: { id, isTerminated: false },
-          data: { isTerminated: true, terminationDate },
+          // Structured exit (workforce engine): stored with the termination, the free-text reason stays in the audit log.
+          data: { isTerminated: true, terminationDate, exitReason, exitVoluntary },
         });
         if (res.count === 0) {
           const exists = await tx.employee.findUnique({ where: { id }, select: { id: true } });
@@ -396,6 +455,8 @@ export async function PATCH(req: Request, { params }: Ctx) {
               action: 'terminate',
               terminationDate: dateKey(terminationDate),
               reason,
+              exitReason,
+              exitVoluntary,
               ...(protectedLeave
                 ? { protectedLeaveOverride: true, protectedLeaveId: protectedLeave.id, protectedLeaveType: protectedLeave.leaveType, overriddenByRole: user.role }
                 : {}),

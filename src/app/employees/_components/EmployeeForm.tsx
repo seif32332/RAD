@@ -6,7 +6,7 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import Link from 'next/link';
-import { Wallet, Fingerprint, ArrowRight, FileArchive, Check, Briefcase, Calculator, Plus, Trash2, AlertCircle, AlertTriangle, RefreshCw, ShieldCheck } from 'lucide-react';
+import { Wallet, Fingerprint, ArrowRight, FileArchive, Check, Briefcase, Calculator, Plus, Trash2, AlertCircle, AlertTriangle, RefreshCw, ShieldCheck, Scale } from 'lucide-react';
 import SearchableSelect, { type SelectChangeEvent } from '@/components/SearchableSelect';
 import FileUploadField from '@/components/FileUploadField';
 import { toast, promptDialog, readApiError } from '@/components/ui/feedback';
@@ -24,6 +24,18 @@ import {
   type EmployeeDataWarning,
 } from '@/lib/employee-shared';
 import { ID_TYPES, ID_TYPE_LABELS } from '@/lib/identity';
+import {
+  ALLOWANCE_TYPES,
+  ALLOWANCE_TYPE_LABELS,
+  ALLOWANCE_TYPE_UNSET_LABEL,
+  DEPENDENTS_FEE_PAYERS,
+  DEPENDENTS_FEE_PAYER_LABELS,
+  DEPENDENTS_MAX,
+  MEDICAL_INSURANCE_CLASSES,
+  PART_TIME_HOURS_MAX,
+  PART_TIME_HOURS_MIN,
+  allowanceTypeFromName,
+} from '@/app/api/employees/_workforce-fields';
 
 // ---------------------------------------------------------------------------
 // Types & constants
@@ -75,6 +87,21 @@ export interface EmployeeFormData {
   gosiNumber: string;
   /** NATIONAL_ID / IQAMA / BORDER_NUMBER / PASSPORT or '' (not set). */
   idType: string;
+  // Workforce decision engine ("بيانات الكلفة والسعودة"): all optional.
+  occupationName: string;
+  occupationCode: string;
+  dependentsCount: string;
+  /** COMPANY / EMPLOYEE or '' (not set). */
+  dependentsFeePaidBy: string;
+  medicalInsuranceClass: string;
+  isDisabled: boolean;
+  muawamaCertExpiry: string;
+  isStudent: boolean;
+  /** Only sent for a PART_TIME contract. */
+  partTimeWeeklyHours: string;
+  qiwaContractDocumented: boolean;
+  /** '' with qiwaContractDocumented = today (set by the server). */
+  qiwaContractDocumentedAt: string;
 }
 
 /** Canonical Saudi label (single source: src/lib/employee-shared.ts). It is never a default value. */
@@ -122,6 +149,9 @@ export const EMPTY_EMPLOYEE_FORM: EmployeeFormData = {
   basicSalary: '', gosiDeduction: '',
   idDocUrl: '', passportDocUrl: '', healthCertDocUrl: '', contractDocUrl: '',
   gosiRegime: 'UNKNOWN', gosiRegistrationSource: '', gosiNumber: '', idType: '',
+  occupationName: '', occupationCode: '', dependentsCount: '', dependentsFeePaidBy: '', medicalInsuranceClass: '',
+  isDisabled: false, muawamaCertExpiry: '', isStudent: false, partTimeWeeklyHours: '',
+  qiwaContractDocumented: false, qiwaContractDocumentedAt: '',
 };
 
 export interface AllowanceDraft {
@@ -130,6 +160,8 @@ export interface AllowanceDraft {
   amount: string;
   /** Allowance.countsTowardGosi ("يدخل في وعاء التأمينات"). */
   countsTowardGosi: boolean;
+  /** Allowance.allowanceType: HOUSING / TRANSPORT / FOOD / OTHER, '' = not set (inferred from the name). */
+  allowanceType: string;
 }
 
 /** Default of the GOSI-base checkbox for an allowance name: housing -> true (same rule as the API). */
@@ -213,6 +245,7 @@ export const FORM_SECTIONS = [
   { id: 'job', title: 'العقد والتسكين', subtitle: 'الشركات، المنصب، الأقسام', icon: Briefcase, color: 'text-indigo-500' },
   { id: 'documents', title: 'الأوراق الثبوتية', subtitle: 'مراقبة انتهاء الصلاحيات', icon: FileArchive, color: 'text-violet-500' },
   { id: 'financial', title: 'الحزمة المالية', subtitle: 'الرواتب، البدلات، التأمينات', icon: Wallet, color: 'text-emerald-500' },
+  { id: 'workforce', title: 'الكلفة والسعودة', subtitle: 'المهنة، المرافقون، قوى', icon: Scale, color: 'text-amber-500' },
 ] as const;
 
 // ---------------------------------------------------------------------------
@@ -251,9 +284,14 @@ export function buildEmployeePayload(formData: EmployeeFormData, allowances: All
     lastNameEnglish: lastNameEn,
     administrationId: formData.administrationId || null,
     gosiDeduction: isGosiEnabled ? formData.gosiDeduction : '0',
+    // Dependent fields are only sent with the flag / contract type that makes them meaningful
+    // ('' clears them; the API applies the same rules).
+    partTimeWeeklyHours: formData.contractType === 'PART_TIME' ? formData.partTimeWeeklyHours : '',
+    muawamaCertExpiry: formData.isDisabled ? formData.muawamaCertExpiry : '',
+    qiwaContractDocumentedAt: formData.qiwaContractDocumented ? formData.qiwaContractDocumentedAt : '',
     allowances: allowances
       .filter((a) => a.name && a.amount)
-      .map((a) => ({ id: a.id, name: a.name, amount: a.amount, countsTowardGosi: a.countsTowardGosi })),
+      .map((a) => ({ id: a.id, name: a.name, amount: a.amount, countsTowardGosi: a.countsTowardGosi, allowanceType: a.allowanceType || null })),
   };
 }
 
@@ -609,18 +647,26 @@ export function EmployeeFormFields({
     }
   };
 
-  const addAllowance = () => setAllowances((prev) => [...prev, { id: crypto.randomUUID(), name: '', amount: '', countsTowardGosi: false }]);
+  const addAllowance = () => setAllowances((prev) => [...prev, { id: crypto.randomUUID(), name: '', amount: '', countsTowardGosi: false, allowanceType: '' }]);
   const updateAllowance = (id: string, field: 'name' | 'amount', value: string) =>
     setAllowances((prev) =>
       prev.map((a) => {
         if (a.id !== id) return a;
         // Picking a name sets the GOSI-base default for it (housing -> yes); HR can still change it.
-        if (field === 'name') return { ...a, name: value, countsTowardGosi: defaultCountsTowardGosi(value) };
+        // The type follows the name while it was not chosen by hand ('' or the previous name's type).
+        if (field === 'name') {
+          const autoType = !a.allowanceType || a.allowanceType === allowanceTypeFromName(a.name);
+          return { ...a, name: value, countsTowardGosi: defaultCountsTowardGosi(value), allowanceType: autoType ? allowanceTypeFromName(value) : a.allowanceType };
+        }
         return { ...a, amount: value };
       }),
     );
   const setAllowanceGosi = (id: string, value: boolean) =>
     setAllowances((prev) => prev.map((a) => (a.id === id ? { ...a, countsTowardGosi: value } : a)));
+  const setAllowanceType = (id: string, value: string) =>
+    setAllowances((prev) => prev.map((a) => (a.id === id ? { ...a, allowanceType: value } : a)));
+  const setFlag = (name: 'isDisabled' | 'isStudent' | 'qiwaContractDocumented', value: boolean) =>
+    setFormData((prev) => ({ ...prev, [name]: value }));
   const removeAllowance = (id: string) => setAllowances((prev) => prev.filter((a) => a.id !== id));
 
   const companyOptions = refs.companies.map((c) => ({ label: c.nameArabic, value: c.id }));
@@ -866,6 +912,16 @@ export function EmployeeFormFields({
                     {!ALLOWANCE_NAMES.includes(allw.name) && allw.name && <option value={allw.name}>{allw.name}</option>}
                     {ALLOWANCE_NAMES.map((n) => <option key={n} value={n}>{n}</option>)}
                   </select>
+                  <select
+                    aria-label="تصنيف البدل (لمحرك القرارات)"
+                    title="تصنيف البدل: يحدد كيف يُحتسب في الكلفة الحقيقية. «غير محدد» = يُستنتج من الاسم"
+                    value={allw.allowanceType}
+                    onChange={(e) => setAllowanceType(allw.id, e.target.value)}
+                    className="shrink-0 px-3 py-2 font-bold text-[12px] rounded-lg border border-slate-200 bg-slate-50 text-slate-700 focus:outline-none focus:border-blue-300"
+                  >
+                    <option value="">النوع: {ALLOWANCE_TYPE_UNSET_LABEL}</option>
+                    {ALLOWANCE_TYPES.map((t) => <option key={t} value={t}>النوع: {ALLOWANCE_TYPE_LABELS[t]}</option>)}
+                  </select>
                   <label className="flex items-center gap-2 shrink-0 text-[12px] font-bold text-slate-600 cursor-pointer select-none" title="يُحتسب هذا البدل ضمن الأجر الخاضع لاشتراك التأمينات (مثل بدل السكن)">
                     <input
                       type="checkbox"
@@ -909,7 +965,83 @@ export function EmployeeFormFields({
           </div>
         </div>
       </FormSegment>
+
+      {/* SEGMENT 5: Workforce decision engine data (cost & Saudization) */}
+      <div className="mt-24" />
+      <FormSegment id="workforce" title="بيانات الكلفة والسعودة" badge="محرك القرارات">
+        <p className="text-[12px] font-bold text-slate-500 leading-relaxed mb-10 -mt-4">
+          تُستخدم في حساب الكلفة الحقيقية للموظف وأوزان نطاقات. كل الحقول اختيارية، ويمكن تحديث المهنة وعدد المرافقين من مطابقة مقيم.
+        </p>
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-x-8 gap-y-10">
+          <PremiumInput name="occupationName" value={formData.occupationName} onChange={handleChange} label="المهنة (كما في مقيم / قوى)" placeholder="مثال: محاسب" />
+          <PremiumInput name="occupationCode" value={formData.occupationCode} onChange={handleChange} label="رمز المهنة (اختياري — التصنيف السعودي الموحد للمهن)" dir="ltr" placeholder="241101" />
+
+          <PremiumInput name="dependentsCount" value={formData.dependentsCount} onChange={handleChange} label="عدد المرافقين" type="number" min={0} max={DEPENDENTS_MAX} step="1" />
+          <SearchableSelect
+            name="dependentsFeePaidBy"
+            value={formData.dependentsFeePaidBy}
+            onChange={handleChange}
+            label="من يدفع رسوم المرافقين"
+            accentColor="blue"
+            placeholder="غير محدد"
+            options={[{ label: 'غير محدد', value: '' }, ...DEPENDENTS_FEE_PAYERS.map((p) => ({ label: DEPENDENTS_FEE_PAYER_LABELS[p], value: p }))]}
+          />
+
+          <SearchableSelect
+            name="medicalInsuranceClass"
+            value={formData.medicalInsuranceClass}
+            onChange={handleChange}
+            label="فئة التأمين الطبي"
+            accentColor="blue"
+            placeholder="غير محدد"
+            options={[{ label: 'غير محدد', value: '' }, ...MEDICAL_INSURANCE_CLASSES.map((c) => ({ label: `فئة ${c}`, value: c }))]}
+          />
+          {formData.contractType === 'PART_TIME' ? (
+            <PremiumInput
+              name="partTimeWeeklyHours"
+              value={formData.partTimeWeeklyHours}
+              onChange={handleChange}
+              label="ساعات الدوام الجزئي أسبوعياً"
+              type="number"
+              min={PART_TIME_HOURS_MIN}
+              max={PART_TIME_HOURS_MAX}
+              step="0.5"
+            />
+          ) : (
+            <p className="self-end text-[12px] font-bold text-slate-400 pb-4">ساعات الدوام الجزئي تظهر عند اختيار عقد «دوام جزئي».</p>
+          )}
+
+          <div className="md:col-span-2 grid grid-cols-1 md:grid-cols-3 gap-6 border-t border-slate-100 pt-10">
+            <div className="flex flex-col gap-4">
+              <FlagCheckbox checked={formData.isDisabled} onChange={(v) => setFlag('isDisabled', v)} label="ذو إعاقة" hint="يُحتسب بوزن خاص في نطاقات عند وجود شهادة مواءمة سارية" />
+              {formData.isDisabled && (
+                <PremiumInput name="muawamaCertExpiry" value={formData.muawamaCertExpiry} onChange={handleChange} label="تاريخ انتهاء شهادة مواءمة" type="date" />
+              )}
+            </div>
+            <FlagCheckbox checked={formData.isStudent} onChange={(v) => setFlag('isStudent', v)} label="طالب" hint="الطلاب يُحتسبون بوزن مختلف في نطاقات" />
+            <div className="flex flex-col gap-4">
+              <FlagCheckbox checked={formData.qiwaContractDocumented} onChange={(v) => setFlag('qiwaContractDocumented', v)} label="العقد موثّق في قوى" hint="اترك التاريخ فارغاً ليُسجَّل تاريخ اليوم" />
+              {formData.qiwaContractDocumented && (
+                <PremiumInput name="qiwaContractDocumentedAt" value={formData.qiwaContractDocumentedAt} onChange={handleChange} label="تاريخ توثيق العقد في قوى" type="date" />
+              )}
+            </div>
+          </div>
+        </div>
+      </FormSegment>
     </>
+  );
+}
+
+/** Checkbox card used by the workforce section. */
+function FlagCheckbox({ checked, onChange, label, hint }: { checked: boolean; onChange: (v: boolean) => void; label: string; hint?: string }) {
+  return (
+    <label className={`flex items-start gap-3 cursor-pointer p-4 border-2 rounded-2xl transition-colors ${checked ? 'border-blue-200 bg-blue-50/40' : 'border-slate-100 hover:border-blue-200'}`}>
+      <input type="checkbox" checked={checked} onChange={(e) => onChange(e.target.checked)} className="mt-0.5 w-4 h-4 rounded border-slate-300 accent-blue-600" />
+      <span>
+        <span className="text-[13px] font-extrabold text-slate-800">{label}</span>
+        {hint && <span className="block text-[11px] text-slate-500 font-bold mt-1">{hint}</span>}
+      </span>
+    </label>
   );
 }
 
@@ -942,6 +1074,7 @@ interface PremiumInputProps {
   placeholder?: string;
   icon?: React.ReactNode;
   min?: number;
+  max?: number;
   step?: string;
   /** Data-quality warning shown under the field (never blocks saving). */
   warning?: string | null;
@@ -960,7 +1093,7 @@ function FieldWarning({ message, id }: { message: string | null | undefined; id?
   );
 }
 
-function PremiumInput({ label, name, value, onChange, type = 'text', required, placeholder, icon, min, step, warning, dir, list }: PremiumInputProps) {
+function PremiumInput({ label, name, value, onChange, type = 'text', required, placeholder, icon, min, max, step, warning, dir, list }: PremiumInputProps) {
   const inputId = `emp-field-${name}`;
   const warningId = warning ? `${inputId}-warning` : undefined;
   return (
@@ -971,7 +1104,7 @@ function PremiumInput({ label, name, value, onChange, type = 'text', required, p
       <div className="relative">
         <input
           id={inputId}
-          type={type} name={name} value={value} onChange={onChange} required={required} placeholder={placeholder} min={min} step={step} list={list}
+          type={type} name={name} value={value} onChange={onChange} required={required} placeholder={placeholder} min={min} max={max} step={step} list={list}
           aria-describedby={warningId}
           {...(type === 'date' ? { dir: 'ltr', lang: 'en' } : dir ? { dir } : {})}
           className={`w-full bg-slate-50/50 hover:bg-white border-2 ${warning ? 'border-amber-300' : 'border-slate-100'} focus:border-blue-400 focus:bg-white rounded-2xl px-5 py-4 font-bold text-slate-800 text-[14px] focus:outline-none focus:ring-4 focus:ring-blue-100 transition-all placeholder:text-slate-300 placeholder:font-semibold ${type === 'date' ? 'text-right' : ''}`}

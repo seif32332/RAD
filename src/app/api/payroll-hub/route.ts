@@ -788,6 +788,7 @@ const HANDLERS: Record<string, Handler> = {
         name: p.name,
         amount: roundMoney(p.amount),
         isMonthly: false, // مكافأة / بدل طارئ لمرة واحدة
+        allowanceType: 'OTHER', // a one-off bonus is never a housing / transport / food allowance (workforce engine)
         payrollMonth: month,
         payrollYear: year,
         isPaid: false,

@@ -1,0 +1,110 @@
+{
+  "source": {
+    "guide": "الدليل الإجرائي - برنامج نطاقات المطور 2026 (HRSD)",
+    "url": "https://www.hrsd.gov.sa/sites/default/files/2026-03/ntaqat-almtwr.pdf",
+    "localFile": "nit2026_03.pdf",
+    "sha256": "8ecb78d85f717a7d0eb05bfc5104b79d1428d488ebe02c5b8145834e27d32e11",
+    "currentVersionCheck": "Downloaded again on 2026-09-26: byte-identical (same sha256, HTTP last-modified 2026-06-01). The HRSD guide page (knowledge-centre/.../الدليل-الإجرائي-لبرنامج-نطاقات-المطور, last updated 2026/09/23) links this same 2026-03 file as the current guide. PDF internal creation date 2026-02-02.",
+    "previousVersion": {"url": "https://www.hrsd.gov.sa/sites/default/files/2026-01/aldlyl-alajray-y-ntaqat-almtwr-alnskht-2026--1-.pdf", "localFile": "nit2026_01.pdf", "sha256": "47f1636e369322b5b10fb8902f6bef11edf81ee7240c7cdebee62c8678bf01de", "pdfCreated": "2026-01-21"},
+    "pageNumbering": "page = PDF page index (1-based); printedPage = PDF page - 1 (the cover is unnumbered)"
+  },
+  "formula": {
+    "printedAr": "ص = م لوغ (س) + ث",
+    "meaning": "Y = m * ln(X) + c",
+    "Y": "ص = النسبة الأدنى للنطاق (the minimum Saudization % for the band)",
+    "m": "م = قيمة ثابتة للمنحنى لكل نطاق ونشاط (Annex 1)",
+    "c": "ث = قيمة ثابتة لتوطين كل نطاق ونشاط وسنة لفترة 3 سنوات وما بعدها (Annex 1). The guide prints 'سنوت' (typo). Read: the 2028 constant also applies to later years.",
+    "logBase": "natural log. The guide says: لوغ (س) دالة لحساب القيمة اللوغاريثمية الطبيعية لأجمالي العمالة",
+    "X": "س = اجمالي العمالة للكيان (total workforce of the entity). The guide does not say whether X is a weighted or a raw headcount, or whether it is an average.",
+    "entity": "الكيان: the unit the Ministry uses for Saudization, recruitment and transfers. It covers all branches of the same economic activity owned by one establishment owner (p3)",
+    "appliesTo": "Applied per band (Low/Medium/High Green, Platinum) to get the 4 minimum thresholds (p5, printed p4)",
+    "yearSelection": "Separate c columns for 2026, 2027 and 2028. The guide does not give the exact switch-over date inside each year: UNKNOWN",
+    "page": 5, "printedPage": 4
+  },
+  "saudizationRate": {
+    "definitionAr": "نسبة التوطين: هي النسبة التي يتم احتسابها من خلال قسمة مجموع متوسطات العمالة السعودية بمنشآت الكيان على (مجموع متوسطات العمالة السعودية بمنشآت الكيان + مجموع متوسطات العمالة الوافدة بمنشآت الكيان) x 100",
+    "meaning": "N = sum(avg Saudi workers across the entity's establishments) / (sum(avg Saudi) + sum(avg expatriate)) * 100",
+    "expatriateDefinition": "العمالة الوافدة: workers who are not GCC citizens and work for an employer in KSA. GCC nationals are therefore not in the expatriate denominator.",
+    "averagingWindow": "The guide says 'averages' (متوسطات) but gives no window. Qiwa (see calculationWindows) states 26 weeks for the traditional method and 1 week for immediate calculation.",
+    "specialWeights": "Not in the guide. The HRSD calculator footnote says the entity ratio is Saudis / total workers * 100 'taking the special worker weights into account' (مع الاخذ بالاعتبار الاوزان الخاصة للعاملين). See weights below.",
+    "page": 3, "printedPage": 2
+  },
+  "bandAssignment": {
+    "rulesAsIntended": [
+      {"band": "RED", "condition": "N < Y_LOW_GREEN"},
+      {"band": "LOW_GREEN", "condition": "Y_LOW_GREEN <= N < Y_MEDIUM_GREEN"},
+      {"band": "MEDIUM_GREEN", "condition": "Y_MEDIUM_GREEN <= N < Y_HIGH_GREEN"},
+      {"band": "HIGH_GREEN", "condition": "Y_HIGH_GREEN <= N < Y_PLATINUM"},
+      {"band": "PLATINUM", "condition": "N >= Y_PLATINUM"}
+    ],
+    "typographyWarning": "The printed table (p6 / printed p5) uses reversed inequality signs in its logical text, e.g. 'ن > ص اخضر منخفض' for Red. Read literally, these are contradictory. The monotone reading above is the only consistent one: lower bound inclusive, upper bound exclusive.",
+    "caps": "The guide sets no cap on Y (for example Y <= 100) and no rounding of Y or N. Sanity check: for every activity and year, Y stays below 100 up to X = 50,000, and the 4 thresholds never cross (LG <= MG <= HG <= PLAT) for X from 6 to 50,000.",
+    "page": 6, "printedPage": 5
+  },
+  "smallEntities": {
+    "guide": "The guide itself has no rule for entities of 5 or fewer.",
+    "hrsdCalculator": {"url": "https://es.hrsd.gov.sa/services/Inquiry/NitaqatCalculatorMotawar2026.aspx", "text": ["الحاسبة مصممة للمنشآت التي لديها عدد العمالة 6 عاملين فأكثر.", "عزيزي العميل المنشأة التي لديها عدد العاملين 5 فأقل يتطلب إضافة عامل سعودي واحد فقط في المنشأة"], "read": "2026-09-26"},
+    "qiwa": {"url": "https://www.qiwa.sa/en/business-owners/manage-establishment/what-nitaqat-and-how-it-calculated", "lastModified": "10/09/2026", "rules": ["Entities with 5 employees or fewer are classified into 2 levels: Green and Red; at least 1 Saudi employee is required to enter and remain in Low Green.", "Small entity (category A): every establishment in the group has 5 or fewer employees AND the group total is 5 or fewer.", "Category A levels are calculated with the immediate method only."]},
+    "implication": "The formula applies from X >= 6."
+  },
+  "calculationWindows": {
+    "guide": "The only relevant text is that Platinum, High Green, Medium Green and Low Green all list 'الاحتساب الفوري في برنامج نطاقات' (immediate calculation) as a service. The guide gives no windows.",
+    "qiwa": {
+      "url": "https://www.qiwa.sa/en/business-owners/manage-establishment/what-nitaqat-and-how-it-calculated",
+      "traditional": "average Saudization rate over 26 weeks",
+      "immediate": "Saudization rate of 1 week. Used when (a) the establishment has stayed in at least Low Green for 13 consecutive weeks, or (b) it is newly established (the oldest establishment in the group is 13 weeks old or less).",
+      "revertToTraditional": "If the entity stays in Red for 8 consecutive weeks, or is in Red for 12 non-consecutive weeks, it is automatically switched to the traditional method.",
+      "contractAuthentication": "From 2026-04-15, Saudization is calculated only from contracts authenticated in Qiwa. Unauthenticated Saudi contracts are not counted."
+    }
+  },
+  "bandConsequences": {
+    "source": "guide pp.7-8 (printed 6-7), identical wording in the Jan and Mar versions",
+    "PLATINUM": ["استقبال طلبات رصيد التأشيرات للمهن المتاحة", "القدرة على تغيير مهن العمالة الوافدة للمهن المتاحة مع مراعاة متطلبات تغيير المهنة (الدليل الموحد لخدمة العملاء واللائحة التنفيذية لنظام العمل والقرارات الوزارية ذات الصلة)", "القدرة على تجديد رخص العمل للعمالة الوافدة التي تعمل لديها بغض النظر عن مدة اقامتها شريطة الا يزيد المتبقي في إقامة العامل عن ستة أشهر عند التجديد", "إمكانية نقل الخدمات للعمالة الوافدة من أي نطاق مع مراعاة ضوابط هذه الخدمة", "الاحتساب الفوري في برنامج نطاقات"],
+    "HIGH_GREEN": ["same 5 items as Platinum"],
+    "MEDIUM_GREEN": ["same 5 items as Platinum"],
+    "LOW_GREEN": ["إيقاف استقبال طلبات التأشيرات الجديدة", "إيقاف استقبال طلبات تغيير مهن العمالة الوافدة للمهن المتاحة", "القدرة على تجديد رخص العمل للعمالة الوافدة ... شريطة الا يزيد المتبقي في إقامة العامل عن ستة أشهر عند التجديد", "الاحتساب الفوري في برنامج نطاقات"],
+    "RED": ["عدم السماح بتغيير مهن العمالة الوافدة التي تعمل لديها", "عدم السماح بنقل خدمات العمالة الوافدة إليها", "عدم السماح بطلب تأشيرات جديدة", "عدم السماح بإصدار رخص العمل للعمالة الوافدة الجديدة", "عدم السماح بتجديد رخص العمل للعمالة الوافدة التي تعمل لديها"],
+    "notes": ["The guide does not mention transfer-in (نقل الخدمات) for Low Green, neither allowed nor forbidden.", "Qiwa (2026-09-10) says 'Medium Green and above' can renew work permits, request new visas, transfer employees in and change occupations. The guide lets Low Green renew work permits (with the 6-months-remaining iqama condition) but stops new visas and occupation changes. Qiwa also says Red cannot 'open new branch or facility files'. That item is not in the guide."],
+    "pages": [7, 8], "printedPages": [6, 7]
+  },
+  "weights": {
+    "status": "NOT IN THE GUIDE. Every value below comes from Qiwa (last modified 10/09/2026) and HRSD news 777585 (2020-11-18). These are secondary to the guide, but they are official MHRSD/Qiwa publications.",
+    "sources": ["https://www.qiwa.sa/en/business-owners/manage-establishment/what-nitaqat-and-how-it-calculated", "https://www.hrsd.gov.sa/media-center/news/777585"],
+    "saudiWage": [{"range": "< 3000 SAR", "weight": 0}, {"range": "3000-3999 SAR", "weight": 0.5}, {"range": ">= 4000 SAR", "weight": 1}],
+    "saudiWageNote": "A Saudi registered in more than one establishment counts only in the oldest one (Qiwa). HRSD 2020 news: part-time workers count 0.5 at a minimum of 3000 SAR and cannot count in more than two entities; the flexible-work counting in that news (0.33, 168 hours) is superseded on Qiwa by 'every 160 hours = 1 Saudi'.",
+    "disabled": {"weight": 4, "conditions": "Entities with 50+ employees need a valid Muawama certificate, otherwise weight 1. Entities under 50 do not need the certificate. Minimum salary 4000 SAR, otherwise weight 1.", "cap": "20% of Saudi employees for entities under 50; 10% for entities with 50+", "conflict": "The Qiwa search snippet and older pages say a 3000 SAR minimum and a 10% cap. The current Qiwa page says 4000 SAR and 20%/10%. Use the current page."},
+    "releasedPrisoners": {"weight": 2, "cap": "10% of total Saudi employees in the entity"},
+    "socialInvestmentWorkforce": {"weight": 1.25, "cap": "20% of total Saudi employees"},
+    "combinedCapBoosted": "Disabled + released prisoners + students must not exceed 15% of total Saudi employees (40% for retail and wholesale).",
+    "students": {"weight": 0.5, "minSalary": 2000, "cap": "10% of Saudi employees; 40% for retail/wholesale (Activity 460)"},
+    "partTime": {"weight": 0.5},
+    "securityGuardsAjeer": [{"range": "4500-5499 SAR", "weight": 0.5}, {"range": ">= 5500 SAR", "weight": 1}, {"note": "counted under the hiring establishment"}],
+    "countedAsOneSaudi": [
+      {"category": "Saudi remote employee", "rule": "4000+ SAR = 1; 3000-3999 = 0.5"},
+      {"category": "Son or daughter of a Saudi woman", "cap": "10%"},
+      {"category": "Mother or widow of a Saudi citizen", "cap": "10%"},
+      {"category": "Displaced tribes", "cap": "10%"},
+      {"category": "GCC citizens", "cap": "10%"},
+      {"category": "Owner (Saudi or non-Saudi)", "rule": "main branch / oldest establishment only; max one owner"},
+      {"category": "Seconded Saudi employee", "rule": "counted as Saudi"},
+      {"category": "Saudi outsourcing", "cap": "10%", "rule": "counted under the hiring establishment"},
+      {"category": "Strategic partnership trainees", "rule": "min 2000 SAR, max 24 months; disabled trainees and released-prisoner trainees count as 1 only"}
+    ],
+    "combinedCapOneSaudiCategories": "Displaced tribes + GCC + children of Saudi women + mothers/widows of Saudis + Saudi outsourcing: 10% each, 15% combined, of the entity's Saudi employees.",
+    "flexibleWork": "Every 160 hours of flexible work = 1 Saudi employee",
+    "spouses": "The wife or husband of a non-Saudi employee is not counted at all. The spouse of a Saudi employee from a Saudi mother counts as 1 Saudi.",
+    "expatReducedWeight": [{"category": "Palestinians with Egyptian passport / Baluchi", "weight": 0.25, "cap": "no more than 50% of employees from this category"}, {"category": "Myanmar (Burmese)", "rule": "1 inside Makkah/Madinah; 0 elsewhere"}],
+    "comparisonWithEarlierClaims": {
+      "saudiWage 0/0.5/1 at 3000/4000": "CONFIRMED (Qiwa + HRSD news 777585)",
+      "disabled 4 with caps 20%/10%": "CONFIRMED on Qiwa (2026-09-10). Also requires a 4000 SAR minimum and, for 50+ entities, a Muawama certificate.",
+      "students 0.5": "CONFIRMED (min 2000 SAR; cap 10%, or 40% for Activity 460)",
+      "part-time 0.5": "CONFIRMED"
+    }
+  },
+  "unknowns": [
+    "Whether X (total workforce) uses weighted counts, raw headcount, or 26-week averages. Not stated in the guide.",
+    "The exact date each year's c constant (2026/2027/2028) takes effect.",
+    "Whether the Low Green band may receive transfers (نقل الخدمات). Not stated in the guide; Qiwa implies no.",
+    "Any rounding of N or Y. None stated."
+  ]
+}

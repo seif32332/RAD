@@ -6,6 +6,7 @@
 import { dateKey, daysBetween, inclusiveDays, monthRange, today } from '@/lib/dates';
 import { roundMoney } from '@/lib/money';
 import { LEAVE_STATUS } from '@/lib/constants';
+import { isSaudiNational } from '@/lib/nationality';
 
 export const LEAVE_TYPES = [
   'ANNUAL',
@@ -241,11 +242,9 @@ export const SICK_LEAVE_TIERS = { FULL: 30, PARTIAL_UNTIL: 90, UNPAID_UNTIL: 120
 /** Maximum length of a single leave request (days). */
 export const MAX_LEAVE_DAYS = 365;
 
-const SAUDI_NATIONALITY_VALUES = ['سعودي', 'سعودية', 'السعودية', 'saudi', 'saudi arabia', 'sa', 'ksa'];
-
+/** Saudi nationality (thin wrapper kept for existing callers; THE rule is src/lib/nationality.ts). */
 export function isSaudiNationality(nationality: string | null | undefined): boolean {
-  if (!nationality) return false;
-  return SAUDI_NATIONALITY_VALUES.includes(nationality.trim().toLowerCase());
+  return isSaudiNational(nationality);
 }
 
 /**

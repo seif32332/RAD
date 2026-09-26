@@ -38,6 +38,8 @@ import {
 import {
   loadPayrollSettings,
   overtimeAmount,
+  overtimeBasisForEmployee,
+  OVERTIME_BASIS_SELECT,
   overtimeDueInSettlement,
   overtimeHolders,
   overtimeLegacyCutoff,
@@ -47,6 +49,7 @@ import {
 } from '@/lib/payroll';
 import { monthOf } from '@/lib/settlement';
 import { dailyRate } from '@/lib/payroll-core';
+import { TERMINATION_TO_EXIT_REASON, type EmployeeExitReason } from '@/lib/workforce/reasons';
 
 /** Article 70: a single disciplinary deduction may not exceed five days' wage. */
 export const MAX_PENALTY_DAYS = 5;
@@ -61,6 +64,38 @@ import { assertCanManageEmployee } from '@/lib/hr-workflows';
 import { deactivateEmployeeUser, type DeactivateResult } from '@/lib/access';
 
 type Tx = Prisma.TransactionClient;
+
+/**
+ * Default of Employee.exitVoluntary per structured exit reason. LOCAL COPY of defaultExitVoluntary()
+ * in src/app/api/employees/_workforce-fields.ts: the lib layer does not import from src/app (see
+ * src/lib/workforce/reasons.ts), and reasons.ts has no equivalent helper.
+ * src/lib/__tests__/wf-fix-exit-fields.test.ts fails if the two drift apart.
+ */
+export const EXIT_VOLUNTARY_DEFAULT: Readonly<Record<EmployeeExitReason, boolean | null>> = {
+  RESIGNATION: true,
+  RETIREMENT: true,
+  ABSCONDING: true,
+  EMPLOYER_TERMINATION: false,
+  ARTICLE_80: false,
+  DEATH: false,
+  CONTRACT_END: null,
+  MUTUAL_AGREEMENT: null,
+  PROBATION: null,
+  OTHER: null,
+};
+
+/**
+ * Employee.exitReason / exitVoluntary to record when an END_OF_SERVICE settlement terminates the
+ * employee: the settlement's TerminationReason mapped with TERMINATION_TO_EXIT_REASON, and the
+ * voluntary flag defaulted from that reason. Null when the settlement has no (known) reason.
+ */
+export function exitFieldsForTermination(
+  terminationReason: string | null | undefined,
+): { exitReason: EmployeeExitReason; exitVoluntary: boolean | null } | null {
+  if (!terminationReason || !Object.prototype.hasOwnProperty.call(TERMINATION_TO_EXIT_REASON, terminationReason)) return null;
+  const exitReason = (TERMINATION_TO_EXIT_REASON as Readonly<Record<string, EmployeeExitReason>>)[terminationReason];
+  return { exitReason, exitVoluntary: EXIT_VOLUNTARY_DEFAULT[exitReason] };
+}
 
 /** Optional request context for audit logging. */
 export interface FinanceCtx {
@@ -471,6 +506,9 @@ async function settleOvertime(tx: Tx, settlement: SettlementForApproval, lastDay
       where: { id: settlement.employeeId },
       select: {
         basicSalary: true,
+        // Recurring allowances + company cost setting: the overtime hourly basis (payroll-core).
+        allowances: { where: { isMonthly: true }, select: { amount: true, isMonthly: true } },
+        ...OVERTIME_BASIS_SELECT,
         overtimeRequests: {
           where: {
             status: 'APPROVED',
@@ -492,15 +530,17 @@ async function settleOvertime(tx: Tx, settlement: SettlementForApproval, lastDay
   const add: string[] = [];
   let released = 0;
   let added = 0;
+  // The settlement is not approved yet: its overtime delta uses the company's current setting.
+  const basis = overtimeBasisForEmployee(employee);
   for (const ot of employee.overtimeRequests) {
     const due = overtimeDueInSettlement(ot, employee.payrolls, lastDay, { legacyCutoff, holders, settlementId: settlement.id });
     const reserved = ot.paidInSettlementId === settlement.id;
     if (reserved && !due) {
       release.push(ot.id);
-      released = roundMoney(released + overtimeAmount(ot, employee, settings));
+      released = roundMoney(released + overtimeAmount(ot, employee, settings, basis));
     } else if (!reserved && due) {
       add.push(ot.id);
-      added = roundMoney(added + overtimeAmount(ot, employee, settings));
+      added = roundMoney(added + overtimeAmount(ot, employee, settings, basis));
     }
   }
   if (release.length) {
@@ -602,11 +642,19 @@ export async function approveSettlement(tx: Tx, settlementId: string, user: Auth
   // The accrued leave balance was paid in this settlement.
   await tx.employee.update({ where: { id: emp.id }, data: { leaveAccrualStartDate: today() } });
   let access: DeactivateResult | null = null;
+  let exitRecorded: ReturnType<typeof exitFieldsForTermination> = null;
   if (settlement.type === 'END_OF_SERVICE') {
     await tx.employee.update({
       where: { id: emp.id },
       data: { employmentStatus: 'EXCLUDED', isTerminated: true, terminationDate: lastDay },
     });
+    // Structured exit (workforce engine): prefilled from the settlement reason, but a reason HR
+    // already recorded on the employee file is never overwritten (guarded by exitReason: null).
+    const exit = exitFieldsForTermination(settlement.terminationReason);
+    if (exit) {
+      const set = await tx.employee.updateMany({ where: { id: emp.id, exitReason: null }, data: exit });
+      if (set.count > 0) exitRecorded = exit;
+    }
     // DEC-002: the terminated employee's login stops working (same transaction; honours the
     // terminated_access_days grace period, default 0 = immediate, sessions revoked).
     access = await deactivateEmployeeUser(tx, emp.id, {
@@ -651,6 +699,8 @@ export async function approveSettlement(tx: Tx, settlementId: string, user: Auth
         overtimeAdjustment: effects.overtimeAdjustment,
         userDeactivated: access?.deactivated ?? false,
         accessGraceDays: access?.graceDays ?? 0,
+        exitReasonRecorded: exitRecorded?.exitReason ?? null,
+        exitVoluntaryRecorded: exitRecorded?.exitVoluntary ?? null,
         notes: notes ?? null,
       },
       ipAddress: ctx.ipAddress,

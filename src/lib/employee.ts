@@ -247,7 +247,7 @@ export const EMPLOYEE_LIST_FULL_INCLUDE = {
   // Only recurring allowances belong to the salary; one-off bonuses are paid by payroll.
   allowances: {
     where: { isMonthly: true },
-    select: { id: true, name: true, amount: true, isMonthly: true },
+    select: { id: true, name: true, amount: true, isMonthly: true, allowanceType: true },
   },
   loans: {
     select: {
@@ -299,8 +299,20 @@ export function employeeAccessLevel(role: string | null | undefined): EmployeeAc
   return 'basic';
 }
 
-/** Identity data that payroll / finance users do not need: ID & passport numbers, birth date and the document copies. */
-export const PAYROLL_HIDDEN_FIELDS = ['iqamaOrIdNumber', 'passportNumber', 'dateOfBirth', 'iqamaCopyUrl', 'passportCopyUrl'] as const;
+/**
+ * Data that payroll / finance users do not need: identity (ID & passport numbers, birth date, document
+ * copies) and health / disability (isDisabled, muawamaCertExpiry: same list as WORKFORCE_PAYROLL_HIDDEN_FIELDS
+ * in src/app/api/employees/_workforce-fields.ts, kept here so every redactForPayroll caller drops them).
+ */
+export const PAYROLL_HIDDEN_FIELDS = [
+  'iqamaOrIdNumber',
+  'passportNumber',
+  'dateOfBirth',
+  'iqamaCopyUrl',
+  'passportCopyUrl',
+  'isDisabled',
+  'muawamaCertExpiry',
+] as const;
 
 /** Copy of an employee row without PAYROLL_HIDDEN_FIELDS. */
 export function redactForPayroll<T extends object>(row: T): Omit<T, (typeof PAYROLL_HIDDEN_FIELDS)[number]> {

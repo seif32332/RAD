@@ -10,6 +10,17 @@ import { roundMoney } from '@/lib/money';
 import { logAudit } from '@/lib/audit';
 import { isUniqueViolationOn } from '@/lib/employee';
 import { zMoiNumber, zMuqeemPlatformId, moiNumberWarnings, assertMuqeemPlatformChange } from './_muqeem';
+import {
+  zNitaqatActivity,
+  zIsIndustrialLicensed,
+  assertCompanyWorkforceChange,
+  zNitaqatActivityKey,
+  assertNitaqatActivityExists,
+  zOvertimeHourlyBasis,
+  zMedicalPremiums,
+  zIqamaFeeYear,
+  assertCompanyCostChange,
+} from './_workforce';
 
 export const dynamic = 'force-dynamic';
 
@@ -40,6 +51,14 @@ const createCompanySchema = z.object({
   // Muqeem link (see ./_muqeem.ts)
   moiNumber: zMoiNumber,
   muqeemPlatformId: zMuqeemPlatformId,
+  // Workforce decision engine (see ./_workforce.ts): SUPER_ADMIN / COMPANY_ADMIN only
+  nitaqatActivity: zNitaqatActivity,
+  nitaqatActivityKey: zNitaqatActivityKey,
+  isIndustrialLicensed: zIsIndustrialLicensed,
+  // «إعدادات الكلفة» (see ./_workforce.ts): SUPER_ADMIN / COMPANY_ADMIN only
+  overtimeHourlyBasis: zOvertimeHourlyBasis,
+  medicalPremiums: zMedicalPremiums,
+  iqamaFeeYear: zIqamaFeeYear,
 });
 
 export async function POST(req: Request) {
@@ -47,6 +66,9 @@ export async function POST(req: Request) {
     const user = await requireUser(WRITERS);
     const b = await parseBody(req, createCompanySchema);
     await assertMuqeemPlatformChange(user, b.muqeemPlatformId, undefined);
+    assertCompanyWorkforceChange(user, b, null);
+    await assertNitaqatActivityExists(b.nitaqatActivityKey);
+    const costChanged = assertCompanyCostChange(user, { overtimeHourlyBasis: b.overtimeHourlyBasis, medicalPremiumsJson: b.medicalPremiums, iqamaFeeYear: b.iqamaFeeYear }, null);
 
     // commercialRegNum is unique and required by the schema: generate a placeholder when omitted.
     const commercialRegNum = b.commercialRegNum || `CR-${Date.now()}-${randomInt(1000)}`;
@@ -80,6 +102,13 @@ export async function POST(req: Request) {
           trademarkCost: b.trademarkCost !== undefined ? roundMoney(b.trademarkCost) : undefined,
           moiNumber: b.moiNumber ?? null,
           muqeemPlatformId: b.muqeemPlatformId ?? null,
+          nitaqatActivity: b.nitaqatActivity ?? null,
+          nitaqatActivityKey: b.nitaqatActivityKey ?? null,
+          isIndustrialLicensed: b.isIndustrialLicensed ?? false,
+          // «إعدادات الكلفة» (defaults: BASIC / not entered / rule register iqama fee)
+          overtimeHourlyBasis: b.overtimeHourlyBasis ?? 'BASIC',
+          medicalPremiumsJson: b.medicalPremiums ?? null,
+          iqamaFeeYear: b.iqamaFeeYear ?? null,
         },
       });
     } catch (err) {
@@ -97,6 +126,12 @@ export async function POST(req: Request) {
         commercialRegNum: company.commercialRegNum,
         moiNumber: company.moiNumber,
         muqeemLinked: !!company.muqeemPlatformId,
+        nitaqatActivity: company.nitaqatActivity,
+        nitaqatActivityKey: company.nitaqatActivityKey,
+        isIndustrialLicensed: company.isIndustrialLicensed,
+        ...(costChanged.length
+          ? { costSettings: { overtimeHourlyBasis: company.overtimeHourlyBasis, medicalPremiumsJson: company.medicalPremiumsJson, iqamaFeeYear: company.iqamaFeeYear } }
+          : {}),
       },
       ipAddress: getClientIp(req),
     });
