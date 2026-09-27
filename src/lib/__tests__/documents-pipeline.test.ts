@@ -886,6 +886,68 @@ describe.skipIf(!RUN)('document issuance pipeline (Postgres + radeef-render)', {
     await expect(svc.createDocumentRequest({ typeKey: 'WORK_COMMENCEMENT_LETTER', employeeId: other.employeeId, params: { language: 'ar', commencement: { kind: 'RETURN', leaveId: lv.id } }, source: 'PORTAL' }, self(other.employeeId, other.userId), renderer)).rejects.toThrow();
   });
 
+  it('circular: company document to a branch; approval covers the recipients; each recipient sees, downloads and acknowledges it once', async () => {
+    const queries = await import('@/lib/documents/queries');
+    const checker = { userId: signatoryUserId, role: 'COMPANY_ADMIN', employeeId: null, ip: null };
+    const [riyadh, jeddah] = await Promise.all(['فرع الرياض', 'فرع جدة'].map((nameArabic) => prisma.branch.create({ data: { companyId, nameArabic } })));
+    const a = await newEmployee(2701, { branchId: riyadh.id });
+    const b = await newEmployee(2702, { branchId: riyadh.id });
+    const outside = await newEmployee(2703, { branchId: jeddah.id });
+    await newEmployee(2704, { branchId: riyadh.id, isTerminated: true, terminationDate: new Date('2026-08-31T21:00:00Z') }); // not a recipient
+    const circular = {
+      legalCompanyId: companyId, kind: 'CIRCULAR', subjectAr: 'مواعيد الدوام في رمضان', bodyAr: 'يكون الدوام من العاشرة صباحا حتى الثالثة عصرا.',
+      audience: { scope: 'BRANCHES', ids: [riyadh.id] },
+    };
+
+    // Only HR issues it, never for an employee or from the portal.
+    await expect(svc.createDocumentRequest({ typeKey: 'ADMIN_CIRCULAR', params: { language: 'ar', circular }, source: 'PORTAL' }, self(a.employeeId, a.userId), renderer)).rejects.toThrow(/الموارد البشرية/);
+    await expect(svc.createDocumentRequest({ typeKey: 'ADMIN_CIRCULAR', employeeId: a.employeeId, params: { language: 'ar', circular }, source: 'HR' }, hr(), renderer)).rejects.toThrow();
+
+    const r = await svc.createDocumentRequest({ typeKey: 'ADMIN_CIRCULAR', params: { language: 'ar', circular }, source: 'HR' }, hr(), renderer);
+    expect(r.status).toBe('PENDING_APPROVAL'); // default: approved by someone
+    const req = await prisma.documentRequest.findUniqueOrThrow({ where: { id: r.requestId }, include: { currentSnapshot: true } });
+    expect(JSON.parse(req.currentSnapshot!.data).data.circular.recipientIds).toEqual([a.employeeId, b.employeeId].sort());
+
+    // A new member of the branch before approval changes the recipients: the old snapshot is refused.
+    const late = await newEmployee(2705, { branchId: riyadh.id });
+    expect((await svc.approveDocumentRequest(r.requestId, req.currentSnapshot!.dataSha256, null, checker, renderer)).status).toBe('PENDING_APPROVAL');
+    const fresh = await prisma.documentRequest.findUniqueOrThrow({ where: { id: r.requestId }, include: { currentSnapshot: true } });
+    expect(fresh.currentSnapshot!.dataSha256).not.toBe(req.currentSnapshot!.dataSha256); // a new snapshot, with the new member
+    const out = await svc.approveDocumentRequest(r.requestId, fresh.currentSnapshot!.dataSha256, null, checker, renderer);
+    expect(out.status).toBe('ISSUED');
+    const doc = await prisma.issuedDocument.findUniqueOrThrow({ where: { id: out.documentId! } });
+    expect([doc.employeeId, doc.jobApplicationId, doc.number.includes('-CIR-')]).toEqual([null, null, true]);
+    expect((await prisma.circularRecipient.findMany({ where: { documentId: doc.id } })).map((x) => x.employeeId).sort()).toEqual([a.employeeId, b.employeeId, late.employeeId].sort());
+
+    // Recipients see it in "مستنداتي" and download it; others get the same 404 as for a missing document.
+    const mine = await queries.myDocumentRequests(a.employeeId);
+    const row = mine.find((x) => x.document?.id === doc.id)!;
+    expect(row.typeLabel).toBe('تعميم إداري: مواعيد الدوام في رمضان');
+    expect(row.document?.acknowledgement).toMatchObject({ kind: 'RECEIPT', at: null });
+    expect((await svc.readIssuedDocument(doc.id, self(a.employeeId, a.userId))).pdf.subarray(0, 5).toString()).toBe('%PDF-');
+    await expect(svc.readIssuedDocument(doc.id, self(outside.employeeId, outside.userId))).rejects.toThrow(/غير موجود/);
+    expect((await queries.myDocumentRequests(outside.employeeId)).some((x) => x.document?.id === doc.id)).toBe(false);
+
+    // Acknowledged once; HR sees the progress and who has not read it.
+    await svc.acknowledgeDocument(doc.id, { comment: null }, self(a.employeeId, a.userId));
+    await expect(svc.acknowledgeDocument(doc.id, { comment: null }, self(a.employeeId, a.userId))).rejects.toThrow(/مسبقاً/);
+    await expect(svc.acknowledgeDocument(doc.id, { comment: null }, self(outside.employeeId, outside.userId))).rejects.toThrow(/غير موجود/);
+    const overview = await queries.staffDocumentOverview(hr());
+    expect(overview.issued.find((d) => d.id === doc.id)?.circular).toEqual({ total: 3, acknowledged: 1 });
+    const list = await queries.circularRecipientsFor(doc.id, hr());
+    expect(list?.filter((x) => x.acknowledgedAt).length).toBe(1);
+    expect(await queries.circularRecipientsFor(doc.id, self(a.employeeId, a.userId))).toBeNull();
+
+    // Revoked: no more acknowledgements; the distribution and the answers cannot be rewritten.
+    await svc.revokeIssuedDocument(doc.id, 'صدر بتاريخ خاطئ', hr());
+    await expect(svc.acknowledgeDocument(doc.id, { comment: null }, self(b.employeeId, b.userId))).rejects.toThrow(/ملغى/);
+    const ackRow = await prisma.circularRecipient.findFirstOrThrow({ where: { documentId: doc.id, employeeId: a.employeeId } });
+    await expect(prisma.circularRecipient.update({ where: { id: ackRow.id }, data: { acknowledgedAt: null } })).rejects.toThrow(/acknowledged once/);
+    await expect(prisma.circularRecipient.delete({ where: { id: ackRow.id } })).rejects.toThrow(/never deleted/);
+    // Only a circular may have no subject.
+    await expect(prisma.documentRequest.create({ data: { typeKey: 'SALARY_CERTIFICATE', legalCompanyId: companyId, source: 'HR', paramsJson: '{}', status: 'DRAFT' } })).rejects.toThrow(/one_subject/);
+  });
+
   it('PAdES seal: every issued PDF is sealed with the company key (one per company, stored encrypted), verifiable and tamper-evident', async () => {
     const e = await newEmployee(1900);
     // Issued whatever the earlier tests left in the policy: the signatory approves when approval is needed.

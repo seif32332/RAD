@@ -11,7 +11,7 @@ import { formatDateShort } from '@/lib/dates';
 import { SETTLEMENT_PAYMENT_METHODS, type SettlementPaymentMethod } from '@/lib/settlement-payment';
 import { NOC_PURPOSES, VALIDITY, acknowledgementLabel, pdfUrl, processingLabel, type DocView, type ProcessingView } from './_lib';
 
-interface TypeInfo { key: string; labelAr: string; languages: string[]; warningText: boolean; settlement: boolean; addressable: boolean; auto?: boolean; terminationNotice?: boolean; fromRecord?: boolean; noc?: boolean; promotion?: boolean; addendum?: boolean; commencement?: boolean; candidate?: boolean }
+interface TypeInfo { key: string; labelAr: string; languages: string[]; warningText: boolean; settlement: boolean; addressable: boolean; auto?: boolean; terminationNotice?: boolean; fromRecord?: boolean; noc?: boolean; promotion?: boolean; addendum?: boolean; commencement?: boolean; circular?: boolean; candidate?: boolean }
 interface OfferOptions { candidates: { id: string; label: string; jobTitle: string; status: string }[]; companies: { id: string; label: string }[] }
 interface InvestigationOption { id: string; label: string; closedAt: string }
 const NOTICE_REASONS: Record<string, string> = {
@@ -22,7 +22,7 @@ interface Overview {
   types: TypeInfo[];
   pending: { id: string; typeLabel: string; source: string; createdAt: string; company: string; name: string; employeeNumber: string }[];
   processing: { id: string; typeLabel: string; name: string; employeeNumber: string; job: ProcessingView | null }[];
-  issued: (DocView & { typeLabel: string; company: string; name: string; employeeNumber: string; candidate?: boolean })[];
+  issued: (DocView & { typeLabel: string; company: string; name: string; employeeNumber: string; candidate?: boolean; circular?: { total: number; acknowledged: number } | null })[];
 }
 interface Detail {
   id: string; typeLabel: string; status: string; company: string; name: string; employeeNumber: string; source: string;
@@ -175,6 +175,33 @@ export default function DocumentsPage() {
     })();
   }, [issueType?.candidate, offerOptions]);
   const [promo, setPromo] = useState({ newJobTitleAr: '', newJobTitleEn: '', newBasicSalary: '', effectiveDate: '', reasonAr: '' });
+  // Administrative decision / circular: the company's, to a group of employees.
+  const [cir, setCir] = useState({ legalCompanyId: '', kind: 'CIRCULAR', subjectAr: '', bodyAr: '', effectiveDate: '', acknowledge: true, scope: 'COMPANY', ids: [] as string[] });
+  const [groups, setGroups] = useState<{ branches: Array<{ id: string; nameArabic: string }>; departments: Array<{ id: string; nameArabic: string }> } | null>(null);
+  useEffect(() => {
+    if (!issueType?.circular) return;
+    if (!offerOptions) {
+      void (async () => {
+        const res = await fetch('/api/documents/requests?scope=candidates', { cache: 'no-store' });
+        if (!res.ok) return;
+        const o: OfferOptions = await res.json();
+        setOfferOptions(o);
+        setCir((c) => ({ ...c, legalCompanyId: c.legalCompanyId || o.companies[0]?.id || '' }));
+      })();
+    }
+    if (!groups) {
+      void Promise.all([fetch('/api/branches', { cache: 'no-store' }), fetch('/api/departments', { cache: 'no-store' })]).then(async ([b, d]) => {
+        const list = async (r: Response) => { const v: unknown = r.ok ? await r.json() : []; return Array.isArray(v) ? (v as Array<{ id: string; nameArabic: string }>) : []; };
+        setGroups({ branches: await list(b), departments: await list(d) });
+      });
+    }
+  }, [issueType?.circular, offerOptions, groups]);
+  const [recipients, setRecipients] = useState<{ number: string; rows: Array<{ employeeNumber: string; name: string; acknowledgedAt: string | null }> } | null>(null);
+  async function showRecipients(id: string, number: string) {
+    const res = await fetch(`/api/documents/${encodeURIComponent(id)}/recipients`, { cache: 'no-store' });
+    if (!res.ok) return toast.error(await readApiError(res, 'تعذر جلب المستلمين'));
+    setRecipients({ number, rows: (await res.json()).recipients });
+  }
   // Contract addendum: only the terms filled in change.
   const [amd, setAmd] = useState({ effectiveDate: '', basicSalary: '', housing: '', transport: '', jobTitleAr: '', jobTitleEn: '', branchId: '', contractEndDate: '', reasonAr: '' });
   const [branches, setBranches] = useState<Array<{ id: string; nameArabic: string }> | null>(null);
@@ -338,6 +365,21 @@ export default function DocumentsPage() {
   async function submitIssue(e: React.FormEvent) {
     e.preventDefault();
     const language = issueType?.languages.includes(issue.language) ? issue.language : 'ar';
+    if (issueType?.circular) {
+      const r = await act('/api/documents/requests', {
+        typeKey: issue.typeKey, language: 'ar',
+        circular: {
+          legalCompanyId: cir.legalCompanyId, kind: cir.kind, subjectAr: cir.subjectAr, bodyAr: cir.bodyAr, effectiveDate: cir.effectiveDate || undefined,
+          acknowledge: cir.acknowledge, audience: { scope: cir.scope, ids: cir.scope === 'COMPANY' ? [] : cir.ids },
+        },
+      }, null);
+      if (r) {
+        setIssueOpen(false);
+        setCir((c) => ({ ...c, subjectAr: '', bodyAr: '', effectiveDate: '', ids: [] }));
+        toast.info(r.status === 'ISSUED' ? 'صدر، ووصل إلى المستلمين في بوابة الموظف.' : 'بانتظار الاعتماد؛ يصل إلى المستلمين بعد صدوره.');
+      }
+      return;
+    }
     if (issueType?.candidate) {
       const num = (v: string) => (v ? Number(v) : undefined);
       const r = await act('/api/documents/requests', {
@@ -497,6 +539,13 @@ export default function DocumentsPage() {
                           <td><span className={`px-2 py-0.5 rounded-md border text-[11px] font-bold ${VALIDITY[d.validity].tone}`}>{VALIDITY[d.validity].label}</span></td>
                           <td className="text-[12px]">
                             {(() => {
+                              if (d.circular) {
+                                return (
+                                  <button type="button" onClick={() => void showRecipients(d.id, d.number)} className="text-indigo-700 font-bold">
+                                    اطلع {d.circular.acknowledged} من {d.circular.total}
+                                  </button>
+                                );
+                              }
                               const l = acknowledgementLabel(d.acknowledgement);
                               if (!l) return '—';
                               return (
@@ -556,9 +605,26 @@ export default function DocumentsPage() {
         ) : <p className="text-[13px] text-slate-500">لا توجد بيانات.</p>}
       </Modal>
 
-      <Modal open={issueOpen} onClose={() => setIssueOpen(false)} title={issueType?.candidate ? 'إصدار عرض وظيفي لمرشح' : 'إصدار مستند لموظف'} tone="indigo" size={issueType?.warningText || issueType?.candidate ? 'lg' : 'md'} busy={busy}>
+      <Modal open={!!recipients} onClose={() => setRecipients(null)} title={`مستلمو ${recipients?.number ?? ''}`} tone="indigo" size="md">
+        <div className="max-h-96 overflow-y-auto text-[13px]">
+          <table className="w-full">
+            <thead><tr className="text-slate-500"><th className="text-right py-1">الرقم</th><th className="text-right">الاسم</th><th className="text-right">الاطلاع</th></tr></thead>
+            <tbody>
+              {(recipients?.rows ?? []).map((r) => (
+                <tr key={r.employeeNumber} className="border-t">
+                  <td className="py-1" dir="ltr">{r.employeeNumber}</td>
+                  <td>{r.name}</td>
+                  <td className={r.acknowledgedAt ? 'text-emerald-700' : 'text-amber-700'}>{r.acknowledgedAt ? formatDateShort(r.acknowledgedAt) : 'لم يطلع بعد'}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </Modal>
+
+      <Modal open={issueOpen} onClose={() => setIssueOpen(false)} title={issueType?.candidate ? 'إصدار عرض وظيفي لمرشح' : issueType?.circular ? 'إصدار قرار إداري أو تعميم' : 'إصدار مستند لموظف'} tone="indigo" size={issueType?.warningText || issueType?.candidate || issueType?.circular ? 'lg' : 'md'} busy={busy}>
         <form onSubmit={submitIssue} className="space-y-4">
-          {!issueType?.candidate && (
+          {!issueType?.candidate && !issueType?.circular && (
             <SearchableSelect name="employeeId" label="الموظف" required value={issue.employeeId}
               onChange={(e) => setIssue({ ...issue, employeeId: e.target.value })}
               options={employees.map((e) => ({ value: e.id, label: `${e.firstNameArabic ?? ''} ${e.lastNameArabic ?? ''} (${e.employeeId ?? ''})${e.isTerminated ? ' — منتهية خدمته' : ''}` }))} />
@@ -569,6 +635,50 @@ export default function DocumentsPage() {
               {data?.types.filter((t) => !t.auto && !t.fromRecord).map((t) => <option key={t.key} value={t.key}>{t.labelAr}</option>)}
             </select>
           </label>
+          {issueType?.circular ? (
+            <>
+              <div className="grid grid-cols-2 gap-2">
+                <select value={cir.legalCompanyId} onChange={(e) => setCir({ ...cir, legalCompanyId: e.target.value })} required className="border rounded-xl px-3 py-2.5 text-[14px]">
+                  {(offerOptions?.companies ?? []).map((c) => <option key={c.id} value={c.id}>{c.label}</option>)}
+                </select>
+                <select value={cir.kind} onChange={(e) => setCir({ ...cir, kind: e.target.value })} className="border rounded-xl px-3 py-2.5 text-[14px]">
+                  <option value="CIRCULAR">تعميم إداري</option>
+                  <option value="DECISION">قرار إداري</option>
+                </select>
+              </div>
+              <input value={cir.subjectAr} required minLength={3} maxLength={150} onChange={(e) => setCir({ ...cir, subjectAr: e.target.value })} placeholder="الموضوع" className="w-full border rounded-xl px-3 py-2.5 text-[14px]" />
+              <textarea value={cir.bodyAr} required minLength={10} maxLength={4000} rows={7} onChange={(e) => setCir({ ...cir, bodyAr: e.target.value })}
+                placeholder="نص القرار أو التعميم. افصل الفقرات بسطر فارغ." className="w-full border rounded-xl px-3 py-2.5 text-[14px]" />
+              <div className="grid grid-cols-2 gap-2 text-[13px]">
+                <label>يعمل به اعتبارا من (اختياري)<input type="date" value={cir.effectiveDate} onChange={(e) => setCir({ ...cir, effectiveDate: e.target.value })} className="block w-full border rounded-xl px-2 py-2 text-[14px]" /></label>
+                <label className="flex items-center gap-2 mt-5"><input type="checkbox" checked={cir.acknowledge} onChange={(e) => setCir({ ...cir, acknowledge: e.target.checked })} /> يقر كل مستلم بالاطلاع</label>
+              </div>
+              <label className="block">
+                <span className="block text-[13px] font-bold text-slate-700 mb-1">المستلمون</span>
+                <select value={cir.scope} onChange={(e) => setCir({ ...cir, scope: e.target.value, ids: [] })} className="w-full border rounded-xl px-3 py-2.5 text-[14px]">
+                  <option value="COMPANY">جميع منسوبي الشركة</option>
+                  <option value="BRANCHES">فروع محددة</option>
+                  <option value="DEPARTMENTS">إدارات محددة</option>
+                  <option value="EMPLOYEES">موظفون بالاسم (50 كحد أقصى)</option>
+                </select>
+              </label>
+              {cir.scope !== 'COMPANY' ? (
+                <div className="max-h-48 overflow-y-auto border rounded-xl p-2 space-y-1 text-[13px]">
+                  {(cir.scope === 'BRANCHES' ? groups?.branches ?? []
+                    : cir.scope === 'DEPARTMENTS' ? groups?.departments ?? []
+                    : employees.filter((e) => !e.isTerminated).map((e) => ({ id: e.id, nameArabic: `${e.firstNameArabic ?? ''} ${e.lastNameArabic ?? ''} (${e.employeeId ?? ''})` }))
+                  ).map((o) => (
+                    <label key={o.id} className="flex items-center gap-2">
+                      <input type="checkbox" checked={cir.ids.includes(o.id)}
+                        onChange={(e) => setCir({ ...cir, ids: e.target.checked ? [...cir.ids, o.id] : cir.ids.filter((x) => x !== o.id) })} />
+                      {o.nameArabic}
+                    </label>
+                  ))}
+                </div>
+              ) : null}
+              <p className="text-[12px] text-slate-600">يُعتمد من شخص آخر قبل صدوره (يمكن تغيير ذلك من إعدادات المستندات)، ثم يصل إلى كل مستلم في بوابة الموظف.</p>
+            </>
+          ) : null}
           {issueType?.candidate ? (
             <>
               <SearchableSelect name="jobApplicationId" label="المرشح (من طلبات التوظيف)" required value={ofr.jobApplicationId}
@@ -726,7 +836,7 @@ export default function DocumentsPage() {
           {issueType?.addressable !== false && issue.language === 'ar-en' && issueType?.languages.includes('ar-en') && <input dir="ltr" value={issue.addresseeEn} maxLength={120} onChange={(e) => setIssue({ ...issue, addresseeEn: e.target.value })} placeholder="Addressed to (optional)" className="w-full border rounded-xl px-3 py-2.5 text-[14px]" />}
           <div className="flex justify-end gap-2">
             <button type="button" onClick={() => setIssueOpen(false)} className="px-4 py-2 rounded-xl border text-[13px] font-bold">إلغاء</button>
-            <button type="submit" disabled={busy || (issueType?.candidate ? !ofr.jobApplicationId : !issue.employeeId)} className="px-5 py-2 rounded-xl bg-indigo-600 text-white text-[13px] font-bold disabled:opacity-50">إصدار</button>
+            <button type="submit" disabled={busy || (issueType?.candidate ? !ofr.jobApplicationId : issueType?.circular ? !cir.legalCompanyId || (cir.scope !== 'COMPANY' && !cir.ids.length) : !issue.employeeId)} className="px-5 py-2 rounded-xl bg-indigo-600 text-white text-[13px] font-bold disabled:opacity-50">إصدار</button>
           </div>
         </form>
       </Modal>

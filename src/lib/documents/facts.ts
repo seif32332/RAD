@@ -9,7 +9,7 @@ import { LOAN_DEDUCTIBLE_STATUSES } from '@/lib/constants';
 import { findStoredFile, storedNameFromUrl } from '@/lib/storage';
 import { decryptField } from '@/lib/crypto';
 import { normalizeIban } from '@/lib/iban';
-import type { AddendumFacts, BankFacts, CommencementFacts, EvaluationFacts, LeaveFacts, ExitFacts, InvestigationFacts, PayrollFacts, SettlementFacts, TerminationFacts } from './types';
+import type { AddendumFacts, BankFacts, CircularFacts, CommencementFacts, EvaluationFacts, LeaveFacts, ExitFacts, InvestigationFacts, PayrollFacts, SettlementFacts, TerminationFacts } from './types';
 
 const label = (...parts: Array<string | null | undefined>) => parts.filter((p) => p && p.trim()).join(' - ') || 'غير موصوفة';
 
@@ -120,6 +120,43 @@ export async function loadBankFacts(db: Prisma.TransactionClient, employeeId: st
     iban = null; // unreadable ciphertext: reported as an invalid IBAN
   }
   return { bankName: e?.bankName ?? null, iban };
+}
+
+/**
+ * Recipients of a circular: employees in service (not terminated, not excluded) of the legal
+ * company, in the chosen branches / departments or named. Ids that match nothing are reported.
+ */
+export async function loadCircularFacts(db: Prisma.TransactionClient, legalCompanyId: string, audience: { scope: 'COMPANY' | 'BRANCHES' | 'DEPARTMENTS' | 'EMPLOYEES'; ids: string[] }): Promise<CircularFacts> {
+  const ids = [...new Set(audience.ids)];
+  const inService = { legalCompanyId, isTerminated: false, employmentStatus: { not: 'EXCLUDED' } } as const;
+  let groups: string[] = [];
+  let unknownIds: string[] = [];
+  let where: Prisma.EmployeeWhereInput = inService;
+  if (audience.scope === 'BRANCHES') {
+    const rows = await db.branch.findMany({ where: { id: { in: ids } }, select: { id: true, nameArabic: true } });
+    groups = ids.flatMap((id) => rows.filter((r) => r.id === id).map((r) => r.nameArabic));
+    unknownIds = ids.filter((id) => !rows.some((r) => r.id === id));
+    where = { ...inService, branchId: { in: ids } };
+  } else if (audience.scope === 'DEPARTMENTS') {
+    const rows = await db.department.findMany({ where: { id: { in: ids } }, select: { id: true, nameArabic: true } });
+    groups = ids.flatMap((id) => rows.filter((r) => r.id === id).map((r) => r.nameArabic));
+    unknownIds = ids.filter((id) => !rows.some((r) => r.id === id));
+    where = { ...inService, departmentId: { in: ids } };
+  } else if (audience.scope === 'EMPLOYEES') {
+    where = { ...inService, id: { in: ids } };
+  }
+  const employees = await db.employee.findMany({
+    where,
+    select: { id: true, employeeId: true, firstNameArabic: true, lastNameArabic: true },
+    orderBy: { employeeId: 'asc' },
+    take: 5000,
+  });
+  if (audience.scope === 'EMPLOYEES') unknownIds = ids.filter((id) => !employees.some((e) => e.id === id));
+  return {
+    recipients: employees.map((e) => ({ id: e.id, employeeNumber: e.employeeId, nameAr: `${e.firstNameArabic} ${e.lastNameArabic}`.trim() })),
+    groups,
+    unknownIds,
+  };
 }
 
 /**

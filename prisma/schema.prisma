@@ -472,6 +472,7 @@ model Employee {
 
   documentRequests DocumentRequest[]
   issuedDocuments  IssuedDocument[]
+  circularRecipients CircularRecipient[]
 
   @@index([legalCompanyId])
   @@index([actualCompanyId])
@@ -2395,6 +2396,7 @@ model IssuedDocument {
   snapshot     DocumentSnapshot @relation(fields: [snapshotId], references: [id], onDelete: Restrict)
   acknowledgement DocumentAcknowledgement?
   candidateAccess CandidateDocumentAccess?
+  recipients      CircularRecipient[] // تعميم أو قرار إداري: الموظفون الموجه إليهم
   sealKey         DocumentSealKey?         @relation(fields: [sealKeyId], references: [id], onDelete: Restrict)
 
   @@unique([legalCompanyId, number])
@@ -2453,6 +2455,22 @@ model DocumentTextOverride {
   createdAt   DateTime @default(now())
 
   @@index([companyId, typeKey, slot, createdAt])
+}
+
+/// المستلم لقرار إداري أو تعميم (الترحيل 9o): التوزيع ثابت عند الإصدار، والتغيير الوحيد إقراره بالاطلاع مرة واحدة
+model CircularRecipient {
+  id               String    @id @default(uuid())
+  documentId       String
+  employeeId       String
+  acknowledgedAt   DateTime?
+  acknowledgedById String?
+  createdAt        DateTime  @default(now())
+
+  document IssuedDocument @relation(fields: [documentId], references: [id], onDelete: Restrict)
+  employee Employee       @relation(fields: [employeeId], references: [id], onDelete: Restrict)
+
+  @@unique([documentId, employeeId])
+  @@index([employeeId])
 }
 
 /// رابط المرشح إلى عرضه الوظيفي: رمز سري (يُخزن هاشه ونسخة مشفرة لنسخه لـHR) ينتهي بانتهاء صلاحية العرض

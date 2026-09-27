@@ -19,7 +19,7 @@ import { appendEvent, truncateIp } from './events';
 import { cancelChangeOrder, createChangeOrder } from './change-orders';
 import { grantCandidateAccess } from './candidate';
 import { loadDocumentTexts } from './texts';
-import { loadAddendumFacts, loadCommencementFacts, loadEvaluationFacts, loadLeaveFacts, loadBankFacts, loadExitFacts, loadInvestigationFacts, loadPayrollFacts, loadSettlementFacts, loadTerminationFacts } from './facts';
+import { loadAddendumFacts, loadCircularFacts, loadCommencementFacts, loadEvaluationFacts, loadLeaveFacts, loadBankFacts, loadExitFacts, loadInvestigationFacts, loadPayrollFacts, loadSettlementFacts, loadTerminationFacts } from './facts';
 import { employeeUserId, enqueueNotice } from './notify';
 import {
   computeValidUntil, decideSignature, effectivePolicy, needsApproval, validityStatus,
@@ -34,7 +34,7 @@ import { SealError } from './seal/pades';
 import { selfSealProvider } from './seal/provider';
 import { loadTemplate } from './templates';
 import {
-  buildCandidateContractData, buildContractData, ContractValidationError, getDocumentType, LEAVE_LETTER_TYPES, paramsSchema,
+  buildCandidateContractData, buildCompanyContractData, buildContractData, ContractValidationError, getDocumentType, LEAVE_LETTER_TYPES, paramsSchema,
   type DocumentParams, type DocumentTypeDefinition, type EmployeeRecord,
 } from './types';
 
@@ -145,8 +145,37 @@ async function buildCandidateSnapshot(db: Tx, def: DocumentTypeDefinition, jobAp
   return { text, sha256: sha256Hex(text), legalCompanyId: company.id, policy, data, employee: null, candidate };
 }
 
+/**
+ * A company document's snapshot (circular): the legal company HR chose and the recipients resolved
+ * now, so the approval covers exactly who receives it (a change of the audience makes a new snapshot).
+ */
+async function buildCompanySnapshot(db: Tx, def: DocumentTypeDefinition, params: DocumentParams) {
+  const c = params.circular;
+  if (!c) throw badRequest('اكتب موضوع القرار أو التعميم ونصه وحدد المستلمين');
+  const company = await db.company.findUnique({ where: { id: c.legalCompanyId }, select: { id: true, nameArabic: true, nameEnglish: true, commercialRegNum: true, unifiedNumber: true } });
+  if (!company) throw badRequest('الشركة النظامية غير موجودة');
+  const circular = await loadCircularFacts(db, company.id, c.audience);
+  let data: Record<string, unknown>;
+  try {
+    data = buildCompanyContractData(def, { company, params, circular });
+  } catch (e) {
+    if (e instanceof ContractValidationError) throw new HttpError(422, e.message, { errors: e.errors });
+    throw e;
+  }
+  const texts = await loadDocumentTexts(db, company.id, def.key);
+  if (texts) data = { ...data, texts };
+  const policy = await loadPolicy(db, def, company.id);
+  const material = { typeKey: def.key, contractVersion: def.contractVersion, legalCompanyId: company.id, signatoryId: policy.signatoryId, params, data };
+  const text = canonicalJson(material);
+  return { text, sha256: sha256Hex(text), legalCompanyId: company.id, policy, data, employee: null, candidate: null };
+}
+
 /** Material content of a request (DOC-05): its hash decides whether an approval is still valid. */
 async function buildMaterialSnapshot(db: Tx, def: DocumentTypeDefinition, subject: DocumentSubject, params: DocumentParams) {
+  if (def.subject === 'COMPANY') {
+    if (subject.employeeId || subject.jobApplicationId) throw badRequest('القرار الإداري والتعميم يصدران من الشركة لا لموظف بعينه');
+    return buildCompanySnapshot(db, def, params);
+  }
   if (def.subject === 'CANDIDATE') {
     if (!subject.jobApplicationId || subject.employeeId) throw badRequest('هذا المستند يصدر لمرشح من طلبات التوظيف');
     return buildCandidateSnapshot(db, def, subject.jobApplicationId, params);
@@ -266,8 +295,10 @@ export async function createDocumentRequest(input: CreateRequestInput, actor: Ac
   if (!def) throw badRequest('نوع مستند غير معروف');
   const params = paramsSchema.parse(input.params ?? {});
   const subject: DocumentSubject = { employeeId: input.employeeId ?? null, jobApplicationId: input.jobApplicationId ?? null };
-  if (!subject.employeeId === !subject.jobApplicationId) throw badRequest('حدد الموظف أو المرشح');
+  const companyDoc = def.subject === 'COMPANY';
+  if (companyDoc ? !!(subject.employeeId || subject.jobApplicationId) : !subject.employeeId === !subject.jobApplicationId) throw badRequest('حدد الموظف أو المرشح');
   if (def.subject === 'CANDIDATE' && input.source !== 'HR') throw forbidden('العرض الوظيفي يصدره قسم الموارد البشرية');
+  if (companyDoc && input.source !== 'HR') throw forbidden('القرار الإداري والتعميم يصدرهما قسم الموارد البشرية');
 
   if (input.source === 'PORTAL') {
     if (!actor.employeeId || actor.employeeId !== subject.employeeId) throw forbidden('لا يمكنك طلب مستند لموظف آخر');
@@ -294,10 +325,11 @@ export async function createDocumentRequest(input: CreateRequestInput, actor: Ac
 
     // One open request per employee and type: a double click must not issue twice. The advisory
     // lock serializes concurrent creations for the same employee + type before the check.
-    await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${`doc-req:${subjectKey(subject)}:${def.key}`}))`;
+    // Company documents (circulars) have no single subject: several may be open at once.
+    if (!companyDoc) await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${`doc-req:${subjectKey(subject)}:${def.key}`}))`;
     // AUTO documents are deduplicated by their source (one per payroll row), not by "one open
     // request": a month whose render is retrying must not block the next month.
-    const open = def.issuance === 'AUTO' ? null : await tx.documentRequest.findFirst({
+    const open = def.issuance === 'AUTO' || companyDoc ? null : await tx.documentRequest.findFirst({
       where: { employeeId: subject.employeeId, jobApplicationId: subject.jobApplicationId, typeKey: def.key, status: { in: ['DRAFT', 'PENDING_APPROVAL', 'APPROVED'] } },
       select: { id: true },
     });
@@ -521,7 +553,7 @@ export async function processRenderJob(jobId: string, actor: Actor = SYSTEM_ACTO
     const policy = await loadPolicy(prisma, def, job.legalCompanyId);
     const validUntil = computeValidUntil(job.issuedAt, policy.validityDays);
     const model = buildRenderModel(material.data, brand, {
-      typeLabelAr: def.labelAr, typeLabelEn: def.labelEn, number: job.number,
+      typeLabelAr: def.titleOf?.(material.data).ar ?? def.labelAr, typeLabelEn: def.titleOf?.(material.data).en ?? def.labelEn, number: job.number,
       issuedDate: riyadhDate(job.issuedAt), validUntilDate: validUntil ? riyadhDate(validUntil) : null,
       verifyUrl: url, language: params.language, addresseeAr: params.addresseeAr ?? null, addresseeEn: params.addresseeEn ?? null,
       addressedToEmployee: !!def.addressedToEmployee, signature, hasLogo: !!assets['logo.png'],
@@ -561,6 +593,13 @@ export async function processRenderJob(jobId: string, actor: Actor = SYSTEM_ACTO
       if (req.employeeId) {
         const consentBy = def.acknowledgement === 'CONSENT' ? formatGregorian((material.data as unknown as { addendum: { effectiveDate: string } }).addendum.effectiveDate, 'ar') : undefined;
         await enqueueNotice(tx, [await employeeUserId(tx, req.employeeId)], `issued:${doc.id}`, { kind: 'ISSUED', number: job.number, typeLabel: def.labelAr, acknowledge: !!def.acknowledgement, consentBy });
+      } else if (def.subject === 'COMPANY') {
+        // Circular: the distribution approved in the snapshot, one row per recipient, each told once.
+        const c = (material.data as unknown as { circular: { recipientIds: string[]; acknowledge: boolean } }).circular;
+        await tx.circularRecipient.createMany({ data: c.recipientIds.map((employeeId) => ({ documentId: doc.id, employeeId })), skipDuplicates: true });
+        const users = await tx.employee.findMany({ where: { id: { in: c.recipientIds }, userId: { not: null } }, select: { userId: true } });
+        const title = def.titleOf?.(material.data).ar ?? def.labelAr;
+        await enqueueNotice(tx, users.map((u) => u.userId!), `issued:${doc.id}`, { kind: 'ISSUED', number: job.number, typeLabel: title, acknowledge: c.acknowledge });
       } else if (req.jobApplicationId) {
         // A candidate has no account: a private link, valid until the offer's deadline (candidate.ts).
         await grantCandidateAccess(tx, { documentId: doc.id, jobApplicationId: req.jobApplicationId, validUntil, issuedAt: job.issuedAt, number: job.number });
@@ -714,6 +753,10 @@ export async function revokeIssuedDocument(documentId: string, reason: string, a
     if (moved.count !== 1) throw conflict('المستند ملغى أو مستبدل مسبقاً');
     await appendEvent(tx, { type: 'REVOKED', documentId, actorId: actor.userId, ip: actor.ip, meta: { reason } });
     if (doc.employeeId) await enqueueNotice(tx, [await employeeUserId(tx, doc.employeeId)], `revoked:${documentId}`, { kind: 'REVOKED', number: doc.number, typeLabel: def.labelAr });
+    if (def.subject === 'COMPANY') {
+      const users = await tx.circularRecipient.findMany({ where: { documentId, employee: { userId: { not: null } } }, select: { employee: { select: { userId: true } } } });
+      await enqueueNotice(tx, users.map((u) => u.employee.userId!), `revoked:${documentId}`, { kind: 'REVOKED', number: doc.number, typeLabel: def.labelAr });
+    }
   });
   await logAudit({ userId: actor.userId, action: 'UPDATE', entityType: 'IssuedDocument', entityId: documentId, details: { status: 'REVOKED', number: doc.number }, ipAddress: actor.ip });
   return { documentId, status: 'REVOKED' };
@@ -744,6 +787,7 @@ export async function acknowledgeDocument(
     },
   });
   const def = doc ? getDocumentType(doc.typeKey) : null;
+  if (doc && def?.subject === 'COMPANY') return acknowledgeCircular(doc, actor);
   if (!doc || !def || !actor.userId || !actor.employeeId || actor.employeeId !== doc.employeeId) throw notFound('المستند غير موجود');
   if (!def.acknowledgement) throw badRequest('هذا المستند لا يحتاج إقراراً');
   if (doc.status !== 'ISSUED') throw conflict('المستند ملغى أو مستبدل؛ لا يلزم الرد عليه');
@@ -792,6 +836,22 @@ export async function acknowledgeDocument(
     throw e;
   }
   return { documentId, decision };
+}
+
+/** A circular's recipient confirms having read it (once; the guard refuses a second time). */
+async function acknowledgeCircular(doc: { id: string; status: string; snapshot: { data: string | null } }, actor: Actor) {
+  if (!actor.userId || !actor.employeeId) throw notFound('المستند غير موجود');
+  const row = await prisma.circularRecipient.findUnique({ where: { documentId_employeeId: { documentId: doc.id, employeeId: actor.employeeId } } });
+  if (!row) throw notFound('المستند غير موجود');
+  const wanted = doc.snapshot.data ? (JSON.parse(doc.snapshot.data) as { data?: { circular?: { acknowledge?: boolean } } }).data?.circular?.acknowledge : true;
+  if (wanted === false) throw badRequest('هذا التعميم لا يحتاج إقراراً');
+  if (doc.status !== 'ISSUED') throw conflict('المستند ملغى أو مستبدل؛ لا يلزم الرد عليه');
+  await prisma.$transaction(async (tx) => {
+    const moved = await tx.circularRecipient.updateMany({ where: { id: row.id, acknowledgedAt: null }, data: { acknowledgedAt: new Date(), acknowledgedById: actor.userId } });
+    if (moved.count !== 1) throw conflict('سُجّل ردك على هذا المستند مسبقاً');
+    await appendEvent(tx, { type: 'ACKNOWLEDGED', documentId: doc.id, actorId: actor.userId, ip: actor.ip, meta: { decision: 'RECEIVED', circular: true } });
+  });
+  return { documentId: doc.id, decision: 'RECEIVED' as AcknowledgementDecision };
 }
 
 interface AddendumTerms {
@@ -1202,7 +1262,9 @@ export async function readIssuedDocument(documentId: string, actor: Actor) {
   const doc = await prisma.issuedDocument.findUnique({ where: { id: documentId } });
   const def = doc ? getDocumentType(doc.typeKey) : null;
   // Same answer whether it exists or not: ids cannot be probed.
-  if (!doc || !def || !(await canSee(prisma, def, actor, doc.employeeId, doc.legalCompanyId))) throw notFound('المستند غير موجود');
+  const recipient = !!doc && def?.subject === 'COMPANY' && !!actor.employeeId
+    && !!(await prisma.circularRecipient.findUnique({ where: { documentId_employeeId: { documentId: doc.id, employeeId: actor.employeeId } }, select: { id: true } }));
+  if (!doc || !def || !(recipient || (await canSee(prisma, def, actor, doc.employeeId, doc.legalCompanyId)))) throw notFound('المستند غير موجود');
   if (doc.purgedAt) throw new HttpError(410, 'انتهت مدة الاحتفاظ بهذا المستند وحُذف ملفه');
   const pdf = await readIssuedPdf(doc.storedName, doc.pdfSha256);
   await prisma.$transaction((tx) => appendEvent(tx, { type: 'DOWNLOADED', documentId, actorId: actor.userId, ip: actor.ip }));

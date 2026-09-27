@@ -50,7 +50,39 @@ export async function portalTypesFor(employeeId: string) {
   return { available, reason: null };
 }
 
+/** Circulars addressed to the employee, as rows of "مستنداتي" (acknowledged like a receipt). */
+async function myCirculars(employeeId: string) {
+  const rows = await prisma.circularRecipient.findMany({
+    where: { employeeId },
+    orderBy: { createdAt: 'desc' },
+    take: 50,
+    include: { document: { select: { id: true, number: true, typeKey: true, issuedAt: true, validUntil: true, status: true, purgedAt: true, revokeReason: true, snapshot: { select: { data: true } } } } },
+  });
+  return rows.map((r) => {
+    const def = getDocumentType(r.document.typeKey);
+    const c = r.document.snapshot.data ? (JSON.parse(r.document.snapshot.data) as { data?: { circular?: { kind: string; subjectAr: string; acknowledge: boolean } } }).data?.circular : undefined;
+    const title = c && def?.titleOf ? def.titleOf({ circular: c }).ar : typeLabel(r.document.typeKey);
+    const view = docView({ ...r.document, acknowledgement: null });
+    return {
+      id: `circular:${r.document.id}`,
+      typeKey: r.document.typeKey,
+      typeLabel: c ? `${title}: ${c.subjectAr}` : title,
+      source: 'HR',
+      language: 'ar',
+      status: 'ISSUED',
+      createdAt: r.document.issuedAt,
+      rejectReason: null,
+      document: {
+        ...view,
+        acknowledgement: c?.acknowledge === false ? null : { kind: 'RECEIPT' as const, at: r.acknowledgedAt, decision: r.acknowledgedAt ? 'RECEIVED' : null, comment: null },
+      },
+      processing: null,
+    };
+  });
+}
+
 export async function myDocumentRequests(employeeId: string) {
+  const circulars = await myCirculars(employeeId);
   const rows = await prisma.documentRequest.findMany({
     where: { employeeId },
     orderBy: { createdAt: 'desc' },
@@ -62,7 +94,7 @@ export async function myDocumentRequests(employeeId: string) {
   });
   // Locked documents (warning, termination notice, minutes, decisions) are HR's act: the employee
   // sees them only once issued, whoever created the request (HR or the system).
-  return rows.filter((r) => r.status === 'ISSUED' || !getDocumentType(r.typeKey)?.approvalLocked).map((r) => ({
+  const own = rows.filter((r) => r.status === 'ISSUED' || !getDocumentType(r.typeKey)?.approvalLocked).map((r) => ({
     id: r.id,
     typeKey: r.typeKey,
     typeLabel: typeLabel(r.typeKey),
@@ -74,11 +106,14 @@ export async function myDocumentRequests(employeeId: string) {
     document: r.issuedDocument ? docView(r.issuedDocument) : null,
     processing: jobView(r.renderJob),
   }));
+  return [...own, ...circulars].sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime()).slice(0, 60);
 }
 
 /** Display name of a document's subject: the employee, or the job applicant (offer). */
 const employeeName = (e: { firstNameArabic: string; lastNameArabic: string; employeeId: string } | null, c?: { candidateName: string } | null) =>
-  e ? { name: `${e.firstNameArabic} ${e.lastNameArabic}`, employeeNumber: e.employeeId, candidate: false } : { name: c?.candidateName ?? '—', employeeNumber: 'مرشح', candidate: true };
+  e ? { name: `${e.firstNameArabic} ${e.lastNameArabic}`, employeeNumber: e.employeeId, candidate: false }
+    : c ? { name: c.candidateName, employeeNumber: 'مرشح', candidate: true }
+      : { name: 'مجموعة من الموظفين', employeeNumber: 'قرار / تعميم', candidate: false };
 
 /** HR queue: pending approvals, processing problems, recent documents; filtered to the actor's types. */
 export async function staffDocumentOverview(actor: Actor, opts: { q?: string; employeeId?: string } = {}) {
@@ -113,16 +148,21 @@ export async function staffDocumentOverview(actor: Actor, opts: { q?: string; em
       where: { typeKey: { in: typeKeys }, ...search, ...forEmployee },
       orderBy: { issuedAt: 'desc' },
       take: 100,
-      include: { employee, jobApplication, legalCompany: { select: { nameArabic: true } }, acknowledgement: { select: { acknowledgedAt: true, decision: true, comment: true } } },
+      include: { employee, jobApplication, legalCompany: { select: { nameArabic: true } }, acknowledgement: { select: { acknowledgedAt: true, decision: true, comment: true } }, _count: { select: { recipients: true } } },
     }),
   ]);
+  // Circulars: how many of the recipients acknowledged.
+  const circularIds = issued.filter((d) => d._count.recipients > 0).map((d) => d.id);
+  const acked = circularIds.length
+    ? await prisma.circularRecipient.groupBy({ by: ['documentId'], where: { documentId: { in: circularIds }, acknowledgedAt: { not: null } }, _count: { _all: true } })
+    : [];
   return {
     types: typeKeys.map((k) => {
       const d = getDocumentType(k)!;
       // What the issue form asks for: a warning's text, and the languages the template supports.
       return {
         key: k, labelAr: d.labelAr, languages: d.languages, warningText: k === 'WARNING_LETTER', settlement: d.facts === 'SETTLEMENT',
-        terminationNotice: k === 'TERMINATION_NOTICE', noc: k === 'NO_OBJECTION', promotion: k === 'PROMOTION_DECISION', addendum: k === 'CONTRACT_ADDENDUM', commencement: d.facts === 'COMMENCEMENT', candidate: d.subject === 'CANDIDATE', addressable: !d.addressedToEmployee && d.facts !== 'SETTLEMENT', auto: d.issuance === 'AUTO',
+        terminationNotice: k === 'TERMINATION_NOTICE', noc: k === 'NO_OBJECTION', promotion: k === 'PROMOTION_DECISION', addendum: k === 'CONTRACT_ADDENDUM', circular: d.subject === 'COMPANY', commencement: d.facts === 'COMMENCEMENT', candidate: d.subject === 'CANDIDATE', addressable: !d.addressedToEmployee && d.facts !== 'SETTLEMENT', auto: d.issuance === 'AUTO',
         // Requests that answer a record (resignation) are created by the system, not from this form.
         fromRecord: d.facts === 'TERMINATION',
       };
@@ -132,7 +172,10 @@ export async function staffDocumentOverview(actor: Actor, opts: { q?: string; em
       company: r.legalCompany.nameArabic, ...employeeName(r.employee, r.jobApplication),
     })),
     processing: stuck.map((r) => ({ id: r.id, typeLabel: typeLabel(r.typeKey), ...employeeName(r.employee, r.jobApplication), job: jobView(r.renderJob) })),
-    issued: issued.map((d) => ({ ...docView(d), typeKey: d.typeKey, typeLabel: typeLabel(d.typeKey), company: d.legalCompany.nameArabic, ...employeeName(d.employee, d.jobApplication) })),
+    issued: issued.map((d) => ({
+      ...docView(d), typeKey: d.typeKey, typeLabel: typeLabel(d.typeKey), company: d.legalCompany.nameArabic, ...employeeName(d.employee, d.jobApplication),
+      circular: d._count.recipients ? { total: d._count.recipients, acknowledged: acked.find((a) => a.documentId === d.id)?._count._all ?? 0 } : null,
+    })),
   };
 }
 
@@ -240,6 +283,19 @@ export async function salaryTransferConflict(employeeId: string, ibanStored: str
 }
 
 /** Open job applications (for a job offer) and the legal companies the actor may issue from. */
+/** A circular's recipients and who acknowledged (staff of the type, within the company scope). */
+export async function circularRecipientsFor(documentId: string, actor: Actor) {
+  const doc = await prisma.issuedDocument.findUnique({ where: { id: documentId }, select: { id: true, typeKey: true, legalCompanyId: true } });
+  const def = doc ? getDocumentType(doc.typeKey) : null;
+  if (!doc || !def || def.subject !== 'COMPANY' || !(await staffCan(prisma, def, actor, doc.legalCompanyId))) return null;
+  const rows = await prisma.circularRecipient.findMany({
+    where: { documentId },
+    include: { employee: { select: { employeeId: true, firstNameArabic: true, lastNameArabic: true } } },
+    orderBy: [{ acknowledgedAt: { sort: 'asc', nulls: 'first' } }, { createdAt: 'asc' }],
+  });
+  return rows.map((r) => ({ employeeNumber: r.employee.employeeId, name: `${r.employee.firstNameArabic} ${r.employee.lastNameArabic}`, acknowledgedAt: r.acknowledgedAt }));
+}
+
 export async function offerCandidatesFor(actor: Actor) {
   const def = getDocumentType('JOB_OFFER')!;
   if (!actor.role || !roleIn(actor.role, def.staffRoles)) return null;

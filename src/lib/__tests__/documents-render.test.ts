@@ -14,7 +14,7 @@ import { createSealCertificate } from '@/lib/documents/seal/cert';
 import { sealPdf } from '@/lib/documents/seal/pades';
 import { hasOpenssl, opensslVerify } from './seal-fixtures';
 import {
-  buildCandidateContractData, buildContractData, CLEARANCE_CERTIFICATE, CONTRACT_ADDENDUM, type AddendumFacts, WORK_COMMENCEMENT, WORK_COMMENCEMENT_LETTER, type CommencementFacts, EMPLOYMENT_CERTIFICATE, EXPERIENCE_CERTIFICATE, EVALUATION_REPORT, EXIT_ACCEPTANCE, INVESTIGATION_MINUTES, JOB_OFFER, LEAVE_APPROVAL, NO_OBJECTION, paramsSchema, PAYSLIP, PROMOTION_DECISION, SALARY_CERTIFICATE, SALARY_TRANSFER, SETTLEMENT_STATEMENT, TERMINATION_NOTICE, WARNING_LETTER,
+  ADMIN_CIRCULAR, buildCandidateContractData, buildCompanyContractData, buildContractData, CLEARANCE_CERTIFICATE, CONTRACT_ADDENDUM, type AddendumFacts, WORK_COMMENCEMENT, WORK_COMMENCEMENT_LETTER, type CommencementFacts, EMPLOYMENT_CERTIFICATE, EXPERIENCE_CERTIFICATE, EVALUATION_REPORT, EXIT_ACCEPTANCE, INVESTIGATION_MINUTES, JOB_OFFER, LEAVE_APPROVAL, NO_OBJECTION, paramsSchema, PAYSLIP, PROMOTION_DECISION, SALARY_CERTIFICATE, SALARY_TRANSFER, SETTLEMENT_STATEMENT, TERMINATION_NOTICE, WARNING_LETTER,
   type CompanyRecord, type DocumentLanguage, type DocumentTypeDefinition, type EmployeeRecord, type ExitFacts, type PayrollFacts, type BankFacts, type EvaluationFacts, type InvestigationFacts, type LeaveFacts, type SettlementFacts, type TerminationFacts,
 } from '@/lib/documents/types';
 
@@ -245,6 +245,42 @@ describe.skipIf(!config)('templates through radeef-render', () => {
         assets: { 'qr.svg': await qrSvg('https://acme.radeef.sa/v/K7Q2M9XJ4TRW8PZC3VN6HD5BLA'), 'logo.png': asset('logo.png') }, creationTimestamp: 1790413200, pdfStandard: 'a-2b',
       });
       if (process.env.RENDER_IT_OUT) writeFileSync(path.join(process.env.RENDER_IT_OUT, `OFR-${language}.pdf`), out.pdf);
+      expect(out.pdf.subarray(0, 5).toString('latin1')).toBe('%PDF-');
+    });
+  }
+
+  for (const scope of ['COMPANY', 'EMPLOYEES'] as const) {
+    it(`administrative decision / circular (${scope})`, async () => {
+      const params = paramsSchema.parse({
+        language: 'ar',
+        circular: {
+          legalCompanyId: 'c1', kind: scope === 'COMPANY' ? 'CIRCULAR' : 'DECISION', subjectAr: 'مواعيد الدوام خلال شهر رمضان',
+          bodyAr: 'تعلن إدارة الموارد البشرية أن الدوام خلال شهر رمضان يكون من الساعة العاشرة صباحا حتى الساعة الثالثة عصرا،\nمن الأحد إلى الخميس.\n\nيرجى الالتزام بالمواعيد، مع التمنيات للجميع بالتوفيق.',
+          effectiveDate: '2027-02-18', audience: { scope, ids: scope === 'EMPLOYEES' ? ['e1', 'e2'] : [] },
+        },
+      });
+      const data = buildCompanyContractData(ADMIN_CIRCULAR, {
+        company, params,
+        circular: { recipients: [{ id: 'e1', employeeNumber: 'E-00412', nameAr: 'محمد عبدالله الأحمد' }, { id: 'e2', employeeNumber: 'E-00413', nameAr: 'سارة خالد العتيبي' }], groups: [], unknownIds: [] },
+      }) as never;
+      const title = ADMIN_CIRCULAR.titleOf!(data);
+      const model = buildRenderModel(data, { primaryColor: '#0F4C81', numerals: 'latn', addressAr: null, addressEn: null, phone: null, email: null, logoSha256: null }, {
+        typeLabelAr: title.ar, typeLabelEn: title.en, number: 'ACM-CIR-2026-000001', issuedDate: '2026-09-27', validUntilDate: null,
+        verifyUrl: verifyUrl('https://acme.radeef.sa', 'K7Q2M9XJ4TRW8PZC3VN6HD5BLA'), language: 'ar', addresseeAr: null, addresseeEn: null, addressedToEmployee: false,
+        signature: { nameAr: 'سارة خالد العتيبي', nameEn: null, titleAr: 'مديرة الموارد البشرية', titleEn: null, printImage: true, printStamp: true }, hasLogo: true,
+      });
+      const bundle = await loadTemplate(ADMIN_CIRCULAR, 'ar');
+      const out = await typstServiceRenderer().render({
+        templateRef: bundle.templateRef, template: bundle.files, data: model,
+        assets: { 'qr.svg': await qrSvg('https://acme.radeef.sa/v/K7Q2M9XJ4TRW8PZC3VN6HD5BLA'), 'logo.png': asset('logo.png'), 'signature.png': asset('signature.png'), 'stamp.png': asset('stamp.png') },
+        creationTimestamp: 1790413200, pdfStandard: 'a-2b',
+      });
+      const sealed = sealPdf(out.pdf, { certDer: sealCert.certDer, privateKeyPem: sealCert.privateKeyPem, signingTime: new Date(1790413200 * 1000), name: company.nameArabic, reason: 'مستند رسمي رقم ACM-CIR-2026-000001' });
+      if (hasOpenssl) expect(opensslVerify(sealed, sealCert.certDer)).toBe(true);
+      if (process.env.RENDER_IT_OUT) {
+        mkdirSync(process.env.RENDER_IT_OUT, { recursive: true });
+        writeFileSync(path.join(process.env.RENDER_IT_OUT, `CIR-${scope}.pdf`), sealed);
+      }
       expect(out.pdf.subarray(0, 5).toString('latin1')).toBe('%PDF-');
     });
   }

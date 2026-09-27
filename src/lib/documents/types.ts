@@ -97,6 +97,23 @@ export const warningParamsSchema = z.object({
   incidentDate: isoDate.optional(),
 });
 
+/** ADMIN_CIRCULAR: an administrative decision or a circular of the legal company to a group of employees. */
+export const circularParamsSchema = z.object({
+  /** The issuing legal company (a company document: HR chooses, within its scope). */
+  legalCompanyId: z.string().trim().min(1).max(64),
+  kind: z.enum(['DECISION', 'CIRCULAR']),
+  subjectAr: lineText(3, 150),
+  bodyAr: blockText(10, 4000),
+  effectiveDate: isoDate.optional(),
+  /** Each recipient acknowledges having read it (default on). */
+  acknowledge: z.boolean().default(true),
+  audience: z.object({
+    scope: z.enum(['COMPANY', 'BRANCHES', 'DEPARTMENTS', 'EMPLOYEES']),
+    /** Branch / department / employee ids (empty for COMPANY). */
+    ids: z.array(z.string().trim().min(1).max(64)).max(500).default([]),
+  }),
+});
+
 export const TERMINATION_NOTICE_REASONS = ['NOTICE', 'NON_RENEWAL', 'PROBATION', 'ARTICLE_80'] as const;
 
 export const terminationNoticeParamsSchema = z.object({
@@ -180,6 +197,8 @@ export const paramsSchema = z.object({
   noc: nocParamsSchema.optional(),
   /** PROMOTION_DECISION only: the change it orders. */
   promotion: promotionParamsSchema.optional(),
+  /** ADMIN_CIRCULAR only: the decision / circular and its audience. */
+  circular: circularParamsSchema.optional(),
   /** CONTRACT_ADDENDUM only: the terms it changes. */
   addendum: addendumParamsSchema.optional(),
   /** WORK_COMMENCEMENT(_LETTER) only: on joining, or back from a leave (that leave, or the latest confirmed return). */
@@ -429,6 +448,15 @@ export interface EvaluationFacts {
 }
 
 /** An approved leave as its letter needs it. */
+/** Who a circular reaches: its recipients (active employees of the legal company) and the named groups. */
+export interface CircularFacts {
+  recipients: Array<{ id: string; employeeNumber: string; nameAr: string }>;
+  /** Names of the branches / departments chosen (in the order given); unknown ids are left out. */
+  groups: string[];
+  /** Ids given that are not branches / departments / employees of this company. */
+  unknownIds: string[];
+}
+
 /** The leave a return-to-work commencement is about (null when none is confirmed). */
 export interface CommencementFacts {
   leave: { id: string; employeeId: string; leaveType: string; startDate: Date; endDate: Date; isReturned: boolean; actualReturnDate: Date | null } | null;
@@ -514,8 +542,12 @@ export interface DocumentTypeDefinition {
    * CANDIDATE: the document belongs to a job applicant, not an employee (buildCandidate is used,
    * the legal company comes from the parameters, delivery is a private link).
    */
-  subject?: 'CANDIDATE';
+  subject?: 'CANDIDATE' | 'COMPANY';
   buildCandidate?(input: { candidate: CandidateRecord; company: CompanyRecord; params: DocumentParams }): { errors: ContractError[]; data: unknown };
+  /** COMPANY: a document of the legal company itself to a group of employees (circular). */
+  buildCompanyDoc?(input: { company: CompanyRecord; params: DocumentParams; circular: CircularFacts }): { errors: ContractError[]; data: unknown };
+  /** Printed title when it depends on the content (a decision or a circular); default labelAr / labelEn. */
+  titleOf?(data: unknown): { ar: string; en: string };
   /**
    * AUTO: issued by the system from data a human already approved (the payroll): no approval, no
    * signatory, never requested from the portal, no "one open request" rule (one per source instead).
@@ -1558,6 +1590,88 @@ export const WORK_COMMENCEMENT_LETTER: DocumentTypeDefinition = {
   build: (input) => buildCommencement(input, true),
 };
 
+/**
+ * Administrative decision / circular (2026-09-27, SPEC §15 item 37): a document of the legal company
+ * to a group of employees (whole company, branches, departments or named employees), issued by HR
+ * and, by default, approved by a second person (the company may change it in the type settings).
+ * The recipients are resolved into the snapshot, so the approval covers exactly who gets it; each
+ * recipient finds it in the portal and, when asked, acknowledges having read it.
+ */
+const CIRCULAR_MAX_LISTED = 50;
+export const ADMIN_CIRCULAR: DocumentTypeDefinition = {
+  key: 'ADMIN_CIRCULAR',
+  languages: ['ar'],
+  code: 'CIR',
+  contractVersion: 1,
+  labelAr: 'قرار إداري / تعميم',
+  labelEn: 'Administrative Decision / Circular',
+  template: 'admin-circular',
+  templateVersion: 1,
+  staffRoles: ROLE_GROUPS.HR,
+  subject: 'COMPANY',
+  defaults: { selfService: false, requiresApproval: true, validityDays: null },
+  requiresActiveEmployee: false,
+  contract: z.object({
+    company: companyContract,
+    circular: z.object({
+      kind: z.enum(['DECISION', 'CIRCULAR']),
+      subjectAr: z.string().min(3),
+      bodyAr: z.string().min(10),
+      effectiveDate: isoDate.nullable(),
+      acknowledge: z.boolean(),
+      scope: z.enum(['COMPANY', 'BRANCHES', 'DEPARTMENTS', 'EMPLOYEES']),
+      /** "To:" line: the whole staff, the groups by name, or "the employees listed below". */
+      addresseeAr: z.string().min(3),
+      recipientIds: z.array(z.string().min(1)).min(1),
+      /** Named employees are listed in the document (EMPLOYEES scope only). */
+      listed: z.array(z.object({ employeeNumber: z.string(), nameAr: z.string() })).nullable(),
+    }),
+  }),
+  titleOf(data) {
+    return (data as { circular?: { kind?: string } }).circular?.kind === 'DECISION'
+      ? { ar: 'قرار إداري', en: 'Administrative Decision' }
+      : { ar: 'تعميم إداري', en: 'Administrative Circular' };
+  },
+  buildCompanyDoc({ company, params, circular: facts }) {
+    const co = buildCompany(company, params.language);
+    const errors = [...co.errors];
+    const c = params.circular;
+    if (!c) {
+      errors.push({ code: 'MISSING_CIRCULAR', message: 'اكتب موضوع القرار أو التعميم ونصه وحدد المستلمين' });
+      return { errors, data: null };
+    }
+    const scope = c.audience.scope;
+    if (scope !== 'COMPANY' && !c.audience.ids.length) errors.push({ code: 'NO_AUDIENCE', message: 'اختر الفروع أو الإدارات أو الموظفين المستلمين' });
+    if (facts.unknownIds.length) errors.push({ code: 'UNKNOWN_AUDIENCE', message: 'بعض المستلمين المختارين غير موجودين في هذه الشركة أو انتهت خدمتهم' });
+    if (!facts.recipients.length) errors.push({ code: 'NO_RECIPIENTS', message: 'لا يوجد موظفون على رأس العمل ضمن المستلمين المختارين' });
+    if (scope === 'EMPLOYEES' && facts.recipients.length > CIRCULAR_MAX_LISTED) {
+      errors.push({ code: 'TOO_MANY_LISTED', message: `اختر فروعاً أو إدارات بدلاً من أكثر من ${CIRCULAR_MAX_LISTED} موظفاً بالاسم` });
+    }
+    const addresseeAr = scope === 'COMPANY'
+      ? `جميع منسوبي ${co.value.legalNameAr}`
+      : scope === 'BRANCHES'
+        ? `منسوبي ${facts.groups.join('، ')}`
+        : scope === 'DEPARTMENTS'
+          ? `منسوبي ${facts.groups.join('، ')}`
+          : 'الموظفون المذكورون أدناه';
+    return {
+      errors,
+      data: {
+        company: co.value,
+        circular: {
+          kind: c.kind, subjectAr: c.subjectAr, bodyAr: c.bodyAr, effectiveDate: c.effectiveDate ?? null, acknowledge: c.acknowledge,
+          scope, addresseeAr,
+          recipientIds: facts.recipients.map((r) => r.id).sort(),
+          listed: scope === 'EMPLOYEES' ? facts.recipients.map((r) => ({ employeeNumber: r.employeeNumber, nameAr: r.nameAr })) : null,
+        },
+      },
+    };
+  },
+  build() {
+    return { errors: [{ code: 'SUBJECT', message: 'هذا المستند يصدر من الشركة لمجموعة من الموظفين' }], data: null };
+  },
+};
+
 const RECOMMENDATIONS: Record<string, string> = {
   NO_ACTION: 'لا إجراء', BONUS: 'مكافأة', PROMOTION: 'ترقية', RAISE: 'زيادة في الراتب', TRAINING: 'تدريب', WARNING: 'إنذار',
   NOTICE: 'لفت نظر', EXTEND_MONITORING: 'تمديد المتابعة', NO_RENEWAL: 'عدم تجديد العقد', TERMINATION: 'إنهاء الخدمة', OTHER: 'أخرى',
@@ -1707,6 +1821,7 @@ export const DOCUMENT_TYPES: Readonly<Record<string, DocumentTypeDefinition>> = 
   [CONTRACT_ADDENDUM.key]: CONTRACT_ADDENDUM,
   [WORK_COMMENCEMENT.key]: WORK_COMMENCEMENT,
   [WORK_COMMENCEMENT_LETTER.key]: WORK_COMMENCEMENT_LETTER,
+  [ADMIN_CIRCULAR.key]: ADMIN_CIRCULAR,
 });
 
 export function getDocumentType(key: string): DocumentTypeDefinition | null {
@@ -1727,7 +1842,20 @@ export function buildCandidateContractData(def: DocumentTypeDefinition, input: {
   return parsed.data as Record<string, unknown>;
 }
 
+export function buildCompanyContractData(def: DocumentTypeDefinition, input: { company: CompanyRecord; params: DocumentParams; circular: CircularFacts }) {
+  if (def.subject !== 'COMPANY' || !def.buildCompanyDoc) throw new ContractValidationError([{ code: 'SUBJECT', message: 'هذا المستند يصدر لموظف' }]);
+  const { errors, data } = def.buildCompanyDoc(input);
+  if (!def.languages.includes(input.params.language)) errors.unshift({ code: 'LANGUAGE_NOT_SUPPORTED', message: `${def.labelAr} يصدر بالعربية فقط` });
+  if (errors.length) throw new ContractValidationError(errors);
+  const parsed = def.contract.safeParse(data);
+  if (!parsed.success) {
+    throw new ContractValidationError(parsed.error.issues.map((i) => ({ code: 'CONTRACT', message: `بيانات غير صالحة: ${i.path.join('.')}` })));
+  }
+  return parsed.data as Record<string, unknown>;
+}
+
 export function buildContractData(def: DocumentTypeDefinition, input: BuildInput) {
+  if (def.subject === 'COMPANY') throw new ContractValidationError([{ code: 'SUBJECT', message: 'هذا المستند يصدر من الشركة لمجموعة من الموظفين' }]);
   if (def.subject === 'CANDIDATE') throw new ContractValidationError([{ code: 'SUBJECT', message: 'هذا المستند يصدر لمرشح' }]);
   const { errors, data } = def.build(input);
   if (!def.languages.includes(input.params.language)) {

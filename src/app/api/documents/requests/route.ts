@@ -6,7 +6,7 @@ import { zId } from '@/lib/validation';
 import { concludedInvestigationsFor, offerCandidatesFor, paidSettlementsFor, portalTypesFor, myDocumentRequests, staffDocumentOverview } from '@/lib/documents/queries';
 import { createDocumentRequest, issueDueCommencementNotices, issueDueEvaluationReports, issueDuePayslips, processDueRenderJobs, suggestDueExitDocuments, syncDueLeaveLetters } from '@/lib/documents/service';
 import { applyDueChangeOrders } from '@/lib/documents/change-orders';
-import { addendumParamsSchema, nocParamsSchema, offerParamsSchema, promotionParamsSchema, terminationNoticeParamsSchema, warningParamsSchema } from '@/lib/documents/types';
+import { addendumParamsSchema, circularParamsSchema, nocParamsSchema, offerParamsSchema, promotionParamsSchema, terminationNoticeParamsSchema, warningParamsSchema } from '@/lib/documents/types';
 import { rateLimit } from '@/lib/rate-limit';
 import { actorFrom } from '../_shared';
 
@@ -95,6 +95,8 @@ const createSchema = z.object({
   promotion: promotionParamsSchema.optional(),
   addendum: addendumParamsSchema.optional(),
   commencement: z.object({ kind: z.enum(['JOIN', 'RETURN']), leaveId: z.string().trim().min(1).max(64).optional() }).optional(),
+  /** ADMIN_CIRCULAR: a company document to a group of employees (no employeeId). */
+  circular: circularParamsSchema.optional(),
   /** JOB_OFFER: the application (instead of employeeId) and the offer's terms. */
   jobApplicationId: zId.optional(),
   offer: offerParamsSchema.optional(),
@@ -109,6 +111,15 @@ export async function POST(req: Request) {
       return NextResponse.json({ message: 'عدد كبير من الطلبات؛ حاول بعد قليل', error: 'RATE_LIMITED' }, { status: 429 });
     }
     const body = await parseBody(req, createSchema);
+    // A circular / administrative decision is the company's (HR only), to a group of employees.
+    if (body.circular) {
+      if (user.documentsOnly) throw forbidden();
+      const result = await createDocumentRequest(
+        { typeKey: body.typeKey, params: { language: body.language, circular: body.circular }, source: 'HR' },
+        actorFrom(user, req),
+      );
+      return NextResponse.json(result, { status: 201 });
+    }
     // A job offer goes to a candidate (HR only), not to an employee.
     if (body.jobApplicationId) {
       if (user.documentsOnly) throw forbidden();

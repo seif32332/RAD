@@ -43,6 +43,11 @@ export interface RenderMeta {
 type Contract = {
   /** Absent on a candidate document (job offer): candidate is set instead. */
   candidate?: { nameAr: string };
+  /** Company document (administrative decision / circular): no employee, a group of recipients. */
+  circular?: {
+    kind: 'DECISION' | 'CIRCULAR'; subjectAr: string; bodyAr: string; effectiveDate: string | null; acknowledge: boolean;
+    scope: string; addresseeAr: string; recipientIds: string[]; listed: { employeeNumber: string; nameAr: string }[] | null;
+  };
   offer?: {
     jobTitleAr: string; jobTitleEn: string | null; salary: { rows: { key: string; labelAr: string; labelEn: string; amount: string }[]; total: string };
     startDate: string; probationDays: number; annualLeaveDays: number; notesAr: string | null;
@@ -165,6 +170,8 @@ export function buildRenderModel(data: Contract, brand: BrandSnapshot, meta: Ren
     },
     addressee: data.candidate
       ? { ar: data.candidate.nameAr, en: data.candidate.nameAr }
+      : data.circular
+      ? { ar: data.circular.addresseeAr, en: data.circular.addresseeAr }
       : data.bank
       ? { ar: `السادة/ ${data.bank.name} المحترمين`, en: data.bank.name }
       : meta.addressedToEmployee && e
@@ -292,6 +299,17 @@ export function buildRenderModel(data: Contract, brand: BrandSnapshot, meta: Ren
           toSalaryText: data.change.toBasicSalary ? formatAmount(data.change.toBasicSalary, n) : null,
           reasonAr: data.change.reasonAr,
           currencyAr: 'ريال سعودي',
+        }
+      : null,
+    circular: data.circular
+      ? {
+          kind: data.circular.kind,
+          subjectAr: data.circular.subjectAr,
+          // Paragraphs split on empty lines; the lines inside a paragraph keep their breaks (like the warning).
+          paragraphs: data.circular.bodyAr.split(/\n{2,}/).map((p) => p.split('\n')),
+          effectiveAr: data.circular.effectiveDate ? formatGregorian(data.circular.effectiveDate, 'ar', n) : null,
+          acknowledge: data.circular.acknowledge,
+          listed: data.circular.listed,
         }
       : null,
     commencement: data.commencement
