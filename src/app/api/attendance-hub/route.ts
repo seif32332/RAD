@@ -10,7 +10,7 @@ import { dateKey } from '@/lib/dates';
 import { logAudit } from '@/lib/audit';
 import { ATTENDANCE_SOURCE, ATTENDANCE_STATUS, buildPunches, computeLateEarly, normalizeTimeOfDay } from '@/lib/attendance';
 import { assertCanManageEmployee, resolveEmployeeSchedule } from '@/lib/hr-workflows';
-import { deleteBiometricImage } from '@/lib/biometric-storage';
+import { discardBiometricImage } from '@/lib/biometric-storage';
 
 export const dynamic = 'force-dynamic';
 
@@ -27,7 +27,7 @@ const employeeSelect = {
   attendanceGeoExempt: true,
   attendanceFaceExempt: true,
   attendanceExemptReason: true,
-  faceProfile: { select: { createdAt: true, model: true } },
+  faceProfile: { select: { createdAt: true, model: true, consentAt: true } },
   branch: { select: { nameArabic: true } },
   department: { select: { nameArabic: true } },
 } as const;
@@ -165,18 +165,19 @@ export async function POST(req: Request) {
 
     if (body.actionType === 'RESET_FACE') {
       const { employeeId } = body.payload;
-      const emp = await prisma.employee.findUnique({ where: { id: employeeId }, select: { ...scopeSelect, faceProfile: { select: { id: true, photoStoredName: true } } } });
+      const emp = await prisma.employee.findUnique({ where: { id: employeeId }, select: { ...scopeSelect, faceProfile: { select: { id: true, model: true, photoStoredName: true } } } });
       if (!emp) throw notFound('الموظف غير موجود');
       await assertCanManageEmployee(prisma, user, emp);
       if (!emp.faceProfile) throw conflict('لا توجد صورة وجه مسجلة لهذا الموظف');
+      // Also re-opens enrollment after the employee withdrew consent (the 'withdrawn' marker row).
       await prisma.faceProfile.delete({ where: { id: emp.faceProfile.id } });
-      await deleteBiometricImage(emp.faceProfile.photoStoredName);
+      await discardBiometricImage(emp.faceProfile.photoStoredName);
       await logAudit({
         userId: user.id,
         action: 'DELETE',
         entityType: 'FaceProfile',
         entityId: emp.faceProfile.id,
-        details: { employeeId, event: 'FACE_RESET_BY_HR', reason: body.payload.reason?.trim() || null },
+        details: { employeeId, event: 'FACE_RESET_BY_HR', previousModel: emp.faceProfile.model, reason: body.payload.reason?.trim() || null },
         ipAddress,
       });
       return NextResponse.json({ message: 'تم حذف صورة الوجه المسجلة، ويمكن للموظف التسجيل من جديد' });

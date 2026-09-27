@@ -5,6 +5,13 @@ import { Crosshair, Edit, ExternalLink, MapPin, Plus, Power, Trash2 } from 'luci
 import Modal from '@/components/ui/Modal';
 import { confirmDialog, readApiError, toast } from '@/components/ui/feedback';
 import { GEOFENCE_RADIUS_LIMITS, mapsLink, parseLatLngFromMapsUrl } from '@/lib/geo';
+import { PositionTracker, POSITION_ERROR } from '@/lib/position-tracker';
+
+/** "Use my current location": stop early at this precision, else take the best fix within the wait. */
+const CENTER_TARGET_ACCURACY_M = 20;
+const CENTER_MAX_WAIT_MS = 12_000;
+/** Above this the saved center may sit far from the real place: warn HR. */
+const CENTER_WARN_ACCURACY_M = 50;
 
 interface AttendanceLocation {
   id: string;
@@ -35,23 +42,33 @@ const labelClass = 'text-[13px] font-extrabold text-slate-700 block mb-2';
  */
 export default function AttendanceLocations({ branchId, branchName, locationUrl }: { branchId: string; branchName: string; locationUrl?: string | null }) {
   const [locations, setLocations] = useState<AttendanceLocation[] | null>(null);
+  /** The list could not be loaded: never shown as "no locations" (HR would add duplicates). */
+  const [loadError, setLoadError] = useState(false);
   const [defaultRadius, setDefaultRadius] = useState(150);
   const [form, setForm] = useState<FormState | null>(null);
   const [saving, setSaving] = useState(false);
   const [locating, setLocating] = useState(false);
+  /** Accuracy of the best fix so far while "use my current location" is running. */
+  const [liveAccuracy, setLiveAccuracy] = useState<number | null>(null);
+  const [tracker] = useState(
+    () => new PositionTracker((s) => setLiveAccuracy(s.kind === 'ready' ? Math.round(s.position.accuracy) : null)),
+  );
+
+  useEffect(() => () => tracker.stop(), [tracker]);
 
   const load = useCallback(async () => {
     try {
       const res = await fetch(`/api/attendance-locations?branchId=${encodeURIComponent(branchId)}`, { cache: 'no-store' });
       if (!res.ok) {
-        setLocations([]);
+        setLoadError(true);
         return;
       }
       const data = (await res.json()) as { locations: AttendanceLocation[]; defaultRadiusM: number };
       setLocations(data.locations);
       setDefaultRadius(data.defaultRadiusM);
+      setLoadError(false);
     } catch {
-      setLocations([]);
+      setLoadError(true);
     }
   }, [branchId]);
 
@@ -81,25 +98,37 @@ export default function AttendanceLocations({ branchId, branchName, locationUrl 
     setForm({ ...form, link: value, ...(point ? { latitude: String(point.latitude), longitude: String(point.longitude) } : {}) });
   };
 
-  const useMyLocation = () => {
-    if (!form) return;
-    if (!('geolocation' in navigator)) {
-      toast.error('المتصفح لا يدعم تحديد الموقع');
-      return;
-    }
+  // Follows the position for a few seconds and keeps the most precise fix: the first reading of a
+  // phone (and any laptop reading) can be hundreds of metres off, which would misplace the fence.
+  const locateMe = async () => {
+    if (!form || locating) return;
     setLocating(true);
-    navigator.geolocation.getCurrentPosition(
-      (p) => {
-        setLocating(false);
-        setForm((f) => (f ? { ...f, latitude: p.coords.latitude.toFixed(6), longitude: p.coords.longitude.toFixed(6) } : f));
-        toast.success(`تم تحديد موقعك بدقة تقارب ${Math.round(p.coords.accuracy)} م`);
-      },
-      () => {
-        setLocating(false);
-        toast.error('تعذر تحديد موقعك. اسمح للمتصفح بالوصول إلى الموقع وفعّل GPS.');
-      },
-      { enableHighAccuracy: true, timeout: 20_000, maximumAge: 0 },
-    );
+    setLiveAccuracy(null);
+    tracker.start();
+    try {
+      const p = await tracker.wait(CENTER_TARGET_ACCURACY_M, CENTER_MAX_WAIT_MS);
+      setForm((f) => (f ? { ...f, latitude: p.latitude.toFixed(6), longitude: p.longitude.toFixed(6) } : f));
+      const accuracy = Math.round(p.accuracy);
+      if (accuracy > CENTER_WARN_ACCURACY_M) {
+        toast.warning(
+          `حُدّد موقعك بدقة ضعيفة (نحو ${accuracy} م)، فقد يكون المركز بعيداً عن مكانه الحقيقي. الأفضل تحديده من الجوال وأنت داخل الموقع، أو لصق رابط الموقع من خرائط Google، ثم التأكد منه على الخريطة.`,
+        );
+      } else {
+        toast.success(`تم تحديد موقعك بدقة تقارب ${accuracy} م`);
+      }
+    } catch (err) {
+      const code = (err as { code?: number }).code;
+      toast.error(
+        code === POSITION_ERROR.DENIED
+          ? 'تم رفض إذن الموقع. اسمح للمتصفح بالوصول إلى الموقع ثم أعد المحاولة.'
+          : code === POSITION_ERROR.UNSUPPORTED
+            ? 'المتصفح لا يدعم تحديد الموقع'
+            : 'تعذر تحديد موقعك. فعّل خدمة الموقع (GPS) ثم أعد المحاولة.',
+      );
+    } finally {
+      tracker.stop();
+      setLocating(false);
+    }
   };
 
   const save = async (e: React.FormEvent<HTMLFormElement>) => {
@@ -111,6 +140,10 @@ export default function AttendanceLocations({ branchId, branchName, locationUrl 
       longitude: Number(form.longitude),
       radiusM: Number(form.radiusM),
     };
+    if (linkUnreadable) {
+      toast.error('تعذر قراءة الإحداثيات من الرابط. الصق الرابط الكامل من شريط العنوان، أو امسح حقل الرابط واكتب الإحداثيات.');
+      return;
+    }
     if (!Number.isFinite(payload.latitude) || !Number.isFinite(payload.longitude) || !form.latitude || !form.longitude) {
       toast.error('حدد الإحداثيات: الصق رابط الموقع من خرائط Google أو استخدم موقعك الحالي');
       return;
@@ -166,6 +199,9 @@ export default function AttendanceLocations({ branchId, branchName, locationUrl 
     }
   };
 
+  /** A link was pasted but holds no coordinates (short link, place name...): the fields were NOT updated from it. */
+  const linkUnreadable = !!form && form.link.trim() !== '' && !parseLatLngFromMapsUrl(form.link);
+
   const previewPoint =
     form && form.latitude && form.longitude && Number.isFinite(Number(form.latitude)) && Number.isFinite(Number(form.longitude))
       ? { latitude: Number(form.latitude), longitude: Number(form.longitude) }
@@ -182,7 +218,12 @@ export default function AttendanceLocations({ branchId, branchName, locationUrl 
         </button>
       </div>
 
-      {locations === null ? (
+      {loadError && locations === null ? (
+        <div role="alert" className="bg-rose-50 border border-rose-100 text-rose-800 rounded-2xl p-4 text-[13px] font-bold flex flex-wrap items-center justify-between gap-3">
+          <span>تعذر تحميل مواقع الحضور لهذا الفرع.</span>
+          <button type="button" onClick={() => void load()} className="bg-white border border-rose-200 px-3 py-1.5 rounded-lg text-[12px]">إعادة المحاولة</button>
+        </div>
+      ) : locations === null ? (
         <p className="text-[13px] font-bold text-slate-400">جاري التحميل...</p>
       ) : locations.length === 0 ? (
         <p className="bg-amber-50 border border-amber-100 text-amber-900 rounded-2xl p-4 text-[13px] font-bold">
@@ -239,11 +280,20 @@ export default function AttendanceLocations({ branchId, branchName, locationUrl 
             <div>
               <label htmlFor="att-loc-link" className={labelClass}>رابط الموقع من خرائط Google أو الإحداثيات</label>
               <input id="att-loc-link" dir="ltr" value={form.link} onChange={(e) => onLinkChange(e.target.value)} placeholder="https://www.google.com/maps/... أو 24.7136, 46.6753" className={fieldClass} />
-              <p className="text-[11px] font-bold text-slate-400 mt-1">الروابط المختصرة (maps.app.goo.gl) لا تحتوي الإحداثيات: افتحها وانسخ الرابط الكامل من شريط العنوان.</p>
+              {linkUnreadable ? (
+                <p role="alert" className="text-[11px] font-bold text-rose-600 mt-1">
+                  لم نجد إحداثيات في هذا الرابط، ولم تتغير خانتا خط العرض والطول. الروابط المختصرة (maps.app.goo.gl) لا تحتوي الإحداثيات: افتحها وانسخ الرابط الكامل من شريط العنوان.
+                </p>
+              ) : (
+                <p className="text-[11px] font-bold text-slate-400 mt-1">الروابط المختصرة (maps.app.goo.gl) لا تحتوي الإحداثيات: افتحها وانسخ الرابط الكامل من شريط العنوان.</p>
+              )}
             </div>
 
-            <button type="button" onClick={useMyLocation} disabled={locating} className="w-full inline-flex items-center justify-center gap-2 bg-slate-100 hover:bg-slate-200 text-slate-700 py-3 rounded-2xl font-bold transition disabled:opacity-50">
-              <Crosshair size={16} aria-hidden="true" /> {locating ? 'جاري تحديد موقعك...' : 'استخدم موقعي الحالي (وأنا في الموقع)'}
+            <button type="button" onClick={() => void locateMe()} disabled={locating} className="w-full inline-flex items-center justify-center gap-2 bg-slate-100 hover:bg-slate-200 text-slate-700 py-3 rounded-2xl font-bold transition disabled:opacity-50">
+              <Crosshair size={16} aria-hidden="true" />{' '}
+              {locating
+                ? `جاري تحديد موقعك بدقة...${liveAccuracy !== null ? ` (الدقة الآن نحو ${liveAccuracy} م)` : ''}`
+                : 'استخدم موقعي الحالي (وأنا في الموقع)'}
             </button>
 
             <div className="grid grid-cols-2 gap-4">

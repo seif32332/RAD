@@ -48,7 +48,7 @@
 import { PrismaClient } from '@prisma/client';
 import { pathToFileURL } from 'node:url';
 import path from 'node:path';
-import { readFile, stat, unlink } from 'node:fs/promises';
+import { readdir, readFile, stat, unlink } from 'node:fs/promises';
 import { appendEvent as appendDocumentEvent, isStoredDocumentName, parseRetentionYears, sha256Hex, verifyEventChain } from './lib/document-chain.mjs';
 
 export const JOB_NAMES = ['expiry-digest', 'deactivate-terminated', 'outbox-dispatch', 'purge-attendance-biometrics', 'documents-retention', 'documents-integrity', 'apply-employee-changes'];
@@ -606,7 +606,7 @@ async function purgeAttendanceBiometrics(prisma, { dryRun, now = new Date(), env
     where: { employee: { isTerminated: true } },
     select: { id: true, employeeId: true, photoStoredName: true },
   });
-  const summary = { retentionDays, expiredSelfies: expired.length, terminatedFaceProfiles: terminated.length, filesDeleted: 0, missingFiles: 0 };
+  const summary = { retentionDays, expiredSelfies: expired.length, terminatedFaceProfiles: terminated.length, filesDeleted: 0, missingFiles: 0, orphansDeleted: 0 };
   if (dryRun) return { ...summary, dryRun: true };
 
   const referencesFiles = expired.length > 0 || terminated.some((f) => f.photoStoredName);
@@ -631,9 +631,10 @@ async function purgeAttendanceBiometrics(prisma, { dryRun, now = new Date(), env
     await prisma.attendancePunch.update({ where: { id: p.id }, data: { selfieStoredName: null, selfiePurgedAt: now } });
   }
   for (const f of terminated) {
+    // File first: if it cannot be deleted the row (and its reference) stays for the next run.
+    await removeFile(f.photoStoredName);
     const deleted = await prisma.faceProfile.deleteMany({ where: { id: f.id } });
     if (deleted.count === 0) continue;
-    await removeFile(f.photoStoredName);
     await prisma.auditLog.create({
       data: {
         userId: null,
@@ -644,7 +645,43 @@ async function purgeAttendanceBiometrics(prisma, { dryRun, now = new Date(), env
       },
     });
   }
+
+  // Orphans: files no row references any more (a crash between saving and committing, a failed
+  // delete after a reset / withdrawal). Only files older than a day, so an upload whose database
+  // write is still in progress is never touched.
+  if (dirExists) summary.orphansDeleted = await sweepOrphanBiometrics(prisma, dir, now);
   return summary;
+}
+
+export const ORPHAN_MIN_AGE_MS = DAY_MS;
+
+/** Biometric files older than ORPHAN_MIN_AGE_MS that are referenced by no FaceProfile / AttendancePunch. */
+export function orphanBiometricNames(files, referenced, now) {
+  return files.filter((f) => isBiometricName(f.name) && !referenced.has(f.name) && now.getTime() - f.mtimeMs > ORPHAN_MIN_AGE_MS).map((f) => f.name);
+}
+
+async function sweepOrphanBiometrics(prisma, dir, now) {
+  const [profiles, punches] = await Promise.all([
+    prisma.faceProfile.findMany({ where: { photoStoredName: { not: null } }, select: { photoStoredName: true } }),
+    prisma.attendancePunch.findMany({ where: { selfieStoredName: { not: null } }, select: { selfieStoredName: true } }),
+  ]);
+  const referenced = new Set([...profiles.map((p) => p.photoStoredName), ...punches.map((p) => p.selfieStoredName)]);
+  const files = [];
+  for (const name of await readdir(dir)) {
+    if (!isBiometricName(name)) continue;
+    const info = await stat(path.join(dir, name)).catch(() => null);
+    if (info && info.isFile()) files.push({ name, mtimeMs: info.mtimeMs });
+  }
+  let deleted = 0;
+  for (const name of orphanBiometricNames(files, referenced, now)) {
+    try {
+      await unlink(path.join(dir, name));
+      deleted += 1;
+    } catch (err) {
+      if (!err || err.code !== 'ENOENT') throw err;
+    }
+  }
+  return deleted;
 }
 
 

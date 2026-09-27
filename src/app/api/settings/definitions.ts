@@ -118,6 +118,34 @@ export function normalizeSettingValue(value: string): string {
   return value.trim();
 }
 
+/**
+ * Settings that must stay ordered: a reject level above its accept level would be silently
+ * lowered to it (parseSelfAttendanceSettings), accepting scores the admin meant to reject.
+ */
+export const SETTING_ORDER_RULES: ReadonlyArray<{ low: string; high: string; message: string }> = [
+  {
+    low: SELF_ATTENDANCE_SETTING_KEYS.faceMinPct,
+    high: SELF_ATTENDANCE_SETTING_KEYS.faceAcceptPct,
+    message: 'حد رفض تطابق الوجه يجب ألا يتجاوز حد القبول',
+  },
+  {
+    low: SELF_ATTENDANCE_SETTING_KEYS.livenessMinPct,
+    high: SELF_ATTENDANCE_SETTING_KEYS.livenessAcceptPct,
+    message: 'حد رفض الالتقاط الحي يجب ألا يتجاوز حد القبول',
+  },
+];
+
+/** Order problems of the values after a save (values = defaults <- stored <- submitted). */
+export function settingOrderProblems(values: Readonly<Record<string, string>>): Record<string, string> {
+  const problems: Record<string, string> = {};
+  for (const rule of SETTING_ORDER_RULES) {
+    const low = Number(values[rule.low]);
+    const high = Number(values[rule.high]);
+    if (Number.isFinite(low) && Number.isFinite(high) && low > high) problems[rule.low] = rule.message;
+  }
+  return problems;
+}
+
 /** Arabic error for an invalid value of a known setting, or null when valid. */
 export function settingValueProblem(key: string, value: string): string | null {
   const def = SETTING_DEFS[key];

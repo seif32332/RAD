@@ -653,6 +653,7 @@ model AttendancePunch {
   @@index([employeeId, createdAt])
   @@index([result, createdAt])
   @@index([workDate])
+  @@index([attendanceId])
 }
 
 // ---------------------------------------------------------

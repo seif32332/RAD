@@ -20,7 +20,7 @@ interface HubEmployee {
   attendanceGeoExempt?: boolean;
   attendanceFaceExempt?: boolean;
   attendanceExemptReason?: string | null;
-  faceProfile?: { createdAt: string; model: string } | null;
+  faceProfile?: { createdAt: string; model: string; consentAt?: string } | null;
 }
 
 interface HubAttendance {

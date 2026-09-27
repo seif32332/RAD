@@ -5,7 +5,7 @@ import { getClientIp, requireUser } from '@/lib/auth';
 import { ROLE_GROUPS } from '@/lib/constants';
 import { badRequest, handleApiError, parseBody } from '@/lib/http';
 import { logAudit } from '@/lib/audit';
-import { DEFAULT_SETTINGS, isKnownSetting, normalizeSettingValue, settingValueProblem } from './definitions';
+import { DEFAULT_SETTINGS, SETTING_ORDER_RULES, isKnownSetting, normalizeSettingValue, settingOrderProblems, settingValueProblem } from './definitions';
 
 export const dynamic = 'force-dynamic';
 
@@ -57,6 +57,14 @@ async function saveSettings(req: Request) {
       const problem = settingValueProblem(key, value);
       if (problem) problems[key] = problem;
       else entries.push([key, value]);
+    }
+    const orderKeys = SETTING_ORDER_RULES.flatMap((r) => [r.low, r.high]);
+    if (entries.some(([k]) => orderKeys.includes(k))) {
+      const stored = await prisma.systemSetting.findMany({ where: { key: { in: orderKeys } }, select: { key: true, value: true } });
+      const after: Record<string, string> = { ...DEFAULT_SETTINGS };
+      for (const r of stored) after[r.key] = r.value;
+      for (const [k, v] of entries) after[k] = v;
+      Object.assign(problems, settingOrderProblems(after));
     }
     const invalidKeys = Object.keys(problems);
     if (invalidKeys.length > 0) {

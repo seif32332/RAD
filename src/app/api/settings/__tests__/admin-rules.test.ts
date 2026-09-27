@@ -5,6 +5,7 @@ import {
   SETTING_DEFS,
   parseSecurityPolicy,
   passwordLengthProblem,
+  settingOrderProblems,
   settingValueProblem,
 } from '../definitions';
 import { ALERT_THRESHOLD_SETTINGS } from '@/lib/alerts';
@@ -107,5 +108,17 @@ describe('session credential version', () => {
     expect(clampSessionSeconds(10 ** 9)).toBe(SESSION_MAX_SECONDS);
     expect(clampSessionSeconds(Number.NaN)).toBe(12 * 3600);
     expect(clampSessionSeconds(3600)).toBe(3600);
+  });
+});
+
+describe('settingOrderProblems (self attendance thresholds)', () => {
+  it('accepts the defaults and equal levels', () => {
+    expect(settingOrderProblems(DEFAULT_SETTINGS)).toEqual({});
+    expect(settingOrderProblems({ ...DEFAULT_SETTINGS, attendance_face_min_pct: '42', attendance_face_accept_pct: '42' })).toEqual({});
+  });
+
+  it('refuses a reject level above the accept level', () => {
+    const problems = settingOrderProblems({ ...DEFAULT_SETTINGS, attendance_face_min_pct: '50', attendance_face_accept_pct: '42', attendance_liveness_min_pct: '80' });
+    expect(Object.keys(problems).sort()).toEqual(['attendance_face_min_pct', 'attendance_liveness_min_pct']);
   });
 });

@@ -1,12 +1,12 @@
 "use client";
 
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { CheckCircle, ExternalLink, Image as ImageIcon, RefreshCw, ScanFace, ShieldOff, UserCog } from 'lucide-react';
 import Modal from '@/components/ui/Modal';
 import { confirmDialog, readApiError, toast } from '@/components/ui/feedback';
 import { formatDate, formatDateTime } from '@/lib/dates';
 import { mapsLink } from '@/lib/geo';
-import { PUNCH_REASON_LABELS, type PunchReason } from '@/lib/self-attendance';
+import { FACE_PROFILE_WITHDRAWN, PUNCH_REASON_LABELS, type PunchReason } from '@/lib/self-attendance';
 
 export interface SelfAttendanceEmployee {
   id: string;
@@ -17,7 +17,7 @@ export interface SelfAttendanceEmployee {
   attendanceGeoExempt?: boolean;
   attendanceFaceExempt?: boolean;
   attendanceExemptReason?: string | null;
-  faceProfile?: { createdAt: string; model: string } | null;
+  faceProfile?: { createdAt: string; model: string; consentAt?: string } | null;
 }
 
 interface Punch {
@@ -80,23 +80,33 @@ export default function SelfAttendancePanel({ employees, onChanged }: { employee
     [filter, from, to],
   );
 
+  // Only the latest request may update the list (typing a date fires several in a row).
+  const requestSeq = useRef(0);
   const loadPunches = useCallback(
     async (append = false, skip = 0) => {
+      const seq = ++requestSeq.current;
       setLoading(true);
       try {
         const res = await fetch(query(skip), { cache: 'no-store' });
+        if (seq !== requestSeq.current) return;
         if (!res.ok) {
           toast.error(await readApiError(res, 'تعذر تحميل سجل الحركات'));
           return;
         }
         const data = (await res.json()) as { punches: Punch[]; total: number; pendingReview: number };
-        setPunches((prev) => (append ? [...prev, ...data.punches] : data.punches));
+        if (seq !== requestSeq.current) return;
+        // New punches arrive while HR pages through the log: offset paging may repeat rows.
+        setPunches((prev) => {
+          if (!append) return data.punches;
+          const seen = new Set(prev.map((x) => x.id));
+          return [...prev, ...data.punches.filter((x) => !seen.has(x.id))];
+        });
         setTotal(data.total);
         setPendingReview(data.pendingReview);
       } catch {
-        toast.error('تعذر الاتصال بالخادم');
+        if (seq === requestSeq.current) toast.error('تعذر الاتصال بالخادم');
       } finally {
-        setLoading(false);
+        if (seq === requestSeq.current) setLoading(false);
       }
     },
     [query],
@@ -118,7 +128,10 @@ export default function SelfAttendancePanel({ employees, onChanged }: { employee
         return;
       }
       toast.success('تمت مراجعة الحركة');
-      void loadPunches();
+      const reviewedAt = new Date().toISOString();
+      setPunches((prev) => (filter === 'PENDING' ? prev.filter((x) => x.id !== p.id) : prev.map((x) => (x.id === p.id ? { ...x, reviewedAt } : x))));
+      setPendingReview((n) => Math.max(0, n - 1));
+      if (filter === 'PENDING') setTotal((n) => Math.max(0, n - 1));
       onChanged();
     } catch {
       toast.error('تعذر الاتصال بالخادم');
@@ -137,13 +150,17 @@ export default function SelfAttendancePanel({ employees, onChanged }: { employee
   };
 
   const resetFace = async (emp: SelfAttendanceEmployee) => {
-    const ok = await confirmDialog(`حذف صورة الوجه المسجلة للموظف ${emp.firstNameArabic ?? ''} ${emp.lastNameArabic ?? ''}؟ سيحتاج إلى تسجيل وجهه من جديد من البوابة.`, {
-      danger: true,
-      confirmText: 'حذف الصورة',
-    });
+    const withdrawn = emp.faceProfile?.model === FACE_PROFILE_WITHDRAWN;
+    const name = `${emp.firstNameArabic ?? ''} ${emp.lastNameArabic ?? ''}`;
+    const ok = await confirmDialog(
+      withdrawn
+        ? `إعادة فتح تسجيل الوجه للموظف ${name}؟ سحب موافقته سابقاً، وسيتمكن من تسجيل وجهه من جديد من البوابة بعد موافقته على الإشعار.`
+        : `حذف صورة الوجه المسجلة للموظف ${name}؟ سيحتاج إلى تسجيل وجهه من جديد من البوابة.`,
+      { danger: !withdrawn, confirmText: withdrawn ? 'إعادة فتح التسجيل' : 'حذف الصورة' },
+    );
     if (!ok) return;
     try {
-      await hubAction('RESET_FACE', { employeeId: emp.id }, 'تم حذف صورة الوجه المسجلة');
+      await hubAction('RESET_FACE', { employeeId: emp.id }, withdrawn ? 'تمت إعادة فتح تسجيل الوجه' : 'تم حذف صورة الوجه المسجلة');
     } catch {
       toast.error('تعذر الاتصال بالخادم');
     }
@@ -172,7 +189,7 @@ export default function SelfAttendancePanel({ employees, onChanged }: { employee
     if (!s) return employees;
     return employees.filter((e) => `${e.firstNameArabic ?? ''} ${e.lastNameArabic ?? ''} ${e.employeeId ?? ''}`.includes(s));
   }, [employees, search]);
-  const enrolledCount = employees.filter((e) => e.faceProfile).length;
+  const enrolledCount = employees.filter((e) => e.faceProfile && e.faceProfile.model !== FACE_PROFILE_WITHDRAWN).length;
 
   return (
     <div className="space-y-8">
@@ -327,7 +344,11 @@ export default function SelfAttendancePanel({ employees, onChanged }: { employee
                     <p className="text-slate-400 text-[11px] font-bold">#{e.employeeId} · {e.branch?.nameArabic || '—'}</p>
                   </td>
                   <td className="p-4 text-[12px] font-bold">
-                    {e.faceProfile ? (
+                    {e.faceProfile?.model === FACE_PROFILE_WITHDRAWN ? (
+                      <span className="text-amber-700">
+                        سحب الموافقة{e.faceProfile.consentAt ? ` في ${formatDate(e.faceProfile.consentAt)}` : ''} · حُذفت بياناته
+                      </span>
+                    ) : e.faceProfile ? (
                       <div className="flex flex-wrap items-center gap-2">
                         <span className="text-emerald-700">مسجلة منذ {formatDate(e.faceProfile.createdAt)}</span>
                         <a href={`/api/face-profiles/${encodeURIComponent(e.id)}/photo`} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1 text-indigo-700 bg-indigo-50 border border-indigo-100 px-2 py-0.5 rounded-lg">
@@ -360,7 +381,7 @@ export default function SelfAttendancePanel({ employees, onChanged }: { employee
                       </button>
                       {e.faceProfile && (
                         <button type="button" onClick={() => resetFace(e)} className="inline-flex items-center gap-1 text-[12px] font-bold text-red-600 bg-red-50 border border-red-100 px-2 py-1 rounded-lg">
-                          <ShieldOff size={12} aria-hidden="true" /> إعادة التسجيل
+                          <ShieldOff size={12} aria-hidden="true" /> {e.faceProfile.model === FACE_PROFILE_WITHDRAWN ? 'إعادة فتح التسجيل' : 'إعادة التسجيل'}
                         </button>
                       )}
                     </div>

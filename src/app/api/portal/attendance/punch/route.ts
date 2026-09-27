@@ -20,6 +20,7 @@ import {
   checkLocation,
   cosineSimilarity,
   decidePunch,
+  planForAction,
   rejectionMessage,
   resolvePunchPlan,
   tooSoonAfterCheckIn,
@@ -96,8 +97,10 @@ export async function POST(req: Request) {
       if (blocker === 'DAY_COMPLETE') throw conflict(SELF_ATTENDANCE_BLOCKER_MESSAGES[blocker], { code: blocker });
       throw forbidden(SELF_ATTENDANCE_BLOCKER_MESSAGES[blocker]);
     }
-    if (plan.action === 'DONE' || plan.action !== fields.expectedAction) throw stateChanged();
-    if (plan.action === 'OUT' && !plan.repunch && tooSoonAfterCheckIn(plan.checkIn, now)) {
+    // The button the employee pressed: the plan's action, or its alternative after a rejected check-in.
+    const step = planForAction(plan, fields.expectedAction);
+    if (!step) throw stateChanged();
+    if (step.action === 'OUT' && !step.repunch && step.checkIn && tooSoonAfterCheckIn(step.checkIn, now)) {
       throw conflict('سجلت حضورك قبل أقل من 5 دقائق. لا يمكن تسجيل الانصراف الآن.', { code: 'TOO_SOON' });
     }
     if (ctx.faceRequired && !ctx.faceEnrolled) {
@@ -154,17 +157,17 @@ export async function POST(req: Request) {
       await lockEmployeeForUpdate(tx, employeeId);
       // Re-plan under the row lock: a double tap or a second tab must not punch twice.
       const rows = await loadPlanRows(tx, employeeId, ctx.todayKey);
-      const locked = resolvePunchPlan({ now, schedule: ctx.schedule, todayKey: ctx.todayKey, today: rows.today, yesterday: rows.yesterday });
-      if (locked.action !== plan.action || locked.dayKey !== plan.dayKey) throw stateChanged();
+      const locked = planForAction(resolvePunchPlan({ now, schedule: ctx.schedule, todayKey: ctx.todayKey, ...rows }), fields.expectedAction);
+      if (!locked || locked.action !== step.action || locked.dayKey !== step.dayKey) throw stateChanged();
 
-      const date = new Date(`${plan.dayKey}T00:00:00.000Z`);
+      const date = new Date(`${step.dayKey}T00:00:00.000Z`);
       let attendanceId: string | null = null;
       let minutes: { lateMinutes?: number; earlyLeaveMin?: number; overtimeMin?: number } = {};
 
       if (result !== 'REJECTED') {
         const flag = result === 'FLAGGED' ? { flagged: true } : {};
         if (locked.action === 'IN') {
-          const calc = computeLateEarly({ schedule: ctx.schedule, dayKey: plan.dayKey, checkIn: now, checkOut: null });
+          const calc = computeLateEarly({ schedule: ctx.schedule, dayKey: step.dayKey, checkIn: now, checkOut: null });
           const values = { checkIn: now, checkInSource: ATTENDANCE_SOURCE.SELF, status: ATTENDANCE_STATUS.PRESENT, lateMinutes: calc.lateMinutes, ...flag };
           const saved = await tx.attendance.upsert({
             where: { employeeId_date: { employeeId, date } },
@@ -174,22 +177,30 @@ export async function POST(req: Request) {
           });
           attendanceId = saved.id;
           minutes = { lateMinutes: calc.lateMinutes };
-        } else if (locked.action === 'OUT') {
-          const calc = computeLateEarly({ schedule: ctx.schedule, dayKey: plan.dayKey, checkIn: locked.checkIn, checkOut: now });
-          const r = await tx.attendance.updateMany({
-            where: locked.repunch ? { id: locked.attendanceId } : { id: locked.attendanceId, checkOut: null },
-            data: {
-              checkOut: now,
-              checkOutSource: ATTENDANCE_SOURCE.SELF,
-              lateMinutes: calc.lateMinutes,
-              earlyLeaveMin: calc.earlyLeaveMin,
-              earlyMinutes: calc.earlyLeaveMin,
-              overtimeMin: calc.overtimeMin,
-              ...flag,
-            },
-          });
-          if (r.count === 0) throw stateChanged();
-          attendanceId = locked.attendanceId;
+        } else {
+          const calc = computeLateEarly({ schedule: ctx.schedule, dayKey: step.dayKey, checkIn: locked.checkIn, checkOut: now });
+          // Late minutes belong to the check-in (possibly set by HR or a correction): a check-out leaves them alone.
+          const values = {
+            checkOut: now,
+            checkOutSource: ATTENDANCE_SOURCE.SELF,
+            earlyLeaveMin: calc.earlyLeaveMin,
+            earlyMinutes: calc.earlyLeaveMin,
+            overtimeMin: calc.overtimeMin,
+            ...flag,
+          };
+          if (locked.attendanceId) {
+            const r = await tx.attendance.updateMany({
+              where: locked.repunch ? { id: locked.attendanceId } : { id: locked.attendanceId, checkOut: null },
+              data: values,
+            });
+            if (r.count === 0) throw stateChanged();
+            attendanceId = locked.attendanceId;
+          } else {
+            // Leaving after a rejected check-in: the day's record starts with the check-out alone
+            // (the check-in comes from the correction linked to the rejected attempt).
+            const saved = await tx.attendance.create({ data: { employeeId, date, status: ATTENDANCE_STATUS.PRESENT, ...values }, select: { id: true } });
+            attendanceId = saved.id;
+          }
           minutes = { earlyLeaveMin: calc.earlyLeaveMin, overtimeMin: calc.overtimeMin };
         }
       }
@@ -199,7 +210,7 @@ export async function POST(req: Request) {
           employeeId,
           attendanceId,
           workDate: date,
-          type: plan.action === 'OUT' ? 'OUT' : 'IN',
+          type: step.action,
           result,
           reasons,
           latitude: point?.latitude ?? null,
@@ -229,10 +240,10 @@ export async function POST(req: Request) {
       entityType: 'AttendancePunch',
       entityId: outcome.punchId,
       details: {
-        type: plan.action,
+        type: step.action,
         result,
         reasons,
-        workDate: plan.dayKey,
+        workDate: step.dayKey,
         distanceM: round(nearest?.distanceM),
         accuracyM: round(accuracyM),
         faceScore: round(similarity, 3),
@@ -241,14 +252,19 @@ export async function POST(req: Request) {
       ipAddress,
     });
 
-    const base = { result, action: plan.action, workDate: plan.dayKey, punchId: outcome.punchId, reasons };
+    const base = { result, action: step.action, workDate: step.dayKey, punchId: outcome.punchId, reasons };
     if (result === 'REJECTED') {
-      const message = rejectionMessage(reasons, nearest ? { distanceM: nearest.distanceM, name: nearest.fence.name } : null);
+      const message = rejectionMessage(reasons, {
+        nearest: nearest ? { distanceM: nearest.distanceM, name: nearest.fence.name, radiusM: nearest.fence.radiusM } : null,
+        accuracyM,
+        maxAccuracyM: settings.gpsMaxAccuracyM,
+      });
       return NextResponse.json({ ...base, message, error: message, canRequestCorrection: true }, { status: 422 });
     }
-    const done = plan.action === 'IN' ? 'تم تسجيل الحضور' : 'تم تسجيل الانصراف';
+    const done = step.action === 'IN' ? 'تم تسجيل الحضور' : 'تم تسجيل الانصراف';
     const flaggedNote = result === 'FLAGGED' ? ` — ${reasons.filter((r) => r === 'FACE_BORDERLINE' || r === 'LIVENESS_BORDERLINE' || r === 'ON_LEAVE').map((r) => PUNCH_REASON_MESSAGES[r]).join(' ')}` : '';
-    return NextResponse.json({ ...base, message: `${done}${flaggedNote}`, time: now, ...outcome.minutes }, { status: 201 });
+    const noCheckInNote = step.action === 'OUT' && !step.checkIn ? ' — حضورك لهذا اليوم غير مسجل: إن لم ترفع طلب تصحيح لمحاولة الحضور المرفوضة فارفعه الآن.' : '';
+    return NextResponse.json({ ...base, message: `${done}${flaggedNote}${noCheckInNote}`, time: now, ...outcome.minutes }, { status: 201 });
   } catch (err) {
     if (evidenceName) await deleteBiometricImage(evidenceName).catch(() => undefined);
     return handleApiError(err, 'portal/attendance/punch:POST');

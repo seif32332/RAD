@@ -13,9 +13,42 @@ export const FACE_MODEL = 'sface_2021dec';
 export const FACE_EMBEDDING_SIZE = 128;
 
 const TIMEOUT_MS = 10_000;
-/** Per-process cap on concurrent calls: beyond it the call fails closed instead of queueing. */
+/** Per-process cap on concurrent calls. */
 const MAX_IN_FLIGHT = 4;
+/**
+ * At shift start many employees punch within seconds: extra calls wait for a free slot instead of
+ * being rejected at once. Beyond this wait (or queue length) the call fails closed.
+ */
+const MAX_QUEUE_WAIT_MS = 8_000;
+const MAX_QUEUED = 100;
 let inFlight = 0;
+const waiting: Array<() => void> = [];
+
+function acquireSlot(): Promise<boolean> {
+  if (inFlight < MAX_IN_FLIGHT) {
+    inFlight += 1;
+    return Promise.resolve(true);
+  }
+  if (waiting.length >= MAX_QUEUED) return Promise.resolve(false);
+  return new Promise((resolve) => {
+    const grant = () => {
+      clearTimeout(timer);
+      inFlight += 1;
+      resolve(true);
+    };
+    const timer = setTimeout(() => {
+      const i = waiting.indexOf(grant);
+      if (i >= 0) waiting.splice(i, 1);
+      resolve(false);
+    }, MAX_QUEUE_WAIT_MS);
+    waiting.push(grant);
+  });
+}
+
+function releaseSlot(): void {
+  inFlight -= 1;
+  waiting.shift()?.();
+}
 
 export interface FaceServiceResult extends FaceAnalysis {
   /** Detector confidence of the face (0..1). */
@@ -29,9 +62,12 @@ export interface FaceServiceResult extends FaceAnalysis {
   model: string | null;
 }
 
+/** `docker run --env-file` keeps the quotes of KEY="value": accept both forms. */
+const unquote = (v: string | undefined) => v?.trim().replace(/^(["'])(.*)\1$/, '$2').trim();
+
 function config(): { url: string; token: string } | null {
-  const url = process.env.FACE_SERVICE_URL?.trim().replace(/\/+$/, '');
-  const token = process.env.FACE_SERVICE_TOKEN?.trim();
+  const url = unquote(process.env.FACE_SERVICE_URL)?.replace(/\/+$/, '');
+  const token = unquote(process.env.FACE_SERVICE_TOKEN);
   return url && token ? { url, token } : null;
 }
 
@@ -71,11 +107,10 @@ export function parseFaceServiceResponse(data: unknown): FaceServiceResult | nul
 export async function analyzeFace(image: Uint8Array, mime: string): Promise<FaceServiceResult | null> {
   const cfg = config();
   if (!cfg) return null;
-  if (inFlight >= MAX_IN_FLIGHT) {
-    console.warn('[face] too many concurrent requests; failing closed');
+  if (!(await acquireSlot())) {
+    console.warn('[face] no free slot in time (burst of punches); failing closed');
     return null;
   }
-  inFlight += 1;
   try {
     const form = new FormData();
     form.append('image', new Blob([new Uint8Array(image)], { type: mime }), 'capture');
@@ -86,6 +121,11 @@ export async function analyzeFace(image: Uint8Array, mime: string): Promise<Face
       cache: 'no-store',
       signal: AbortSignal.timeout(TIMEOUT_MS),
     });
+    if (res.status === 400) {
+      // The service could not decode the image: no usable face (the employee retakes the picture),
+      // not an outage of the service.
+      return { faces: 0, liveness: null, embedding: null, detScore: null, faceRatio: null, blur: null, brightness: null, model: null };
+    }
     if (!res.ok) {
       console.error(`[face] service answered HTTP ${res.status}`);
       return null;
@@ -98,7 +138,7 @@ export async function analyzeFace(image: Uint8Array, mime: string): Promise<Face
     console.error('[face] service unreachable:', err instanceof Error ? err.name : 'error');
     return null;
   } finally {
-    inFlight -= 1;
+    releaseSlot();
   }
 }
 

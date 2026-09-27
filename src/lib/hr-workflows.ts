@@ -1057,10 +1057,15 @@ export async function approveAttendanceCorrection(
 }
 
 /**
- * Fills the missing punches of the corrected day. A request linked to a rejected / flagged self
- * punch uses that punch's SERVER time for the punch it was about (instead of the scheduled time),
- * so deliberately failing the face / location check cannot erase lateness or early leave; only an
- * explicit LATE / EARLY_LEAVE correction approved by HR zeroes those minutes.
+ * Fills the missing punches of the corrected day.
+ * - A request linked to a rejected / flagged self punch fills ONLY the punch it was about, with
+ *   that punch's SERVER time: deliberately failing the face / location check cannot erase
+ *   lateness, and the other punch is never invented from the schedule (a check-in approved at
+ *   10:00 must not turn into a full day that hides leaving at noon). The check-out then comes
+ *   from the employee's own punch, or another correction.
+ * - A linked check-in replaces a LATER recorded check-in (the rejected attempt was the arrival).
+ * - Unlinked requests keep filling missing punches from the schedule.
+ * Only an explicit LATE / EARLY_LEAVE correction approved by HR zeroes those minutes.
  */
 async function applyAttendanceCorrection(
   tx: Db,
@@ -1072,6 +1077,8 @@ async function applyAttendanceCorrection(
   const day = dateKey(date);
   if (!day) throw badRequest('تاريخ الطلب غير صالح');
   const attendanceDate = new Date(`${day}T00:00:00.000Z`);
+  // Serialized with self punches: a check-out committed meanwhile must not be overwritten.
+  await lockEmployeeForUpdate(tx, employeeId);
   const [{ schedule }, existing, punch] = await Promise.all([
     resolveEmployeeSchedule(tx, employeeId),
     tx.attendance.findUnique({ where: { employeeId_date: { employeeId, date: attendanceDate } } }),
@@ -1080,18 +1087,28 @@ async function applyAttendanceCorrection(
       : Promise.resolve(null),
   ]);
   const linked = punch && punch.employeeId === employeeId ? punch : null;
-  const times = defaultPunchTimes(schedule);
-  const scheduled = buildPunches(day, times.startTime, times.endTime);
-  const checkIn = existing?.checkIn ?? (linked?.type === 'IN' ? linked.createdAt : scheduled.checkIn);
-  const checkOut = existing?.checkOut ?? (linked?.type === 'OUT' ? linked.createdAt : scheduled.checkOut);
+  let checkIn: Date | null;
+  let checkOut: Date | null;
+  if (linked) {
+    const recordedIn = existing?.checkIn ?? null;
+    checkIn = linked.type === 'IN' && (!recordedIn || linked.createdAt < recordedIn) ? linked.createdAt : recordedIn;
+    checkOut = existing?.checkOut ?? (linked.type === 'OUT' ? linked.createdAt : null);
+  } else {
+    const times = defaultPunchTimes(schedule);
+    const scheduled = buildPunches(day, times.startTime, times.endTime);
+    checkIn = existing?.checkIn ?? scheduled.checkIn;
+    checkOut = existing?.checkOut ?? scheduled.checkOut;
+  }
   const calc = computeLateEarly({ schedule, dayKey: day, checkIn, checkOut });
   const lateMinutes = correctionType === 'LATE' ? 0 : calc.lateMinutes;
   const earlyLeaveMin = correctionType === 'EARLY_LEAVE' ? 0 : calc.earlyLeaveMin;
+  const keepSource = (recorded: Date | null | undefined, value: Date | null, source: string | null | undefined) =>
+    !value ? null : recorded && recorded.getTime() === value.getTime() ? (source ?? null) : ATTENDANCE_SOURCE.CORRECTION;
   const values = {
     checkIn,
     checkOut,
-    checkInSource: existing?.checkIn ? (existing.checkInSource ?? null) : ATTENDANCE_SOURCE.CORRECTION,
-    checkOutSource: existing?.checkOut ? (existing.checkOutSource ?? null) : ATTENDANCE_SOURCE.CORRECTION,
+    checkInSource: keepSource(existing?.checkIn, checkIn, existing?.checkInSource),
+    checkOutSource: keepSource(existing?.checkOut, checkOut, existing?.checkOutSource),
     // HR has looked at the day: a pending "flagged" warning is resolved by the approval.
     flagged: false,
     status: ATTENDANCE_STATUS.PRESENT,

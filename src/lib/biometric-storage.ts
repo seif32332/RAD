@@ -13,6 +13,7 @@ import { randomUUID } from 'crypto';
 import { mkdir, readFile, unlink, writeFile } from 'fs/promises';
 import { NextResponse } from 'next/server';
 import { getUploadDir, validateUpload, type UploadPolicy, type UploadValidation } from '@/lib/storage';
+import { readImageSize } from '@/lib/image-dimensions';
 
 export const BIOMETRIC_DIR_NAME = '.biometric';
 
@@ -37,10 +38,21 @@ export function biometricMime(name: string): string {
   return MIME[ext] ?? 'application/octet-stream';
 }
 
-/** Validates a camera capture (size, type, magic bytes). 'jpeg' is normalized to 'jpg'. */
+/**
+ * Largest image accepted, in pixels and per side. Portal captures are about 640x850; the cap only
+ * stops "decompression bombs" (a small file declaring a huge image) before the face service.
+ */
+export const SELFIE_MAX_PIXELS = 16_000_000;
+export const SELFIE_MAX_SIDE = 8_000;
+
+/** Validates a camera capture (size, type, magic bytes, declared dimensions). 'jpeg' is normalized to 'jpg'. */
 export function validateSelfie(fileName: string, bytes: Uint8Array): UploadValidation & { ext?: BiometricExt } {
   const v = validateUpload(fileName, bytes.byteLength, bytes, SELFIE_UPLOAD_POLICY);
   if (!v.ok) return v;
+  const size = readImageSize(bytes);
+  if (!size || !size.width || !size.height || size.width > SELFIE_MAX_SIDE || size.height > SELFIE_MAX_SIDE || size.width * size.height > SELFIE_MAX_PIXELS) {
+    return { ok: false, status: 400, message: 'الصورة غير صالحة. أعد التقاطها من الكاميرا.' };
+  }
   return { ok: true, ext: (v.ext === 'jpeg' ? 'jpg' : v.ext) as BiometricExt };
 }
 
@@ -69,6 +81,19 @@ export async function deleteBiometricImage(name: string | null | undefined): Pro
     await unlink(path.join(getBiometricDir(), name));
   } catch (err) {
     if ((err as NodeJS.ErrnoException)?.code !== 'ENOENT') throw err;
+  }
+}
+
+/**
+ * Best-effort delete once the database no longer references the file: never throws, so the
+ * caller's audit entry is still written. A leftover is removed by the nightly orphan sweep of
+ * purge-attendance-biometrics (scripts/jobs.mjs).
+ */
+export async function discardBiometricImage(name: string | null | undefined): Promise<void> {
+  try {
+    await deleteBiometricImage(name);
+  } catch (err) {
+    console.warn('[biometric] could not delete an unreferenced file; the nightly sweep will retry:', (err as NodeJS.ErrnoException)?.code ?? 'error');
   }
 }
 

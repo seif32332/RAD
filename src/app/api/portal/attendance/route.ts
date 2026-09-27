@@ -4,7 +4,7 @@ import { requireEmployeeId, requireUser } from '@/lib/auth';
 import { ROLE_GROUPS } from '@/lib/constants';
 import { handleApiError } from '@/lib/http';
 import { faceServiceConfigured } from '@/lib/face';
-import { FACE_CONSENT_VERSION, SELF_ATTENDANCE_BLOCKER_MESSAGES } from '@/lib/self-attendance';
+import { DAY_COMPLETE_WITHOUT_CHECK_IN_MESSAGE, FACE_CONSENT_VERSION, SELF_ATTENDANCE_BLOCKER_MESSAGES } from '@/lib/self-attendance';
 import { loadSelfAttendanceContext } from '@/lib/self-attendance-server';
 
 export const dynamic = 'force-dynamic';
@@ -24,12 +24,19 @@ export async function GET() {
       {
         enabled: ctx.settings.enabled,
         nextAction: ctx.plan.action,
+        // After a rejected check-in: the other button (retry the check-in / record the check-out).
+        alternativeAction: ctx.plan.action === 'DONE' ? null : (ctx.plan.alternative ?? null),
         workDate: ctx.plan.dayKey,
+        todayKey: ctx.todayKey,
         record: ctx.record ? { workDate: ctx.record.dayKey, checkIn: ctx.record.checkIn, checkOut: ctx.record.checkOut } : null,
-        blockers: ctx.blockers.map((code) => ({ code, message: SELF_ATTENDANCE_BLOCKER_MESSAGES[code] })),
+        blockers: ctx.blockers.map((code) => ({
+          code,
+          message: code === 'DAY_COMPLETE' && ctx.record && !ctx.record.checkIn ? DAY_COMPLETE_WITHOUT_CHECK_IN_MESSAGE : SELF_ATTENDANCE_BLOCKER_MESSAGES[code],
+        })),
         geoRequired: !ctx.employee.attendanceGeoExempt,
         faceRequired: ctx.faceRequired,
         faceEnrolled: ctx.faceEnrolled,
+        faceDataStored: ctx.faceDataStored,
         faceConsentCurrent: ctx.faceConsentCurrent,
         faceServiceConfigured: faceServiceConfigured(),
         locations: ctx.fences.map((f) => ({ name: f.name })),

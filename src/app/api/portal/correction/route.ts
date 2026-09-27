@@ -35,18 +35,23 @@ export async function POST(req: Request) {
     const body = await parseBody(req, createSchema);
     if (body.employeeId && body.employeeId !== employeeId) throw forbidden('لا يمكنك تقديم طلب لموظف آخر');
 
-    // Prevent duplicate pending requests with the same reason.
-    const existing = await prisma.attendanceCorrection.findFirst({
-      where: { employeeId, reason: body.reason, status: CORRECTION_STATUS.PENDING },
-      select: { id: true },
-    });
-    if (existing) throw conflict('يوجد لديك طلب مطابق قيد الانتظار حالياً.');
-
     const hrDirect = isHrDirectRequest(body.reason);
+    const linkedToPunch = !!body.punchId && !hrDirect;
+
+    // Prevent duplicate pending requests with the same reason. A request linked to a punch is
+    // checked per punch below instead: the pre-filled reason is the same for every rejection of
+    // the same kind (e.g. the face service was down two days in a row).
+    if (!linkedToPunch) {
+      const existing = await prisma.attendanceCorrection.findFirst({
+        where: { employeeId, reason: body.reason, status: CORRECTION_STATUS.PENDING },
+        select: { id: true },
+      });
+      if (existing) throw conflict('يوجد لديك طلب مطابق قيد الانتظار حالياً.');
+    }
     const correctionType = hrDirect ? 'GENERAL' : (body.correctionType ?? 'GENERAL');
 
     let punchId: string | null = null;
-    if (body.punchId && !hrDirect) {
+    if (body.punchId && linkedToPunch) {
       const punch = await prisma.attendancePunch.findUnique({ where: { id: body.punchId }, select: { employeeId: true, result: true, workDate: true } });
       if (!punch || punch.employeeId !== employeeId) throw forbidden('الحركة المرتبطة بالطلب غير موجودة');
       if (punch.result === 'ACCEPTED') throw badRequest('هذه الحركة مقبولة ولا تحتاج إلى تصحيح');

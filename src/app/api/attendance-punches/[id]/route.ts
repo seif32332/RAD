@@ -5,6 +5,7 @@ import { getClientIp, requireUser } from '@/lib/auth';
 import { ROLE_GROUPS } from '@/lib/constants';
 import { conflict, handleApiError, notFound, parseBody } from '@/lib/http';
 import { logAudit } from '@/lib/audit';
+import { assertCanManageEmployee } from '@/lib/hr-workflows';
 
 export const dynamic = 'force-dynamic';
 
@@ -24,8 +25,13 @@ export async function PUT(req: Request, { params }: Ctx) {
     await parseBody(req, bodySchema);
 
     const updated = await prisma.$transaction(async (tx) => {
-      const punch = await tx.attendancePunch.findUnique({ where: { id }, select: { id: true, result: true, attendanceId: true, reviewedAt: true } });
+      const punch = await tx.attendancePunch.findUnique({
+        where: { id },
+        select: { id: true, result: true, attendanceId: true, reviewedAt: true, employee: { select: { id: true, directManagerId: true, branchId: true, departmentId: true } } },
+      });
       if (!punch) throw notFound('الحركة غير موجودة');
+      // Nobody clears the warning on their own punch (the owner group excepted, as elsewhere).
+      await assertCanManageEmployee(tx, user, punch.employee);
       if (punch.result !== 'FLAGGED') throw conflict('المراجعة للحركات المعلَّمة فقط');
       const r = await tx.attendancePunch.updateMany({ where: { id, reviewedAt: null }, data: { reviewedAt: new Date(), reviewedById: user.id } });
       if (r.count === 0) throw conflict('تمت مراجعة هذه الحركة مسبقاً');

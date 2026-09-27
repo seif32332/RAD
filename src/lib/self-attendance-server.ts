@@ -8,8 +8,10 @@ import { resolveEmployeeSchedule } from '@/lib/hr-workflows';
 import { FACE_MODEL } from '@/lib/face';
 import {
   FACE_CONSENT_VERSION,
+  FACE_PROFILE_WITHDRAWN,
   SELF_ATTENDANCE_BLOCKERS,
   SELF_ATTENDANCE_SETTING_KEYS,
+  nextDayKey,
   parseSelfAttendanceSettings,
   previousDayKey,
   resolvePunchPlan,
@@ -42,18 +44,38 @@ export async function loadActiveFences(db: Db, branchId: string | null): Promise
 
 const dayDate = (key: string) => new Date(`${key}T00:00:00.000Z`);
 
-/** Today's and yesterday's Attendance rows of the employee (the only rows a punch can touch). */
-export async function loadPlanRows(db: Db, employeeId: string, todayKey: string): Promise<{ today: AttendanceDayRow | null; yesterday: AttendanceDayRow | null }> {
-  const yesterdayKey = previousDayKey(todayKey);
-  const rows = await db.attendance.findMany({
-    where: { employeeId, date: { in: [dayDate(yesterdayKey), dayDate(todayKey)] } },
-    select: { id: true, date: true, checkIn: true, checkOut: true },
-  });
+export interface PlanRows {
+  yesterday: AttendanceDayRow | null;
+  today: AttendanceDayRow | null;
+  tomorrow: AttendanceDayRow | null;
+  /** Latest rejected check-in attempt per day (the planner ignores it once the day has a check-in). */
+  rejectedIn: Record<string, Date>;
+}
+
+/** The Attendance rows a punch can touch (yesterday, today, tomorrow) and the rejected check-in attempts of those days. */
+export async function loadPlanRows(db: Db, employeeId: string, todayKey: string): Promise<PlanRows> {
+  const keys = [previousDayKey(todayKey), todayKey, nextDayKey(todayKey)];
+  const [rows, rejected] = await Promise.all([
+    db.attendance.findMany({
+      where: { employeeId, date: { in: keys.map(dayDate) } },
+      select: { id: true, date: true, checkIn: true, checkOut: true },
+    }),
+    db.attendancePunch.findMany({
+      where: { employeeId, type: 'IN', result: 'REJECTED', workDate: { in: keys.map(dayDate) } },
+      orderBy: { createdAt: 'desc' },
+      select: { workDate: true, createdAt: true },
+    }),
+  ]);
   const pick = (key: string): AttendanceDayRow | null => {
     const r = rows.find((x) => dateKey(x.date) === key);
     return r ? { id: r.id, dayKey: key, checkIn: r.checkIn, checkOut: r.checkOut } : null;
   };
-  return { today: pick(todayKey), yesterday: pick(yesterdayKey) };
+  const rejectedIn: Record<string, Date> = {};
+  for (const p of rejected) {
+    const key = dateKey(p.workDate);
+    if (key && !rejectedIn[key]) rejectedIn[key] = p.createdAt;
+  }
+  return { yesterday: pick(keys[0]), today: pick(keys[1]), tomorrow: pick(keys[2]), rejectedIn };
 }
 
 export interface SelfAttendanceContext {
@@ -76,6 +98,10 @@ export interface SelfAttendanceContext {
   faceRequired: boolean;
   /** A FaceProfile made by the current model exists. */
   faceEnrolled: boolean;
+  /** Biometric data is stored (any model): the employee can withdraw consent. */
+  faceDataStored: boolean;
+  /** Consent was withdrawn: enrolling again needs HR (RESET_FACE). */
+  faceWithdrawn: boolean;
   /** The enrolled employee accepted the current version of the privacy notice. */
   faceConsentCurrent: boolean;
   blockers: SelfAttendanceBlocker[];
@@ -104,16 +130,20 @@ export async function loadSelfAttendanceContext(db: Db, employeeId: string, now:
     loadActiveFences(db, employee.branchId),
     loadPlanRows(db, employeeId, todayKey),
   ]);
-  const plan = resolvePunchPlan({ now, schedule, todayKey, today: rows.today, yesterday: rows.yesterday });
-  const record = plan.dayKey === todayKey ? rows.today : rows.yesterday;
+  const plan = resolvePunchPlan({ now, schedule, todayKey, ...rows });
+  const record = [rows.yesterday, rows.today, rows.tomorrow].find((r) => r?.dayKey === plan.dayKey) ?? null;
+
+  const { faceProfile, ...emp } = employee;
+  const faceRequired = !employee.attendanceFaceExempt;
+  const faceWithdrawn = faceProfile?.model === FACE_PROFILE_WITHDRAWN;
 
   const blockers: SelfAttendanceBlocker[] = [];
   if (!settings.enabled) blockers.push(SELF_ATTENDANCE_BLOCKERS.DISABLED);
   if (employee.isTerminated) blockers.push(SELF_ATTENDANCE_BLOCKERS.TERMINATED);
   if (!employee.attendanceGeoExempt && fences.length === 0) blockers.push(SELF_ATTENDANCE_BLOCKERS.NO_LOCATIONS_CONFIGURED);
+  if (faceRequired && faceWithdrawn) blockers.push(SELF_ATTENDANCE_BLOCKERS.FACE_WITHDRAWN);
   if (plan.action === 'DONE') blockers.push(SELF_ATTENDANCE_BLOCKERS.DAY_COMPLETE);
 
-  const { faceProfile, ...emp } = employee;
   return {
     now,
     todayKey,
@@ -123,8 +153,10 @@ export async function loadSelfAttendanceContext(db: Db, employeeId: string, now:
     fences,
     plan,
     record,
-    faceRequired: !employee.attendanceFaceExempt,
+    faceRequired,
     faceEnrolled: faceProfile?.model === FACE_MODEL,
+    faceDataStored: !!faceProfile && !faceWithdrawn,
+    faceWithdrawn,
     faceConsentCurrent: faceProfile?.consentVersion === FACE_CONSENT_VERSION,
     blockers,
   };
