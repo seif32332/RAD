@@ -8,7 +8,7 @@ import { after, NextResponse } from 'next/server';
 import { z } from 'zod';
 import type { LeaveType, Prisma } from '@prisma/client';
 import { prisma } from '@/lib/prisma';
-import { suggestExitAcceptanceQuietly, syncLeaveLetterQuietly } from '@/lib/documents/service';
+import { issueCommencementNoticeQuietly, suggestExitAcceptanceQuietly, syncLeaveLetterQuietly } from '@/lib/documents/service';
 import { earliestLastWorkingDay, suggestedLastWorkingDay } from '@/lib/termination';
 import { getClientIp, hasRole, requireUser, type AuthUser } from '@/lib/auth';
 import {
@@ -711,6 +711,8 @@ export async function POST(req: Request) {
         const edits = onboardingEditsSchema.parse(body.updatedData ?? {});
         const created = await approveOnboarding(ctx, edits);
         const missing = onboardingPlaceholderLabels(created.placeholderFields);
+        // Commencement notice, unless the join date is a placeholder (never printed as a real date).
+        if (!created.placeholderFields.includes('joinDate')) after(() => issueCommencementNoticeQuietly({ kind: 'JOIN', employeeId: created.employeeId }));
         return NextResponse.json({
           message: `تم اعتماد مباشرة العمل وتسجيل الموظف برقم وظيفي ${created.employeeCode}`,
           employeeId: created.employeeId,
@@ -734,6 +736,7 @@ export async function POST(req: Request) {
     // An approved resignation / termination request suggests its acceptance letter (after commit).
     if (type === 'TERMINATION' && ctx.approve) after(() => suggestExitAcceptanceQuietly(ctx.id));
     if (type === 'LEAVE') after(() => syncLeaveLetterQuietly(ctx.id));
+    if (type === 'RETURN_NOTICE' && ctx.approve) after(() => issueCommencementNoticeQuietly({ kind: 'RETURN', leaveId: ctx.id }));
     return NextResponse.json({ message: message || 'تم إنجاز الإجراء بنجاح' });
   } catch (err) {
     return handleApiError(err, 'incoming-requests:POST');

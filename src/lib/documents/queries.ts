@@ -46,7 +46,7 @@ export async function portalTypesFor(employeeId: string) {
   const available = Object.values(DOCUMENT_TYPES)
     .map((def) => ({ def, policy: effectivePolicy(def, settings.find((s) => s.typeKey === def.key) ?? null) }))
     .filter(({ def, policy }) => policy.enabled && policy.selfService && !(def.requiresActiveEmployee && e.isTerminated))
-    .map(({ def, policy }) => ({ key: def.key, labelAr: def.labelAr, labelEn: def.labelEn, validityDays: policy.validityDays, languages: def.languages, noc: def.key === 'NO_OBJECTION' }));
+    .map(({ def, policy }) => ({ key: def.key, labelAr: def.labelAr, labelEn: def.labelEn, validityDays: policy.validityDays, languages: def.languages, noc: def.key === 'NO_OBJECTION', commencement: def.facts === 'COMMENCEMENT' }));
   return { available, reason: null };
 }
 
@@ -122,7 +122,7 @@ export async function staffDocumentOverview(actor: Actor, opts: { q?: string; em
       // What the issue form asks for: a warning's text, and the languages the template supports.
       return {
         key: k, labelAr: d.labelAr, languages: d.languages, warningText: k === 'WARNING_LETTER', settlement: d.facts === 'SETTLEMENT',
-        terminationNotice: k === 'TERMINATION_NOTICE', noc: k === 'NO_OBJECTION', promotion: k === 'PROMOTION_DECISION', addendum: k === 'CONTRACT_ADDENDUM', candidate: d.subject === 'CANDIDATE', addressable: !d.addressedToEmployee && d.facts !== 'SETTLEMENT', auto: d.issuance === 'AUTO',
+        terminationNotice: k === 'TERMINATION_NOTICE', noc: k === 'NO_OBJECTION', promotion: k === 'PROMOTION_DECISION', addendum: k === 'CONTRACT_ADDENDUM', commencement: d.facts === 'COMMENCEMENT', candidate: d.subject === 'CANDIDATE', addressable: !d.addressedToEmployee && d.facts !== 'SETTLEMENT', auto: d.issuance === 'AUTO',
         // Requests that answer a record (resignation) are created by the system, not from this form.
         fromRecord: d.facts === 'TERMINATION',
       };

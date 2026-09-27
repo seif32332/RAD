@@ -4,7 +4,7 @@ import { requireDocumentsUser } from '@/lib/auth';
 import { forbidden, handleApiError, parseBody } from '@/lib/http';
 import { zId } from '@/lib/validation';
 import { concludedInvestigationsFor, offerCandidatesFor, paidSettlementsFor, portalTypesFor, myDocumentRequests, staffDocumentOverview } from '@/lib/documents/queries';
-import { createDocumentRequest, issueDueEvaluationReports, issueDuePayslips, processDueRenderJobs, suggestDueExitDocuments, syncDueLeaveLetters } from '@/lib/documents/service';
+import { createDocumentRequest, issueDueCommencementNotices, issueDueEvaluationReports, issueDuePayslips, processDueRenderJobs, suggestDueExitDocuments, syncDueLeaveLetters } from '@/lib/documents/service';
 import { applyDueChangeOrders } from '@/lib/documents/change-orders';
 import { addendumParamsSchema, nocParamsSchema, offerParamsSchema, promotionParamsSchema, terminationNoticeParamsSchema, warningParamsSchema } from '@/lib/documents/types';
 import { rateLimit } from '@/lib/rate-limit';
@@ -25,6 +25,7 @@ function suggestExitDocumentsLater() {
     await applyDueChangeOrders().catch((e) => console.error('[documents] change orders:', e instanceof Error ? e.message : e));
     await syncDueLeaveLetters().catch((e) => console.error('[documents] leave letters:', e instanceof Error ? e.message : e));
     await issueDueEvaluationReports().catch((e) => console.error('[documents] evaluation reports:', e instanceof Error ? e.message : e));
+    await issueDueCommencementNotices().catch((e) => console.error('[documents] commencement notices:', e instanceof Error ? e.message : e));
   });
 }
 
@@ -93,6 +94,7 @@ const createSchema = z.object({
   /** PROMOTION_DECISION: the change it orders. */
   promotion: promotionParamsSchema.optional(),
   addendum: addendumParamsSchema.optional(),
+  commencement: z.object({ kind: z.enum(['JOIN', 'RETURN']), leaveId: z.string().trim().min(1).max(64).optional() }).optional(),
   /** JOB_OFFER: the application (instead of employeeId) and the offer's terms. */
   jobApplicationId: zId.optional(),
   offer: offerParamsSchema.optional(),
@@ -124,7 +126,7 @@ export async function POST(req: Request) {
       {
         typeKey: body.typeKey,
         employeeId,
-        params: { language: body.language, addresseeAr: body.addresseeAr || undefined, addresseeEn: body.addresseeEn || undefined, warning: body.warning, settlementId: body.settlementId, terminationNotice: body.terminationNotice, noc: body.noc, promotion: body.promotion, addendum: body.addendum },
+        params: { language: body.language, addresseeAr: body.addresseeAr || undefined, addresseeEn: body.addresseeEn || undefined, warning: body.warning, settlementId: body.settlementId, terminationNotice: body.terminationNotice, noc: body.noc, promotion: body.promotion, addendum: body.addendum, commencement: body.commencement },
         source: forSelf ? 'PORTAL' : 'HR',
       },
       actorFrom(user, req),

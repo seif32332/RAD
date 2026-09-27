@@ -19,7 +19,7 @@ interface RequestRow {
   document: DocView | null;
   processing: ProcessingView | null;
 }
-interface TypeOption { key: string; labelAr: string; labelEn: string; validityDays: number | null; languages?: string[]; noc?: boolean }
+interface TypeOption { key: string; labelAr: string; labelEn: string; validityDays: number | null; languages?: string[]; noc?: boolean; commencement?: boolean }
 
 type AckKind = 'RECEIPT' | 'RELEASE' | 'CONSENT';
 type AckDecision = 'RECEIVED' | 'ACCEPTED' | 'DISPUTED' | 'DECLINED';
@@ -66,7 +66,7 @@ const DocumentsCard = forwardRef<DocumentsCardHandle>(function DocumentsCard(_, 
   const [loaded, setLoaded] = useState(false);
   const [open, setOpen] = useState(false);
   const [busy, setBusy] = useState(false);
-  const [form, setForm] = useState({ typeKey: '', language: 'ar', addresseeAr: '', addresseeEn: '', nocPurpose: 'TRAVEL', nocTarget: '', nocDetails: '' });
+  const [form, setForm] = useState({ typeKey: '', language: 'ar', addresseeAr: '', addresseeEn: '', nocPurpose: 'TRAVEL', nocTarget: '', nocDetails: '', commencementKind: 'JOIN' });
   const selected = types.find((t) => t.key === form.typeKey) ?? null;
   const [ack, setAck] = useState<Ack | null>(null);
 
@@ -115,6 +115,7 @@ const DocumentsCard = forwardRef<DocumentsCardHandle>(function DocumentsCard(_, 
           addresseeAr: form.addresseeAr || undefined,
           addresseeEn: form.language === 'ar-en' ? form.addresseeEn || undefined : undefined,
           noc: selected?.noc ? { purpose: form.nocPurpose, targetAr: form.nocTarget, detailsAr: form.nocDetails.trim() || undefined } : undefined,
+          commencement: selected?.commencement ? { kind: form.commencementKind } : undefined,
         }),
       });
       if (!res.ok) {
@@ -128,7 +129,7 @@ const DocumentsCard = forwardRef<DocumentsCardHandle>(function DocumentsCard(_, 
       else if (r.status === 'PENDING_APPROVAL') toast.success('رُفع الطلب للاعتماد، وستجده هنا عند صدوره.');
       else if (r.renderError) toast.info(r.renderError.message);
       setOpen(false);
-      setForm({ typeKey: '', language: 'ar', addresseeAr: '', addresseeEn: '', nocPurpose: 'TRAVEL', nocTarget: '', nocDetails: '' });
+      setForm({ typeKey: '', language: 'ar', addresseeAr: '', addresseeEn: '', nocPurpose: 'TRAVEL', nocTarget: '', nocDetails: '', commencementKind: 'JOIN' });
       await load();
     } catch {
       toast.error('تعذر الاتصال بالخادم');
@@ -269,6 +270,15 @@ const DocumentsCard = forwardRef<DocumentsCardHandle>(function DocumentsCard(_, 
               {types.map((t) => <option key={t.key} value={t.key}>{t.labelAr}</option>)}
             </select>
           </label>
+          {selected?.commencement ? (
+            <label className="block">
+              <span className="block text-[13px] font-bold text-slate-700 mb-1">المباشرة</span>
+              <select value={form.commencementKind} onChange={(e) => setForm({ ...form, commencementKind: e.target.value })} className="w-full border border-slate-300 rounded-xl px-3 py-2.5 text-[14px]">
+                <option value="JOIN">مباشرة العمل عند التعيين</option>
+                <option value="RETURN">المباشرة بعد آخر إجازة</option>
+              </select>
+            </label>
+          ) : null}
           {selected?.noc ? (
             <>
               <label className="block">

@@ -11,7 +11,7 @@ import { formatDateShort } from '@/lib/dates';
 import { SETTLEMENT_PAYMENT_METHODS, type SettlementPaymentMethod } from '@/lib/settlement-payment';
 import { NOC_PURPOSES, VALIDITY, acknowledgementLabel, pdfUrl, processingLabel, type DocView, type ProcessingView } from './_lib';
 
-interface TypeInfo { key: string; labelAr: string; languages: string[]; warningText: boolean; settlement: boolean; addressable: boolean; auto?: boolean; terminationNotice?: boolean; fromRecord?: boolean; noc?: boolean; promotion?: boolean; addendum?: boolean; candidate?: boolean }
+interface TypeInfo { key: string; labelAr: string; languages: string[]; warningText: boolean; settlement: boolean; addressable: boolean; auto?: boolean; terminationNotice?: boolean; fromRecord?: boolean; noc?: boolean; promotion?: boolean; addendum?: boolean; commencement?: boolean; candidate?: boolean }
 interface OfferOptions { candidates: { id: string; label: string; jobTitle: string; status: string }[]; companies: { id: string; label: string }[] }
 interface InvestigationOption { id: string; label: string; closedAt: string }
 const NOTICE_REASONS: Record<string, string> = {
@@ -157,7 +157,7 @@ export default function DocumentsPage() {
   const [busy, setBusy] = useState(false);
   const [issueOpen, setIssueOpen] = useState(false);
   const [employees, setEmployees] = useState<EmployeeOption[]>([]);
-  const [issue, setIssue] = useState({ employeeId: '', typeKey: '', language: 'ar', addresseeAr: '', addresseeEn: '', subjectAr: '', bodyAr: '', incidentDate: '', settlementId: '' });
+  const [issue, setIssue] = useState({ employeeId: '', typeKey: '', language: 'ar', addresseeAr: '', addresseeEn: '', subjectAr: '', bodyAr: '', incidentDate: '', settlementId: '', commencementKind: 'JOIN' });
   const issueType = data?.types.find((t) => t.key === issue.typeKey) ?? null;
   const [settlements, setSettlements] = useState<SettlementOption[] | null>(null);
   const [noc, setNoc] = useState({ purpose: 'TRAVEL', targetAr: '', detailsAr: '' });
@@ -382,6 +382,7 @@ export default function DocumentsPage() {
             reasonAr: amd.reasonAr.trim() || undefined,
           }
         : undefined,
+      commencement: issueType?.commencement ? { kind: issue.commencementKind } : undefined,
       noc: issueType?.noc ? { purpose: noc.purpose, targetAr: noc.targetAr, detailsAr: noc.detailsAr.trim() || undefined } : undefined,
       terminationNotice: issueType?.terminationNotice
         ? {
@@ -632,6 +633,15 @@ export default function DocumentsPage() {
               </label>
               <input value={amd.reasonAr} maxLength={200} onChange={(e) => setAmd({ ...amd, reasonAr: e.target.value })} placeholder="السبب (اختياري)، مثل: بناء على إعادة تنظيم الإدارة" className="w-full border rounded-xl px-3 py-2.5 text-[14px]" />
             </>
+          ) : null}
+          {issueType?.commencement ? (
+            <label className="block">
+              <span className="block text-[13px] font-bold text-slate-700 mb-1">المباشرة</span>
+              <select value={issue.commencementKind} onChange={(e) => setIssue({ ...issue, commencementKind: e.target.value })} className="w-full border rounded-xl px-3 py-2.5 text-[14px]">
+                <option value="JOIN">مباشرة العمل عند التعيين</option>
+                <option value="RETURN">المباشرة بعد آخر إجازة (المؤكدة من الموارد البشرية)</option>
+              </select>
+            </label>
           ) : null}
           {issueType?.noc ? (
             <>

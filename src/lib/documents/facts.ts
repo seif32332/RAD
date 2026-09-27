@@ -9,7 +9,7 @@ import { LOAN_DEDUCTIBLE_STATUSES } from '@/lib/constants';
 import { findStoredFile, storedNameFromUrl } from '@/lib/storage';
 import { decryptField } from '@/lib/crypto';
 import { normalizeIban } from '@/lib/iban';
-import type { AddendumFacts, BankFacts, EvaluationFacts, LeaveFacts, ExitFacts, InvestigationFacts, PayrollFacts, SettlementFacts, TerminationFacts } from './types';
+import type { AddendumFacts, BankFacts, CommencementFacts, EvaluationFacts, LeaveFacts, ExitFacts, InvestigationFacts, PayrollFacts, SettlementFacts, TerminationFacts } from './types';
 
 const label = (...parts: Array<string | null | undefined>) => parts.filter((p) => p && p.trim()).join(' - ') || 'غير موصوفة';
 
@@ -120,6 +120,19 @@ export async function loadBankFacts(db: Prisma.TransactionClient, employeeId: st
     iban = null; // unreadable ciphertext: reported as an invalid IBAN
   }
   return { bankName: e?.bankName ?? null, iban };
+}
+
+/**
+ * The leave a return-to-work commencement is about: the given one, or the employee's latest leave
+ * whose return HR confirmed.
+ */
+export async function loadCommencementFacts(db: Prisma.TransactionClient, employeeId: string, kind: 'JOIN' | 'RETURN' | undefined, leaveId: string | undefined): Promise<CommencementFacts> {
+  if (kind !== 'RETURN') return { leave: null };
+  const select = { id: true, employeeId: true, leaveType: true, startDate: true, endDate: true, isReturned: true, actualReturnDate: true } as const;
+  const l = leaveId
+    ? await db.leave.findUnique({ where: { id: leaveId }, select })
+    : await db.leave.findFirst({ where: { employeeId, isReturned: true, actualReturnDate: { not: null } }, orderBy: { actualReturnDate: 'desc' }, select });
+  return { leave: l ? { ...l, leaveType: String(l.leaveType) } : null };
 }
 
 /** Work location and contract end of the file, and the branch a contract addendum moves to. */

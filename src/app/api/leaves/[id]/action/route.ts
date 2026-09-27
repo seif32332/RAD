@@ -1,7 +1,7 @@
 import { after, NextResponse } from 'next/server';
 import { z } from 'zod';
 import { prisma } from '@/lib/prisma';
-import { syncLeaveLetterQuietly } from '@/lib/documents/service';
+import { issueCommencementNoticeQuietly, syncLeaveLetterQuietly } from '@/lib/documents/service';
 import { getClientIp, requireUser } from '@/lib/auth';
 import { LEAVE_STATUS, ROLE_GROUPS, roleIn } from '@/lib/constants';
 import { badRequest, conflict, forbidden, handleApiError, notFound, parseBody } from '@/lib/http';
@@ -101,6 +101,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
 
       case 'CONFIRM_RETURN':
         await prisma.$transaction((tx) => confirmLeaveReturn(tx, id, user, opts));
+        after(() => issueCommencementNoticeQuietly({ kind: 'RETURN', leaveId: id }));
         return NextResponse.json({ message: 'تم تأكيد عودة الموظف لرأس العمل بنجاح' });
 
       case 'REJECT_RETURN':

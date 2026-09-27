@@ -61,6 +61,10 @@ type Contract = {
     effectiveDate: string; fromJobTitleAr: string; toJobTitleAr: string | null; toJobTitleEn: string | null;
     fromBasicSalary: string; toBasicSalary: string | null; reasonAr: string | null;
   };
+  commencement?: {
+    kind: 'JOIN' | 'RETURN'; requested: boolean; date: string;
+    leave: { id: string; typeAr: string | null; startDate: string; endDate: string; scheduledReturn: string; lateDays: number } | null;
+  };
   addendum?: {
     effectiveDate: string; reasonAr: string | null;
     rows: { key: string; labelAr: string; fromAr: string; toAr: string; money: boolean }[];
@@ -117,6 +121,16 @@ const moneyRows = (rows: { labelAr: string; labelEn: string; amount: string }[],
   rows.map((r) => ({ labelAr: r.labelAr, labelEn: r.labelEn, amountText: formatAmount(r.amount, n), amountTextEn: formatAmount(r.amount, 'latn') }));
 
 const DEFAULT_ADDRESSEE = { ar: 'إلى من يهمه الأمر', en: 'To Whom It May Concern' };
+
+/**
+ * A count of days in Arabic with the counted noun in agreement: يوما واحدا, يومين, 3-10 أيام,
+ * 11 and more يوما. The number (when printed) is its own LTR run in the template.
+ */
+export function arabicDays(count: number, n: Numerals): { number: string | null; unit: string } {
+  if (count === 1) return { number: null, unit: 'يوما واحدا' };
+  if (count === 2) return { number: null, unit: 'يومين' };
+  return { number: digits(String(count), n), unit: count % 100 >= 3 && count % 100 <= 10 ? 'أيام' : 'يوما' };
+}
 
 export function buildRenderModel(data: Contract, brand: BrandSnapshot, meta: RenderMeta) {
   const n = brand.numerals;
@@ -278,6 +292,22 @@ export function buildRenderModel(data: Contract, brand: BrandSnapshot, meta: Ren
           toSalaryText: data.change.toBasicSalary ? formatAmount(data.change.toBasicSalary, n) : null,
           reasonAr: data.change.reasonAr,
           currencyAr: 'ريال سعودي',
+        }
+      : null,
+    commencement: data.commencement
+      ? {
+          kind: data.commencement.kind,
+          requested: data.commencement.requested,
+          dateAr: formatGregorian(data.commencement.date, 'ar', n),
+          leave: data.commencement.leave
+            ? {
+                typeAr: data.commencement.leave.typeAr,
+                startAr: formatGregorian(data.commencement.leave.startDate, 'ar', n),
+                endAr: formatGregorian(data.commencement.leave.endDate, 'ar', n),
+                scheduledAr: formatGregorian(data.commencement.leave.scheduledReturn, 'ar', n),
+                late: data.commencement.leave.lateDays ? arabicDays(data.commencement.leave.lateDays, n) : null,
+              }
+            : null,
         }
       : null,
     addendum: data.addendum

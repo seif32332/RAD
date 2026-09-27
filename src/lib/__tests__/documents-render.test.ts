@@ -14,7 +14,7 @@ import { createSealCertificate } from '@/lib/documents/seal/cert';
 import { sealPdf } from '@/lib/documents/seal/pades';
 import { hasOpenssl, opensslVerify } from './seal-fixtures';
 import {
-  buildCandidateContractData, buildContractData, CLEARANCE_CERTIFICATE, CONTRACT_ADDENDUM, type AddendumFacts, EMPLOYMENT_CERTIFICATE, EXPERIENCE_CERTIFICATE, EVALUATION_REPORT, EXIT_ACCEPTANCE, INVESTIGATION_MINUTES, JOB_OFFER, LEAVE_APPROVAL, NO_OBJECTION, paramsSchema, PAYSLIP, PROMOTION_DECISION, SALARY_CERTIFICATE, SALARY_TRANSFER, SETTLEMENT_STATEMENT, TERMINATION_NOTICE, WARNING_LETTER,
+  buildCandidateContractData, buildContractData, CLEARANCE_CERTIFICATE, CONTRACT_ADDENDUM, type AddendumFacts, WORK_COMMENCEMENT, WORK_COMMENCEMENT_LETTER, type CommencementFacts, EMPLOYMENT_CERTIFICATE, EXPERIENCE_CERTIFICATE, EVALUATION_REPORT, EXIT_ACCEPTANCE, INVESTIGATION_MINUTES, JOB_OFFER, LEAVE_APPROVAL, NO_OBJECTION, paramsSchema, PAYSLIP, PROMOTION_DECISION, SALARY_CERTIFICATE, SALARY_TRANSFER, SETTLEMENT_STATEMENT, TERMINATION_NOTICE, WARNING_LETTER,
   type CompanyRecord, type DocumentLanguage, type DocumentTypeDefinition, type EmployeeRecord, type ExitFacts, type PayrollFacts, type BankFacts, type EvaluationFacts, type InvestigationFacts, type LeaveFacts, type SettlementFacts, type TerminationFacts,
 } from '@/lib/documents/types';
 
@@ -39,10 +39,10 @@ const company: CompanyRecord = { id: 'c1', nameArabic: 'شركة أكمي للم
 async function render(
   def: DocumentTypeDefinition,
   language: DocumentLanguage,
-  opts: { terminated?: boolean; signature?: boolean; logo?: boolean; params?: Record<string, unknown>; facts?: ExitFacts; settlement?: SettlementFacts; payroll?: PayrollFacts; termination?: TerminationFacts; investigation?: InvestigationFacts; bank?: BankFacts; leave?: LeaveFacts; evaluation?: EvaluationFacts; addendum?: AddendumFacts } = {},
+  opts: { terminated?: boolean; signature?: boolean; logo?: boolean; params?: Record<string, unknown>; facts?: ExitFacts; settlement?: SettlementFacts; payroll?: PayrollFacts; termination?: TerminationFacts; investigation?: InvestigationFacts; bank?: BankFacts; leave?: LeaveFacts; evaluation?: EvaluationFacts; addendum?: AddendumFacts; commencement?: CommencementFacts } = {},
 ) {
   const emp = opts.terminated ? { ...employee, isTerminated: true, terminationDate: new Date('2026-08-31T21:00:00Z') } : employee;
-  const data = buildContractData(def, { employee: emp, company, params: paramsSchema.parse({ language, ...opts.params }), facts: opts.facts, settlement: opts.settlement, payroll: opts.payroll, termination: opts.termination, investigation: opts.investigation, bank: opts.bank, leave: opts.leave, evaluation: opts.evaluation, addendum: opts.addendum }) as never;
+  const data = buildContractData(def, { employee: emp, company, params: paramsSchema.parse({ language, ...opts.params }), facts: opts.facts, settlement: opts.settlement, payroll: opts.payroll, termination: opts.termination, investigation: opts.investigation, bank: opts.bank, leave: opts.leave, evaluation: opts.evaluation, addendum: opts.addendum, commencement: opts.commencement }) as never;
   const token = newVerifyToken();
   const url = verifyUrl('https://acme.radeef.sa', token);
   const model = buildRenderModel(data, { primaryColor: '#0F4C81', numerals: 'latn', addressAr: 'الرياض، حي العليا', addressEn: null, phone: '+966 11 234 5678', email: null, logoSha256: null }, {
@@ -66,7 +66,7 @@ async function render(
   if (hasOpenssl) expect(opensslVerify(sealed, sealCert.certDer)).toBe(true);
   if (process.env.RENDER_IT_OUT) {
     mkdirSync(process.env.RENDER_IT_OUT, { recursive: true });
-    writeFileSync(path.join(process.env.RENDER_IT_OUT, `${def.code}-${language}${opts.settlement?.settlement?.type === 'LEAVE_SETTLEMENT' ? '-leave' : ''}${opts.terminated ? '-ended' : ''}${opts.signature === false ? '-nosig' : ''}.pdf`), sealed);
+    writeFileSync(path.join(process.env.RENDER_IT_OUT, `${def.code}-${language}${(opts.params?.commencement as { kind?: string } | undefined)?.kind === 'RETURN' ? '-return' : ''}${opts.settlement?.settlement?.type === 'LEAVE_SETTLEMENT' ? '-leave' : ''}${opts.terminated ? '-ended' : ''}${opts.signature === false ? '-nosig' : ''}.pdf`), sealed);
   }
   return { out, token, sealed };
 }
@@ -175,6 +175,16 @@ describe.skipIf(!config)('templates through radeef-render', () => {
   it('promotion decision (title + salary)', async () => {
     const { out } = await render(PROMOTION_DECISION, 'ar', { params: { promotion: { newJobTitleAr: 'مهندس مدني رئيسي', newBasicSalary: 11500, effectiveDate: '2026-10-01', reasonAr: 'تقديرا لأدائه المتميز' } } });
     expect(out.pdf.subarray(0, 5).toString('latin1')).toBe('%PDF-');
+  });
+
+  it('work commencement: joining (automatic, unsigned) and a late return (signed letter)', async () => {
+    const join = await render(WORK_COMMENCEMENT, 'ar', { signature: false, params: { commencement: { kind: 'JOIN' } } });
+    expect(join.out.pdf.subarray(0, 5).toString('latin1')).toBe('%PDF-');
+    const back = await render(WORK_COMMENCEMENT_LETTER, 'ar', {
+      params: { commencement: { kind: 'RETURN', leaveId: 'l1' } },
+      commencement: { leave: { id: 'l1', employeeId: employee.id, leaveType: 'ANNUAL', startDate: new Date('2026-08-31T21:00:00Z'), endDate: new Date('2026-09-09T21:00:00Z'), isReturned: true, actualReturnDate: new Date('2026-09-13T21:00:00Z') } },
+    });
+    expect(back.out.pdf.subarray(0, 5).toString('latin1')).toBe('%PDF-');
   });
 
   it('contract addendum (every kind of term)', async () => {

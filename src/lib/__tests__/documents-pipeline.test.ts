@@ -850,6 +850,42 @@ describe.skipIf(!RUN)('document issuance pipeline (Postgres + radeef-render)', {
     expect(await prisma.employeeChangeOrder.count({ where: { documentId: docE } })).toBe(0);
   });
 
+  it('work commencement: automatic unsigned notice once per confirmed event; the signed letter on request goes through approval', async () => {
+    const e = await newEmployee(2601);
+    const lv = await prisma.leave.create({
+      data: { employeeId: e.employeeId, leaveType: 'ANNUAL', status: 'APPROVED', startDate: new Date('2026-08-31T21:00:00Z'), endDate: new Date('2026-09-09T21:00:00Z'), totalDays: 10 },
+    });
+    // Not confirmed yet: nothing.
+    expect(await svc.issueCommencementNotice({ kind: 'RETURN', leaveId: lv.id })).toBe('NONE');
+    await prisma.leave.update({ where: { id: lv.id }, data: { isReturned: true, actualReturnDate: new Date('2026-09-12T21:00:00Z') } });
+    expect(await svc.issueCommencementNotice({ kind: 'RETURN', leaveId: lv.id })).toBe('ISSUED');
+    expect(await svc.issueCommencementNotice({ kind: 'RETURN', leaveId: lv.id })).toBe('EXISTS');
+    const notice = await prisma.issuedDocument.findFirstOrThrow({ where: { employeeId: e.employeeId, typeKey: 'WORK_COMMENCEMENT' }, include: { snapshot: true } });
+    expect(notice.number).toMatch(/^TST-CMN-\d{4}-\d{6}$/);
+    expect(notice.signatoryId).toBeNull(); // automatic: unsigned, no approval
+    expect(JSON.parse(notice.snapshot.data!).data.commencement).toMatchObject({ kind: 'RETURN', requested: false, date: '2026-09-13', leave: { lateDays: 2 } });
+
+    // Joining, and the sweep does not duplicate the return notice.
+    expect(await svc.issueCommencementNotice({ kind: 'JOIN', employeeId: e.employeeId })).toBe('ISSUED');
+    await svc.issueDueCommencementNotices();
+    expect(await prisma.issuedDocument.count({ where: { employeeId: e.employeeId, typeKey: 'WORK_COMMENCEMENT' } })).toBe(2);
+
+    // The notice cannot be requested by hand; the signed letter can, from the portal, and waits for approval.
+    await expect(svc.createDocumentRequest({ typeKey: 'WORK_COMMENCEMENT', employeeId: e.employeeId, params: { language: 'ar', commencement: { kind: 'JOIN' } }, source: 'PORTAL' }, self(e.employeeId, e.userId), renderer)).rejects.toThrow(/آلياً/);
+    await prisma.documentTypeSetting.create({ data: { companyId, typeKey: 'WORK_COMMENCEMENT_LETTER', signatoryId } });
+    const r = await svc.createDocumentRequest({ typeKey: 'WORK_COMMENCEMENT_LETTER', employeeId: e.employeeId, params: { language: 'ar', commencement: { kind: 'RETURN' } }, source: 'PORTAL' }, self(e.employeeId, e.userId), renderer);
+    expect(r.status).toBe('PENDING_APPROVAL');
+    const req = await prisma.documentRequest.findUniqueOrThrow({ where: { id: r.requestId }, include: { currentSnapshot: true } });
+    expect(JSON.parse(req.currentSnapshot!.data).data.commencement).toMatchObject({ kind: 'RETURN', requested: true, leave: { id: lv.id } }); // latest confirmed return
+    const out = await svc.approveDocumentRequest(r.requestId, req.currentSnapshot!.dataSha256, null, { userId: signatoryUserId, role: 'COMPANY_ADMIN', employeeId: null, ip: null }, renderer);
+    expect(out.status).toBe('ISSUED');
+    expect((await prisma.issuedDocument.findUniqueOrThrow({ where: { id: out.documentId! } })).number).toMatch(/^TST-CML-/);
+
+    // Someone else's leave is refused.
+    const other = await newEmployee(2602);
+    await expect(svc.createDocumentRequest({ typeKey: 'WORK_COMMENCEMENT_LETTER', employeeId: other.employeeId, params: { language: 'ar', commencement: { kind: 'RETURN', leaveId: lv.id } }, source: 'PORTAL' }, self(other.employeeId, other.userId), renderer)).rejects.toThrow();
+  });
+
   it('PAdES seal: every issued PDF is sealed with the company key (one per company, stored encrypted), verifiable and tamper-evident', async () => {
     const e = await newEmployee(1900);
     // Issued whatever the earlier tests left in the policy: the signatory approves when approval is needed.

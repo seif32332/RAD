@@ -19,7 +19,7 @@ import { appendEvent, truncateIp } from './events';
 import { cancelChangeOrder, createChangeOrder } from './change-orders';
 import { grantCandidateAccess } from './candidate';
 import { loadDocumentTexts } from './texts';
-import { loadAddendumFacts, loadEvaluationFacts, loadLeaveFacts, loadBankFacts, loadExitFacts, loadInvestigationFacts, loadPayrollFacts, loadSettlementFacts, loadTerminationFacts } from './facts';
+import { loadAddendumFacts, loadCommencementFacts, loadEvaluationFacts, loadLeaveFacts, loadBankFacts, loadExitFacts, loadInvestigationFacts, loadPayrollFacts, loadSettlementFacts, loadTerminationFacts } from './facts';
 import { employeeUserId, enqueueNotice } from './notify';
 import {
   computeValidUntil, decideSignature, effectivePolicy, needsApproval, validityStatus,
@@ -171,9 +171,10 @@ async function buildMaterialSnapshot(db: Tx, def: DocumentTypeDefinition, subjec
   const leave = def.facts === 'LEAVE' ? await loadLeaveFacts(db, params.leaveId) : undefined;
   const evaluation = def.facts === 'EVALUATION' ? await loadEvaluationFacts(db, params.evaluationId) : undefined;
   const addendum = def.facts === 'ADDENDUM' ? await loadAddendumFacts(db, employeeId, params.addendum?.newBranchId) : undefined;
+  const commencement = def.facts === 'COMMENCEMENT' ? await loadCommencementFacts(db, employeeId, params.commencement?.kind, params.commencement?.leaveId) : undefined;
   let data: Record<string, unknown>;
   try {
-    data = buildContractData(def, { employee, company, params, facts, settlement, payroll, termination, investigation, bank, leave, evaluation, addendum });
+    data = buildContractData(def, { employee, company, params, facts, settlement, payroll, termination, investigation, bank, leave, evaluation, addendum, commencement });
   } catch (e) {
     if (e instanceof ContractValidationError) throw new HttpError(422, e.message, { errors: e.errors });
     throw e;
@@ -993,6 +994,65 @@ export function syncLeaveLetterQuietly(leaveId: string): Promise<void> {
     },
     (e) => console.error('[documents] leave letter:', e instanceof Error ? e.message : e),
   );
+}
+
+// ---------------------------------------------------------------------------
+// Work commencement notices (owner decisions 2026-09-27): issued automatically when HR confirms
+// that an employee started work (approval of a new-hire commencement request) or came back from a
+// leave (confirmation of the return), once per event (sourceRef).
+// ---------------------------------------------------------------------------
+
+export type CommencementEvent = { kind: 'JOIN'; employeeId: string } | { kind: 'RETURN'; leaveId: string };
+
+export async function issueCommencementNotice(ev: CommencementEvent): Promise<'ISSUED' | 'EXISTS' | 'NONE' | 'SKIPPED'> {
+  let employeeId: string;
+  let sourceRef: string;
+  if (ev.kind === 'RETURN') {
+    const l = await prisma.leave.findUnique({ where: { id: ev.leaveId }, select: { id: true, employeeId: true, isReturned: true, actualReturnDate: true } });
+    if (!l || !l.isReturned || !l.actualReturnDate) return 'NONE';
+    employeeId = l.employeeId;
+    sourceRef = `leave:${l.id}:return`;
+  } else {
+    employeeId = ev.employeeId;
+    sourceRef = `employee:${ev.employeeId}:join`;
+  }
+  if (await prisma.documentRequest.findUnique({ where: { typeKey_sourceRef: { typeKey: 'WORK_COMMENCEMENT', sourceRef } }, select: { id: true } })) return 'EXISTS';
+  const commencement = ev.kind === 'RETURN' ? { kind: 'RETURN' as const, leaveId: ev.leaveId } : { kind: 'JOIN' as const };
+  try {
+    await createDocumentRequest({ typeKey: 'WORK_COMMENCEMENT', employeeId, params: { language: 'ar', commencement }, source: 'SYSTEM', sourceRef }, SYSTEM_ACTOR);
+    return 'ISSUED';
+  } catch (e) {
+    if ((e as { code?: string }).code === 'P2002') return 'EXISTS';
+    if (e instanceof HttpError) {
+      console.warn(`[documents] commencement notice ${sourceRef} not issued: ${e.message}`);
+      return 'SKIPPED';
+    }
+    throw e;
+  }
+}
+
+export function issueCommencementNoticeQuietly(ev: CommencementEvent): Promise<void> {
+  return issueCommencementNotice(ev).then(
+    () => undefined,
+    (e) => console.error('[documents] commencement notice:', e instanceof Error ? e.message : e),
+  );
+}
+
+/**
+ * Sweep: returns confirmed in the last 30 days without their notice (a failed or skipped attempt).
+ * Joinings are issued at approval only: a join date the request left empty is filled with a
+ * placeholder, which must never be printed (the approval skips it).
+ */
+export async function issueDueCommencementNotices(limit = 30): Promise<number> {
+  const since = new Date(Date.now() - 30 * 86400e3);
+  const leaves = await prisma.leave.findMany({
+    where: { isReturned: true, actualReturnDate: { gte: since } },
+    orderBy: { actualReturnDate: 'desc' },
+    take: limit,
+    select: { id: true },
+  });
+  for (const l of leaves) await issueCommencementNoticeQuietly({ kind: 'RETURN', leaveId: l.id });
+  return leaves.length;
 }
 
 /**

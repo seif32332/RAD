@@ -182,6 +182,8 @@ export const paramsSchema = z.object({
   promotion: promotionParamsSchema.optional(),
   /** CONTRACT_ADDENDUM only: the terms it changes. */
   addendum: addendumParamsSchema.optional(),
+  /** WORK_COMMENCEMENT(_LETTER) only: on joining, or back from a leave (that leave, or the latest confirmed return). */
+  commencement: z.object({ kind: z.enum(['JOIN', 'RETURN']), leaveId: z.string().trim().min(1).max(64).optional() }).optional(),
   /** JOB_OFFER only: the offer's terms. */
   offer: offerParamsSchema.optional(),
   /** LEAVE_APPROVAL only: the approved leave. */
@@ -427,6 +429,11 @@ export interface EvaluationFacts {
 }
 
 /** An approved leave as its letter needs it. */
+/** The leave a return-to-work commencement is about (null when none is confirmed). */
+export interface CommencementFacts {
+  leave: { id: string; employeeId: string; leaveType: string; startDate: Date; endDate: Date; isReturned: boolean; actualReturnDate: Date | null } | null;
+}
+
 /** What a contract addendum changes from: the file's work location and contract end, and the new branch. */
 export interface AddendumFacts {
   branch: { id: string; nameAr: string } | null;
@@ -493,7 +500,7 @@ export interface DocumentTypeDefinition {
   /** Addressed to the employee himself instead of "to whom it may concern". */
   addressedToEmployee?: boolean;
   /** Extra facts the builder needs (loaded by facts.ts). */
-  facts?: 'EXIT' | 'SETTLEMENT' | 'PAYROLL' | 'TERMINATION' | 'INVESTIGATION' | 'BANK' | 'LEAVE' | 'EVALUATION' | 'ADDENDUM';
+  facts?: 'EXIT' | 'SETTLEMENT' | 'PAYROLL' | 'TERMINATION' | 'INVESTIGATION' | 'BANK' | 'LEAVE' | 'EVALUATION' | 'ADDENDUM' | 'COMMENCEMENT';
   /**
    * Always approved by a human (a financial commitment): settings cannot switch approval off and a
    * pre-authorization does not replace it; unlike approvalLocked it may be requested from the portal.
@@ -542,6 +549,7 @@ export interface BuildInput {
   leave?: LeaveFacts;
   evaluation?: EvaluationFacts;
   addendum?: AddendumFacts;
+  commencement?: CommencementFacts;
 }
 
 const baseBuild = (employee: EmployeeRecord, company: CompanyRecord, params: DocumentParams) => {
@@ -1455,6 +1463,101 @@ export const LEAVE_APPROVAL: DocumentTypeDefinition = {
   },
 };
 
+/**
+ * Work commencement (owner decisions 2026-09-27, SPEC §15 item 36): the employee started work on a
+ * date, either on joining (the file's join date) or back from a leave (the confirmed actual return,
+ * with the delay against the scheduled return when there is one). Two types share the builder and
+ * the template: an automatic, unsigned notice issued when HR confirms the commencement, and a
+ * signed letter the employee or HR requests, approved like any signed letter.
+ */
+function buildCommencement({ employee, company, params, commencement: facts }: BuildInput, requested: boolean) {
+  const b = baseBuild(employee, company, params);
+  const errors = [...b.errors];
+  const kind = params.commencement?.kind ?? 'JOIN';
+  if (kind === 'JOIN') {
+    return { errors, data: { employee: b.employee, company: b.company, commencement: { kind, requested, date: isoDay(employee.joinDate), leave: null } } };
+  }
+  const l = facts?.leave ?? null;
+  if (!l || l.employeeId !== employee.id) {
+    errors.push({ code: 'LEAVE_NOT_FOUND', message: 'لا توجد إجازة مؤكدة العودة لهذا الموظف' });
+    return { errors, data: null };
+  }
+  if (!l.isReturned || !l.actualReturnDate) {
+    errors.push({ code: 'RETURN_NOT_CONFIRMED', message: 'لم تؤكد الموارد البشرية مباشرة الموظف بعد هذه الإجازة' });
+    return { errors, data: null };
+  }
+  const end = isoDay(l.endDate);
+  const scheduled = new Date(`${end}T00:00:00+03:00`);
+  scheduled.setUTCDate(scheduled.getUTCDate() + 1);
+  const actual = isoDay(l.actualReturnDate);
+  const lateDays = Math.max(0, Math.round((Date.parse(`${actual}T00:00:00Z`) - Date.parse(`${isoDay(scheduled)}T00:00:00Z`)) / 86_400_000));
+  return {
+    errors,
+    data: {
+      employee: b.employee,
+      company: b.company,
+      commencement: {
+        kind,
+        requested,
+        date: actual,
+        // Health leaves (sick, maternity) are not named in a letter.
+        leave: { id: l.id, typeAr: LEAVE_TYPES[l.leaveType]?.ar ?? null, startDate: isoDay(l.startDate), endDate: end, scheduledReturn: isoDay(scheduled), lateDays },
+      },
+    },
+  };
+}
+
+const commencementContract = z.object({
+  employee: employeeContract,
+  company: companyContract,
+  commencement: z.object({
+    kind: z.enum(['JOIN', 'RETURN']),
+    /** Signed letter asked for (printed "upon his request"), or the automatic notice. */
+    requested: z.boolean(),
+    date: isoDate,
+    leave: z.object({
+      id: z.string().min(1), typeAr: z.string().nullable(), startDate: isoDate, endDate: isoDate, scheduledReturn: isoDate, lateDays: z.number().int().min(0),
+    }).nullable(),
+  }),
+});
+
+/** Automatic notice (AUTO: no approval, no signature), one per confirmed commencement (sourceRef). */
+export const WORK_COMMENCEMENT: DocumentTypeDefinition = {
+  key: 'WORK_COMMENCEMENT',
+  languages: ['ar'],
+  code: 'CMN',
+  contractVersion: 1,
+  labelAr: 'إشعار مباشرة عمل',
+  labelEn: 'Work Commencement Notice',
+  template: 'work-commencement',
+  templateVersion: 1,
+  staffRoles: ROLE_GROUPS.HR,
+  facts: 'COMMENCEMENT',
+  issuance: 'AUTO',
+  defaults: { selfService: false, requiresApproval: false, validityDays: null },
+  requiresActiveEmployee: true,
+  contract: commencementContract,
+  build: (input) => buildCommencement(input, false),
+};
+
+/** Signed letter on request (portal or HR), e.g. for a government body. */
+export const WORK_COMMENCEMENT_LETTER: DocumentTypeDefinition = {
+  key: 'WORK_COMMENCEMENT_LETTER',
+  languages: ['ar'],
+  code: 'CML',
+  contractVersion: 1,
+  labelAr: 'خطاب مباشرة عمل',
+  labelEn: 'Work Commencement Letter',
+  template: 'work-commencement',
+  templateVersion: 1,
+  staffRoles: ROLE_GROUPS.HR,
+  facts: 'COMMENCEMENT',
+  defaults: { selfService: true, requiresApproval: true, validityDays: null },
+  requiresActiveEmployee: true,
+  contract: commencementContract,
+  build: (input) => buildCommencement(input, true),
+};
+
 const RECOMMENDATIONS: Record<string, string> = {
   NO_ACTION: 'لا إجراء', BONUS: 'مكافأة', PROMOTION: 'ترقية', RAISE: 'زيادة في الراتب', TRAINING: 'تدريب', WARNING: 'إنذار',
   NOTICE: 'لفت نظر', EXTEND_MONITORING: 'تمديد المتابعة', NO_RENEWAL: 'عدم تجديد العقد', TERMINATION: 'إنهاء الخدمة', OTHER: 'أخرى',
@@ -1602,6 +1705,8 @@ export const DOCUMENT_TYPES: Readonly<Record<string, DocumentTypeDefinition>> = 
   [EVALUATION_REPORT.key]: EVALUATION_REPORT,
   [INVESTIGATION_MINUTES.key]: INVESTIGATION_MINUTES,
   [CONTRACT_ADDENDUM.key]: CONTRACT_ADDENDUM,
+  [WORK_COMMENCEMENT.key]: WORK_COMMENCEMENT,
+  [WORK_COMMENCEMENT_LETTER.key]: WORK_COMMENCEMENT_LETTER,
 });
 
 export function getDocumentType(key: string): DocumentTypeDefinition | null {
