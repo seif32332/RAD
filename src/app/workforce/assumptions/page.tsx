@@ -1,7 +1,9 @@
 "use client";
 
-// «الافتراضات»: values no authority publishes (recruitment cost, fee policies...), for all companies or
-// overridden per company. Numbers may carry low / base / high bounds (scenarios).
+// «الافتراضات», three clearly separate parts: (1) the assumptions the owner fills (values no authority
+// publishes: recruitment cost, fee policies...), for all companies or overridden per company; numbers may
+// carry low / base / high bounds (scenarios); (2) «إعدادات الكلفة لكل شركة», read-only here; (3) the total
+// rewards statement toggle. Long explanations are folded (HelpNote).
 // The overtime basis, the medical premiums and the iqama fee are NOT assumptions: they are the company's
 // «إعدادات الكلفة» (set once in the company form, used by payroll and the engine); this page shows them
 // read-only per company with a link to the company edit page.
@@ -19,7 +21,7 @@ import {
   type OvertimeHourlyBasis,
 } from '@/lib/workforce/company-settings';
 import { callApi, useApi } from '../_components/api';
-import { Card, ErrorBlock, LoadingBlock, SelectField, WfPage, buttonClass, inputClass } from '../_components/ui';
+import { Card, ErrorBlock, HelpNote, LoadingBlock, SelectField, WfPage, buttonClass, inputClass } from '../_components/ui';
 
 interface CompanySettingsRow {
   id: string;
@@ -90,8 +92,14 @@ function CompanySettingsPanel({ data }: { data: AssumptionsResponse }) {
   return (
     <Card
       title="إعدادات الكلفة لكل شركة"
-      subtitle="طريقة حساب العمل الإضافي، وأقساط التأمين الطبي، ورسوم الإقامة ليست افتراضات: تُضبط مرة واحدة في إعدادات الشركة، ويستخدمها المسير ومحرك القرارات. قيم مفردة بلا نطاق منخفض/مرتفع."
+      subtitle="تُضبط مرة واحدة في إعدادات الشركة، وتظهر هنا للاطلاع فقط."
     >
+      <div className="mb-3">
+        <HelpNote title="لماذا ليست هنا؟">
+          <p>طريقة حساب العمل الإضافي، وأقساط التأمين الطبي، ورسوم الإقامة ليست افتراضات: تُضبط مرة واحدة في إعدادات الشركة، ويستخدمها المسير ومحرك القرارات.</p>
+          <p>قيم مفردة بلا نطاق منخفض/مرتفع.</p>
+        </HelpNote>
+      </div>
       {rows.length === 0 ? (
         <p className="text-[12.5px] font-bold text-slate-500">لا توجد شركات.</p>
       ) : (
@@ -162,8 +170,14 @@ function TotalRewardsToggle({ state, onSaved }: { state: NonNullable<Assumptions
   return (
     <Card
       title="بيان المكافآت الشاملة للموظفين"
-      subtitle="عند التفعيل يرى كل موظف في بوابته بيانه هو فقط: الراتب والبدلات والمكافآت والإضافي المصروف، وحصة المنشأة في التأمينات، والتأمين الطبي حسب إعدادات الشركة، ونهاية الخدمة المتراكمة (تقديرية حسب المادة 84). لا يظهر فيه دعم هدف."
+      subtitle="هل يرى كل موظف في بوابته ما تنفقه المنشأة عليه؟"
     >
+      <div className="mb-3">
+        <HelpNote title="ماذا يرى الموظف؟">
+          <p>عند التفعيل يرى كل موظف في بوابته بيانه هو فقط: الراتب والبدلات والمكافآت والإضافي المصروف، وحصة المنشأة في التأمينات، والتأمين الطبي حسب إعدادات الشركة، ونهاية الخدمة المتراكمة (تقديرية حسب المادة 84).</p>
+          <p>لا يظهر فيه دعم هدف.</p>
+        </HelpNote>
+      </div>
       <div className="flex flex-wrap items-center justify-between gap-3">
         <p className="flex items-center gap-2 text-[13px] font-black text-slate-800">
           <Gift size={16} className="text-emerald-600" aria-hidden="true" />
@@ -248,7 +262,7 @@ function NumInputs({ id, f, onChange, disabled, allowsRange, bounds }: { id: str
       {allowsRange && !disabled && (
         <label className="inline-flex items-center gap-2 text-[11.5px] font-bold text-slate-600">
           <input type="checkbox" checked={f.ranged} onChange={(e) => onChange({ ...f, ranged: e.target.checked, low: e.target.checked ? f.low || f.base : '', high: e.target.checked ? f.high || f.base : '' })} className="h-3.5 w-3.5 rounded border-slate-300" />
-          نطاق منخفض / أساسي / مرتفع
+          مدى للتقدير (منخفض / أساسي / مرتفع)
         </label>
       )}
     </div>
@@ -322,7 +336,7 @@ function AssumptionsForm({ data, onSaved }: { data: AssumptionsResponse; onSaved
           )}
         </div>
         {key === 'ANNUAL_RAISE_PCT' && <p className="mt-2 text-[11.5px] font-bold text-slate-500">تُطبَّق في يناير من كل سنة على الأساسي، مركّبة، إلا في سنة فيها تغيير راتب مؤرخ للموظف.</p>}
-        {key === 'INCLUDE_HRDF' && <p className="mt-2 text-[11.5px] font-bold text-slate-500">يظهر الدعم سطراً سالباً مستقلاً ومشروطاً بقبول هدف؛ الإجماليات تُعرض قبله وبعده دائماً.</p>}
+        {key === 'INCLUDE_HRDF' && <p className="mt-2 text-[11.5px] font-bold text-slate-500">يظهر الدعم سطراً مستقلاً مشروطاً بقبول هدف، والإجماليات تُعرض قبله وبعده دائماً.</p>}
       </div>
     );
   };
@@ -363,36 +377,47 @@ export default function AssumptionsPage() {
       current="/workforce/assumptions"
       icon={<SlidersHorizontal size={24} />}
       title="الافتراضات"
-      subtitle="قيم لا تنشرها جهة رسمية وتحتاجها الحسابات: كلفة التوظيف، ومن يدفع رسوم المرافقين، وغيرها. الافتراضات العامة تسري على كل الشركات، وإدخال الشركة يتقدم عليها. أقساط التأمين الطبي وطريقة حساب العمل الإضافي ورسوم الإقامة تُضبط في إعدادات الشركة."
+      subtitle="قيم لا تنشرها جهة رسمية وتحتاجها الحسابات، مثل كلفة التوظيف ومن يدفع رسوم المرافقين."
+      help={
+        <>
+          <p>الافتراضات العامة تسري على كل الشركات، وإدخال الشركة يتقدم عليها.</p>
+          <p>القيمة الرقمية يمكن أن يكون لها مدى (منخفض / أساسي / مرتفع) يستخدمه «التقدير» في صفحات الحساب.</p>
+          <p>أقساط التأمين الطبي وطريقة حساب العمل الإضافي ورسوم الإقامة تُضبط في إعدادات الشركة، وتظهر أسفل الصفحة للاطلاع.</p>
+        </>
+      }
     >
-      <div role="tablist" aria-label="نطاق الافتراضات" className="flex gap-2 border-b border-slate-200">
-        {[
-          { k: 'global' as const, l: 'الافتراضات العامة (كل الشركات)' },
-          { k: 'company' as const, l: 'افتراضات شركة' },
-        ].map((t) => (
-          <button
-            key={t.k}
-            type="button"
-            role="tab"
-            aria-selected={tab === t.k}
-            onClick={() => setTab(t.k)}
-            className={`whitespace-nowrap px-4 py-2.5 text-[13px] font-black border-b-2 -mb-px ${tab === t.k ? 'border-indigo-600 text-indigo-700' : 'border-transparent text-slate-500 hover:text-slate-800'}`}
-          >
-            {t.l}
-          </button>
-        ))}
-      </div>
+      <h2 className="text-[18px] font-black text-slate-800">الافتراضات التي تُدخلها</h2>
+      <Card>
+        <div role="tablist" aria-label="نطاق الافتراضات" className="flex gap-2 border-b border-slate-200">
+          {[
+            { k: 'global' as const, l: 'لكل الشركات' },
+            { k: 'company' as const, l: 'لشركة محددة' },
+          ].map((t) => (
+            <button
+              key={t.k}
+              type="button"
+              role="tab"
+              aria-selected={tab === t.k}
+              onClick={() => setTab(t.k)}
+              className={`whitespace-nowrap px-4 py-2.5 text-[13px] font-black border-b-2 -mb-px ${tab === t.k ? 'border-indigo-600 text-indigo-700' : 'border-transparent text-slate-500 hover:text-slate-800'}`}
+            >
+              {t.l}
+            </button>
+          ))}
+        </div>
 
-      {tab === 'company' && (
-        <SelectField
-          className="max-w-md"
-          label="الشركة"
-          value={companyId}
-          onChange={setCompanyId}
-          placeholder="— اختر الشركة —"
-          options={(data?.companies ?? []).map((c) => ({ value: c.id, label: c.hasOverrides ? `${c.name} (لها افتراضات خاصة)` : c.name }))}
-        />
-      )}
+        {tab === 'company' && (
+          <SelectField
+            className="mt-3 max-w-md"
+            label="الشركة"
+            value={companyId}
+            onChange={setCompanyId}
+            placeholder="— اختر الشركة —"
+            options={(data?.companies ?? []).map((c) => ({ value: c.id, label: c.hasOverrides ? `${c.name} (لها افتراضات خاصة)` : c.name }))}
+          />
+        )}
+        {data && tab === 'company' && !companyId && <p className="mt-3 text-[13px] font-bold text-slate-500">اختر شركة لعرض افتراضاتها الخاصة وما يُستخدم لها.</p>}
+      </Card>
 
       {data && !data.canEdit && (
         <p className="flex items-center gap-2 rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-[12.5px] font-bold text-slate-600">
@@ -401,7 +426,6 @@ export default function AssumptionsPage() {
       )}
       {error && <ErrorBlock message={error} onRetry={reload} />}
       {loading && !data && <LoadingBlock label="جارٍ التحميل…" />}
-      {data && tab === 'company' && !companyId && <p className="text-[13px] font-bold text-slate-500">اختر شركة لعرض افتراضاتها الخاصة وما يُستخدم لها.</p>}
       {data && !loading && (tab === 'global' || (companyId && data.companyId === companyId)) && (
         <>
           <AssumptionsForm

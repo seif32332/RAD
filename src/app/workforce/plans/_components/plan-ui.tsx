@@ -1,10 +1,11 @@
 "use client";
 
-// Building blocks of the «خطة القوى العاملة» pages: status badge, response types, the position / raise /
-// header dialogs (mounted only while open, with a key: their state starts from the props) and the «لماذا؟»
-// dialog of a planned item. Display and input only: every number comes from
+// Building blocks of the «خطة القوى العاملة» pages: status badge, the «إجراءات أخرى» menu of a plan, response
+// types, the position / raise / header dialogs (mounted only while open, with a key: their state starts from
+// the props) and the «لماذا؟» dialog of a planned item. Display and input only: every number comes from
 // the API (projectPlan / planVsActual).
-import React, { useId, useState } from 'react';
+import React, { useEffect, useId, useRef, useState } from 'react';
+import { ChevronDown, MoreHorizontal } from 'lucide-react';
 import Modal from '@/components/ui/Modal';
 import { MEDICAL_INSURANCE_CLASSES } from '@/lib/workforce/reasons';
 import {
@@ -133,6 +134,65 @@ export const SEVERITY_CLASS: Record<string, string> = {
   WARNING: 'border-amber-200 bg-amber-50 text-amber-900',
   INFO: 'border-slate-200 bg-slate-50 text-slate-700',
 };
+
+// ---------------------------------------------------------------------------
+// «إجراءات أخرى»: the secondary actions of a plan in one dropdown (Escape or a click outside closes it)
+// ---------------------------------------------------------------------------
+
+export interface MenuAction {
+  key: string;
+  label: string;
+  icon: React.ReactNode;
+  onClick: () => void;
+  disabled?: boolean;
+}
+
+export function ActionsMenu({ actions, label = 'إجراءات أخرى' }: { actions: ReadonlyArray<MenuAction>; label?: string }) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+  const menuId = useId();
+  useEffect(() => {
+    if (!open) return;
+    const onDown = (e: MouseEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setOpen(false);
+    };
+    document.addEventListener('mousedown', onDown);
+    document.addEventListener('keydown', onKey);
+    return () => {
+      document.removeEventListener('mousedown', onDown);
+      document.removeEventListener('keydown', onKey);
+    };
+  }, [open]);
+  if (!actions.length) return null;
+  return (
+    <div ref={ref} className="relative">
+      <button type="button" aria-expanded={open} aria-controls={menuId} onClick={() => setOpen((o) => !o)} className={buttonClass.secondary}>
+        <MoreHorizontal size={16} aria-hidden="true" /> {label} <ChevronDown size={14} className={`transition ${open ? 'rotate-180' : ''}`} aria-hidden="true" />
+      </button>
+      {open && (
+        <div id={menuId} className="absolute left-0 z-30 mt-2 w-60 rounded-2xl border border-slate-200 bg-white p-1.5 shadow-xl">
+          {actions.map((a) => (
+            <button
+              key={a.key}
+              type="button"
+              disabled={a.disabled}
+              onClick={() => {
+                setOpen(false);
+                a.onClick();
+              }}
+              className="flex w-full items-center gap-2 rounded-xl px-3 py-2.5 text-right text-[13px] font-black text-slate-700 hover:bg-slate-50 disabled:opacity-50"
+            >
+              {a.icon} {a.label}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
 
 const WF_STATUSES: ReadonlyArray<string> = ['VERIFIED_PRIMARY', 'CORROBORATED_SECONDARY', 'PROVISIONAL', 'CONFLICTING', 'USER_INPUT', 'MISSING', 'DERIVED'];
 export const asWfStatus = (s: string): WfStatus => (WF_STATUSES.includes(s) ? (s as WfStatus) : 'DERIVED');

@@ -82,12 +82,21 @@ const MOBILE_CONTENT_FIXES = [
   "max-md:[&_.w-full.ml-14]:ml-0",
 ].join(" ");
 
-/** Longest menu href matching the current path ("/" only matches exactly). */
-function findActiveHref(pathname: string, hrefs: string[]): string | null {
+/**
+ * Menu item for the current path: the longest matching href or `activeFor` path ("/" only matches exactly).
+ * Returns the item's own href.
+ */
+function findActiveHref(pathname: string, items: ReadonlyArray<{ href: string; activeFor?: readonly string[] }>): string | null {
   let best: string | null = null;
-  for (const href of hrefs) {
-    const matches = href === "/" ? pathname === "/" : pathname === href || pathname.startsWith(href + "/");
-    if (matches && (!best || href.length > best.length)) best = href;
+  let bestLength = -1;
+  for (const item of items) {
+    for (const path of [item.href, ...(item.activeFor ?? [])]) {
+      const matches = path === "/" ? pathname === "/" : pathname === path || pathname.startsWith(path + "/");
+      if (matches && path.length > bestLength) {
+        best = item.href;
+        bestLength = path.length;
+      }
+    }
   }
   return best;
 }
@@ -196,7 +205,7 @@ export function ShellFrame({ children }: { children: React.ReactNode }) {
 
   const groups = useMemo(() => visibleGroups(role, allowedPages), [role, allowedPages]);
   const activeHref = useMemo(
-    () => findActiveHref(pathname, groups.flatMap((g) => g.items.map((i) => i.href))),
+    () => findActiveHref(pathname, groups.flatMap((g) => g.items)),
     [pathname, groups],
   );
   const filteredGroups = useMemo(() => {

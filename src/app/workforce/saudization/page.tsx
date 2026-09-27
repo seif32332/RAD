@@ -1,13 +1,15 @@
 "use client";
 
-// «مخطط السعودة»: per legal company, the Nitaqat estimate (band gauge with the thresholds of 2026 / 2027 /
-// 2028, margins up and down, consequences), the Qiwa documentation alert, the weights breakdown, the
-// «الوصول إلى نطاق» solver with ranked actions and their monthly cost, and occupation localization
-// compliance. Data: GET /api/workforce/saudization, POST /api/workforce/saudization/solve. Display only.
+// «وضع النطاقات» (section «السعودة ونطاقات»): one compact filter row, then per legal company, in this order:
+// the answer (band, %, gauge with the thresholds of 2026 / 2027 / 2028), the decision (margin before the drop,
+// fewest hires to the next band), the alerts (incl. contracts not documented in Qiwa), then folded: the
+// «الوصول إلى نطاق» solver with ranked actions and their monthly cost, the band consequences, the weights
+// breakdown and occupation localization compliance.
+// Data: GET /api/workforce/saudization, POST /api/workforce/saudization/solve. Display only.
 import React, { Suspense, useMemo, useState } from 'react';
 import Link from 'next/link';
 import { useSearchParams } from 'next/navigation';
-import { AlertTriangle, Save, Settings, ShieldCheck, Target } from 'lucide-react';
+import { AlertTriangle, ChevronDown, Save, Settings, ShieldCheck, Target } from 'lucide-react';
 import { toast } from '@/components/ui/feedback';
 import { todayKey } from '@/lib/dates';
 import type { CompanySaudization, SaudizationAlert } from '@/app/api/workforce/_lib/saudization';
@@ -15,8 +17,7 @@ import type { NitaqatBand, NitaqatEstimate, RestrictedEstimate } from '@/lib/wor
 import type { ComplianceItem, SolveResult, SolverAction } from '@/lib/workforce/saudization';
 import { callApi, useApi } from '../_components/api';
 import { BAND_TEXT, BandBadge, BandGauge, RowStatusBadge } from '../_components/nitaqat-ui';
-import { Card, EmptyBlock, ErrorBlock, ExportButton, LoadingBlock, Money, Num, Segmented, SelectField, StatusBadge, WfPage, WhyButton, WhyDialog, buttonClass, inputClass, type WhyContent } from '../_components/ui';
-import PdfReportButton from '../_components/PdfReportButton';
+import { Card, EmptyBlock, ErrorBlock, ExportMenu, LoadingBlock, Money, Num, Segmented, SelectField, StatusBadge, WfPage, WhyButton, WhyDialog, buttonClass, inputClass, type WhyContent } from '../_components/ui';
 
 interface SaudizationResponse {
   date: string;
@@ -44,6 +45,30 @@ const ACTION_TEXT: Record<SolverAction['kind'], string> = { DOCUMENT: 'توثي�
 
 function isRestricted(e: NitaqatEstimate | RestrictedEstimate): e is RestrictedEstimate {
   return 'restricted' in e && e.restricted === true;
+}
+
+/** A folded detail block of a company card (closed by default). */
+function Fold({ title, open, children }: { title: string; open?: boolean; children: React.ReactNode }) {
+  return (
+    <details className="group rounded-2xl border border-slate-100" open={open}>
+      <summary className="flex cursor-pointer list-none items-center gap-2 px-3 py-2.5 text-[13.5px] font-black text-slate-800 [&::-webkit-details-marker]:hidden">
+        {title}
+        <ChevronDown size={15} className="mr-auto text-slate-400 transition group-open:rotate-180" aria-hidden="true" />
+      </summary>
+      <div className="border-t border-slate-100 p-3 space-y-3">{children}</div>
+    </details>
+  );
+}
+
+/** One decision figure of a company: a big number and one plain line under it. */
+function Decision({ title, figure, children }: { title: string; figure: React.ReactNode; children: React.ReactNode }) {
+  return (
+    <div className="rounded-2xl border border-slate-100 bg-slate-50/60 p-3">
+      <p className="text-[12px] font-black text-slate-500">{title}</p>
+      <p className="mt-1 text-[20px] font-black text-slate-900 leading-tight">{figure}</p>
+      <p className="mt-1 text-[12.5px] font-bold text-slate-600 leading-relaxed">{children}</p>
+    </div>
+  );
 }
 
 function Stat({ label, children }: { label: string; children: React.ReactNode }) {
@@ -207,9 +232,13 @@ function SolverPanel({ c, date }: { c: CompanySaudization; date: string }) {
       {error && <ErrorBlock message={error} />}
       {r && (
         <div className="space-y-3 rounded-2xl border border-indigo-100 bg-indigo-50/40 p-3">
-          <div className="flex justify-end gap-2">
-            <ExportButton kind="saudization" query={{ date }} body={solveBody} disabled={busy} label="تصدير Excel (مع الحل)" />
-            <PdfReportButton kind="saudization" query={{ date }} body={solveBody} disabled={busy} label="تقرير PDF (مع الحل)" />
+          <div className="flex justify-end">
+            <ExportMenu
+              disabled={busy}
+              label="تصدير الحل"
+              excel={{ kind: 'saudization', query: { date }, body: solveBody, label: 'ملف Excel مع الحل' }}
+              pdf={{ kind: 'saudization', query: { date }, body: solveBody, label: 'تقرير PDF مع الحل' }}
+            />
           </div>
           {r.status === 'ALREADY_REACHED' || r.status === 'NO_ACTIVITY' || r.status === 'NO_EMPLOYEES' || r.status === 'UNREACHABLE' ? (
             <p className="text-[13px] font-black text-slate-800">{r.message}</p>
@@ -313,6 +342,9 @@ function CompanyCard({ c, year, date }: { c: CompanySaudization; year: number; d
       evidence: e.evidence,
     });
 
+  const undocumentedShown = e.counts.undocumented > 0 || (!restricted && e.undocumented.length > 0);
+  const complianceCount = c.compliance.items.filter((i) => i.total > 0).length;
+
   return (
     <Card>
       <div className="flex flex-wrap items-start justify-between gap-3">
@@ -334,16 +366,16 @@ function CompanyCard({ c, year, date }: { c: CompanySaudization; year: number; d
           <Link href={c.settingsHref} className={buttonClass.secondary}>
             <Settings size={14} aria-hidden="true" /> النشاط
           </Link>
-          <button type="button" onClick={save} disabled={saving || e.status !== 'OK'} className={buttonClass.secondary}>
-            <Save size={14} aria-hidden="true" /> {saving ? 'جارٍ الحفظ…' : 'حفظ'}
+          <button type="button" onClick={save} disabled={saving || e.status !== 'OK'} className={buttonClass.secondary} title="يحفظ التقدير مع نسخ القواعد المستخدمة للرجوع إليه لاحقاً">
+            <Save size={14} aria-hidden="true" /> {saving ? 'جارٍ الحفظ…' : 'حفظ نسخة'}
           </button>
         </div>
       </div>
 
       <div className="mt-4 space-y-4">
-        <Alerts alerts={c.alerts} />
+        {/* 1. The answer: band, %, gauge. */}
         {e.status !== 'OK' ? (
-          <p className="rounded-2xl border border-dashed border-slate-300 p-4 text-[13px] font-bold text-slate-600">
+          <p className="rounded-xl bg-slate-50 px-3 py-2 text-[12.5px] font-bold text-slate-600">
             {e.message}{' '}
             {e.status === 'NO_ACTIVITY' && (
               <Link href={c.settingsHref} className="text-indigo-700 underline">
@@ -358,119 +390,136 @@ function CompanyCard({ c, year, date }: { c: CompanySaudization; year: number; d
               <span className="text-[26px] font-black text-slate-900" dir="ltr">{e.pct}%</span>
               <WhyButton onClick={openWhy} label={`نطاق ${c.companyName}`} />
               <StatusBadge status={e.overallStatus} />
+              {e.average26w && (
+                <span className="text-[12px] font-bold text-slate-500">
+                  {'متوسط 26 أسبوعاً (تعتمده قوى): '}
+                  <span dir="ltr">{e.average26w.pct}%</span>
+                </span>
+              )}
               {year !== e.year && <span className="text-[11.5px] font-bold text-slate-500">{`بثوابت ${year} وبالعمالة الحالية (التقدير الأساسي ${e.year}: ${e.band ? BAND_TEXT[e.band] : '—'})`}</span>}
             </div>
             {!e.smallEntity && <BandGauge pct={e.pct} thresholds={gaugeThresholds} label={`نسبة التوطين وحدود النطاقات ${year}`} />}
             {e.smallEntity && <p className="text-[12px] font-bold text-slate-500">الكيان بخمسة عمال فأقل: أخضر منخفض بسعودي واحد محتسب، وإلا أحمر.</p>}
-            <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
-              <Stat label="العاملون المحتسبون (X)"><Num value={e.counts.x} /></Stat>
-              <Stat label="السعوديون الموزونون"><Num value={e.counts.saudiWeighted} /></Stat>
-              <Stat label="الوافدون"><Num value={e.counts.expats} /></Stat>
-              <Stat label="متوسط 26 أسبوعاً">{e.average26w ? <span dir="ltr">{e.average26w.pct}%</span> : '—'}</Stat>
+
+            {/* 2. The decision: how far from dropping, how many hires to go up. */}
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+              <Decision
+                title="الهامش قبل الهبوط"
+                figure={e.margin.down ? (e.margin.down.pctCushion !== null ? <><span dir="ltr">{e.margin.down.pctCushion}</span> نقطة</> : `خروج ${e.margin.down.saudiExitsBeforeDrop} سعودي`) : 'لا يوجد'}
+              >
+                {e.margin.down
+                  ? `قبل الهبوط إلى ${BAND_TEXT[e.margin.down.band]}: يتحمل ${e.margin.down.expatsBeforeDrop ?? 'أكثر من 5000'} وافداً إضافياً أو خروج ${e.margin.down.saudiExitsBeforeDrop} سعودي.`
+                  : 'في النطاق الأحمر.'}
+              </Decision>
+              <Decision
+                title="أقل عدد تعيينات للنطاق الأعلى"
+                figure={e.margin.up ? (e.margin.up.saudiHires !== null ? <><Num value={e.margin.up.saudiHires} /> تعيين سعودي</> : 'غير ممكن ضمن حد البحث') : '—'}
+              >
+                {e.margin.up
+                  ? `للوصول إلى ${BAND_TEXT[e.margin.up.band]}${e.margin.up.pctGap !== null ? ` (ينقص ${e.margin.up.pctGap} نقطة)` : ''}، بتعيين سعوديين بوزن كامل (أجر 4,000 فأكثر). الخطة وكلفتها في «الوصول إلى نطاق» أدناه.`
+                  : 'في أعلى نطاق متاح.'}
+              </Decision>
             </div>
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-3 text-[12.5px] font-bold text-slate-700">
-              <div className="rounded-2xl border border-slate-100 p-3">
-                <p className="font-black text-slate-800">الهامش للأعلى</p>
-                {e.margin.up ? (
-                  <p className="mt-1">{`${BAND_TEXT[e.margin.up.band]}: ${e.margin.up.pctGap !== null ? `${e.margin.up.pctGap} نقطة، ` : ''}${e.margin.up.saudiHires !== null ? `${e.margin.up.saudiHires} تعيين سعودي بوزن 1` : 'غير ممكن ضمن حد البحث'}`}</p>
-                ) : (
-                  <p className="mt-1">في أعلى نطاق متاح.</p>
-                )}
-              </div>
-              <div className="rounded-2xl border border-slate-100 p-3">
-                <p className="font-black text-slate-800">الهامش قبل الهبوط</p>
-                {e.margin.down ? (
-                  <p className="mt-1">{`إلى ${BAND_TEXT[e.margin.down.band]}: ${e.margin.down.pctCushion !== null ? `${e.margin.down.pctCushion} نقطة، ` : ''}يتحمل ${e.margin.down.expatsBeforeDrop ?? 'أكثر من 5000'} وافداً إضافياً أو خروج ${e.margin.down.saudiExitsBeforeDrop} سعودي`}</p>
-                ) : (
-                  <p className="mt-1">في النطاق الأحمر.</p>
-                )}
-              </div>
-            </div>
-            {e.consequences && (
-              <div className="rounded-2xl border border-slate-100 p-3 text-[12.5px] font-bold text-slate-700">
-                <p className="font-black text-slate-800">{`آثار ${e.band ? BAND_TEXT[e.band] : ''}`}</p>
-                <ul className="mt-1 list-disc pr-5 space-y-0.5">
-                  {e.consequences.items.map((i) => (
-                    <li key={i}>{i}</li>
-                  ))}
-                </ul>
-                {e.consequences.conflict && <p className="mt-2 rounded-lg bg-rose-50 px-2 py-1 text-rose-800">{e.consequences.conflict}</p>}
-              </div>
-            )}
           </>
         )}
 
-        {(e.counts.undocumented > 0 || (!restricted && e.undocumented.length > 0)) && (
+        {/* 3. Alerts. */}
+        <Alerts alerts={c.alerts} />
+        {undocumentedShown && (
           <div className="rounded-2xl border border-rose-200 bg-rose-50 p-3 text-[12.5px] font-bold text-rose-900">
             <p className="font-black">{`عقود غير موثّقة في قوى: ${e.counts.undocumented}`}</p>
             <p className="mt-1">لا تُحتسب في نطاقات منذ 15 أبريل 2026. توثيقها إجراء دون كلفة.</p>
             {!restricted && e.undocumented.length > 0 && (
-              <ul className="mt-1 list-disc pr-5">
-                {e.undocumented.map((u) => (
-                  <li key={u.id}>
-                    <Link href={`/employees/${u.id}`} className="underline">{u.name}</Link> {`(يضيف ${u.potentialWeight})`}
-                  </li>
-                ))}
-              </ul>
+              <details className="group mt-2">
+                <summary className="cursor-pointer list-none text-[12px] font-black text-rose-800 underline [&::-webkit-details-marker]:hidden">
+                  <span className="group-open:hidden">{`عرض الأسماء (${e.undocumented.length})`}</span>
+                  <span className="hidden group-open:inline">إخفاء الأسماء</span>
+                </summary>
+                <ul className="mt-2 flex flex-wrap gap-1.5">
+                  {e.undocumented.map((u) => (
+                    <li key={u.id}>
+                      <Link href={`/employees/${u.id}`} className="inline-block rounded-lg border border-rose-200 bg-white px-2 py-1 text-[11.5px] font-black text-rose-800 hover:bg-rose-100">
+                        {u.name} <span className="font-bold text-rose-500">{`+${u.potentialWeight}`}</span>
+                      </Link>
+                    </li>
+                  ))}
+                </ul>
+              </details>
             )}
             {restricted && <p className="mt-1 text-[11.5px]">الأسماء متاحة لمدير الموارد البشرية وصاحب العمل.</p>}
           </div>
         )}
 
-        {e.breakdown.length > 0 && (
-          <div className="overflow-x-auto">
-            <table className="w-full min-w-[420px] text-[12.5px]">
-              <caption className="text-right text-[13px] font-black text-slate-800 mb-2">فئات الاحتساب</caption>
-              <thead>
-                <tr className="border-b border-slate-200 text-slate-500">
-                  <th scope="col" className="py-2 text-right font-black">الفئة</th>
-                  <th scope="col" className="py-2 text-right font-black">العدد</th>
-                  <th scope="col" className="py-2 text-right font-black">المحتسب</th>
-                </tr>
-              </thead>
-              <tbody>
-                {e.breakdown.map((b) => (
-                  <tr key={b.weightClass} className="border-b border-slate-100 font-bold text-slate-700">
-                    <th scope="row" className="py-1.5 text-right font-bold">{b.label}</th>
-                    <td className="py-1.5"><Num value={b.persons} /></td>
-                    <td className="py-1.5"><Num value={b.weight} /></td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-            {restricted && <p className="mt-1 text-[11.5px] font-bold text-slate-500">السعوديون والخليجيون في سطر واحد؛ تفصيل الفئات (ومنها الفئات المرجّحة الخاصة) لمدير الموارد البشرية وصاحب العمل.</p>}
-          </div>
-        )}
-
+        {/* 4. Detail, folded. */}
         {e.status === 'OK' && (
-          <details className="rounded-2xl border border-slate-100 p-3" open>
-            <summary className="cursor-pointer text-[14px] font-black text-slate-800">الوصول إلى نطاق</summary>
-            <div className="mt-3">
-              <SolverPanel c={c} date={date} />
-            </div>
-          </details>
+          <Fold title="الوصول إلى نطاق: الإجراءات وكلفتها" open={e.band === 'RED'}>
+            <SolverPanel c={c} date={date} />
+          </Fold>
         )}
 
-        <details className="rounded-2xl border border-slate-100 p-3">
-          <summary className="cursor-pointer text-[14px] font-black text-slate-800">{`قرارات توطين المهن (${c.compliance.items.filter((i) => i.total > 0).length})`}</summary>
-          <div className="mt-3 space-y-2">
-            {c.compliance.unknownOccupation.count > 0 && (
-              <p className="rounded-xl bg-amber-50 px-3 py-2 text-[12px] font-bold text-amber-900">{`${c.compliance.unknownOccupation.count} موظف بمهنة غير محددة: لا يمكن فحصهم مقابل قرارات التوطين.`}</p>
-            )}
-            <ComplianceTable items={c.compliance.items} canSeeNames={!restricted} />
-          </div>
-        </details>
-
-        {e.flags.length > 0 && (
-          <details className="text-[12px] font-bold text-slate-600">
-            <summary className="cursor-pointer text-slate-700">{`ملاحظات الحساب (${e.flags.length})`}</summary>
-            <ul className="mt-2 space-y-1">
-              {e.flags.map((f, i) => (
-                <li key={`${f.code}-${i}`}>{`• ${f.message}`}</li>
+        {e.consequences && (
+          <Fold title={`ماذا يعني ${e.band ? BAND_TEXT[e.band] : 'النطاق'}؟`}>
+            <ul className="list-disc pr-5 space-y-0.5 text-[12.5px] font-bold text-slate-700">
+              {e.consequences.items.map((i) => (
+                <li key={i}>{i}</li>
               ))}
             </ul>
-          </details>
+            {e.consequences.conflict && <p className="rounded-lg bg-rose-50 px-2 py-1 text-[12.5px] font-bold text-rose-800">{e.consequences.conflict}</p>}
+          </Fold>
         )}
+
+        {(e.status === 'OK' || e.breakdown.length > 0 || e.flags.length > 0) && (
+          <Fold title="تفاصيل الاحتساب">
+            {e.status === 'OK' && (
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                <Stat label="العاملون المحتسبون"><Num value={e.counts.x} /></Stat>
+                <Stat label="السعوديون الموزونون"><Num value={e.counts.saudiWeighted} /></Stat>
+                <Stat label="الوافدون"><Num value={e.counts.expats} /></Stat>
+              </div>
+            )}
+            {e.breakdown.length > 0 && (
+              <div className="overflow-x-auto">
+                <table className="w-full min-w-[420px] text-[12.5px]">
+                  <caption className="text-right text-[13px] font-black text-slate-800 mb-2">فئات الاحتساب</caption>
+                  <thead>
+                    <tr className="border-b border-slate-200 text-slate-500">
+                      <th scope="col" className="py-2 text-right font-black">الفئة</th>
+                      <th scope="col" className="py-2 text-right font-black">العدد</th>
+                      <th scope="col" className="py-2 text-right font-black">المحتسب</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {e.breakdown.map((b) => (
+                      <tr key={b.weightClass} className="border-b border-slate-100 font-bold text-slate-700">
+                        <th scope="row" className="py-1.5 text-right font-bold">{b.label}</th>
+                        <td className="py-1.5"><Num value={b.persons} /></td>
+                        <td className="py-1.5"><Num value={b.weight} /></td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+                {restricted && <p className="mt-1 text-[11.5px] font-bold text-slate-500">السعوديون والخليجيون في سطر واحد؛ تفصيل الفئات (ومنها الفئات المرجّحة الخاصة) لمدير الموارد البشرية وصاحب العمل.</p>}
+              </div>
+            )}
+            {e.flags.length > 0 && (
+              <div className="text-[12px] font-bold text-slate-600">
+                <p className="font-black text-slate-700">{`ملاحظات الحساب (${e.flags.length})`}</p>
+                <ul className="mt-1 space-y-1">
+                  {e.flags.map((f, i) => (
+                    <li key={`${f.code}-${i}`}>{`• ${f.message}`}</li>
+                  ))}
+                </ul>
+              </div>
+            )}
+          </Fold>
+        )}
+
+        <Fold title={`قرارات توطين المهن (${complianceCount})`}>
+          {c.compliance.unknownOccupation.count > 0 && (
+            <p className="rounded-xl bg-amber-50 px-3 py-2 text-[12px] font-bold text-amber-900">{`${c.compliance.unknownOccupation.count} موظف بمهنة غير محددة: لا يمكن فحصهم مقابل قرارات التوطين.`}</p>
+          )}
+          <ComplianceTable items={c.compliance.items} canSeeNames={!restricted} />
+        </Fold>
       </div>
       <WhyDialog content={why} onClose={() => setWhy(null)} />
     </Card>
@@ -499,29 +548,32 @@ function SaudizationInner() {
   return (
     <WfPage
       icon={<ShieldCheck size={24} />}
-      title="مخطط السعودة"
-      subtitle="نطاق كل شركة قانونية تقديرياً بأوزان قوى وسقوفها، والهامش قبل الهبوط، وأقل عدد تعيينات للوصول إلى نطاق بكلفته بعد دعم هدف، والتزام قرارات توطين المهن."
+      title="وضع النطاقات"
+      subtitle="أين تقف كل شركة قانونية في نطاقات، وكم يبقى قبل الهبوط، وأقل عدد تعيينات للنطاق الأعلى."
       current="/workforce/saudization"
-      actions={<><ExportButton kind="saudization" query={{ date, companyId }} disabled={!data || loading} /><PdfReportButton kind="saudization" query={{ date, companyId }} disabled={!data || loading} /></>}
+      help={
+        <>
+          <p>نطاق كل شركة قانونية تقديري، بأوزان قوى وسقوفها: يُحتسب السعودي بحسب أجره المسجّل في التأمينات، ولا تُحتسب إلا عقود قوى الموثّقة منذ 15 أبريل 2026.</p>
+          <p>التقدير لحظي في التاريخ المختار، وقوى تعتمد متوسط 26 أسبوعاً، ويظهر بجانب النسبة للمقارنة.</p>
+          <p>«الوصول إلى نطاق» يحسب أقل عدد تعيينات للوصول إلى النطاق المستهدف، وكلفتها الشهرية بعد دعم هدف. ويظهر لكل شركة التزامها بقرارات توطين المهن.</p>
+        </>
+      }
+      actions={<ExportMenu disabled={!data || loading} excel={{ kind: 'saudization', query: { date, companyId } }} pdf={{ kind: 'saudization', query: { date, companyId } }} />}
     >
       <Card>
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 items-end">
-          <div>
+        <div className="flex flex-wrap items-end gap-3">
+          <div className="w-full sm:w-44">
             <label htmlFor="sz-date" className="block text-[12px] font-extrabold text-slate-600 mb-1.5">تاريخ التقدير</label>
             <input id="sz-date" type="date" className={inputClass} value={date} onChange={(e) => setDate(e.target.value || todayKey())} />
           </div>
-          <SelectField label="الشركة القانونية" value={companyId} onChange={setCompanyId} placeholder="كل الشركات" options={companyOptions} />
+          <SelectField label="الشركة القانونية" value={companyId} onChange={setCompanyId} placeholder="كل الشركات" options={companyOptions} className="w-full sm:w-64" />
           <Segmented label="حدود النطاقات لسنة" value={year} options={years.map((y) => ({ value: y, label: String(y) }))} onChange={setYear} />
-          <Link href="/workforce/nitaqat-register" className={buttonClass.secondary}>سجل نطاقات والتوطين</Link>
         </div>
-        <p className="mt-3 text-[11.5px] font-bold text-slate-500">
-          تقدير لحظي بأوزان قوى (الأجر المسجّل في التأمينات) وبعقود قوى الموثّقة فقط منذ 15 أبريل 2026. قوى تعتمد متوسط 26 أسبوعاً، ويظهر للمقارنة.
-        </p>
       </Card>
       {error && <ErrorBlock message={error} onRetry={reload} />}
       {loading && !data && <LoadingBlock />}
       {data && !data.companies.length && <EmptyBlock text="لا توجد شركات قانونية لها موظفون أو نشاط نطاقات." />}
-      {data && data.activitiesCount === 0 && <ErrorBlock message="سجل نطاقات فارغ: لا توجد أنشطة وثوابت. شغّل بذرة السجل أو أضفها من «سجل نطاقات والتوطين»." />}
+      {data && data.activitiesCount === 0 && <ErrorBlock message="سجل نطاقات فارغ: لا توجد أنشطة وثوابت. شغّل بذرة السجل أو أضفها من تبويب «الأنشطة وقرارات التوطين»." />}
       <div className="space-y-5">
         {data?.companies.map((c) => (
           <CompanyCard key={`${c.companyId}-${data.date}`} c={c} year={year} date={data.date} />

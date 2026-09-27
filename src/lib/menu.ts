@@ -136,6 +136,8 @@ export interface MenuItem {
    * operations group). Shown only when the role does not already see the page in another group.
    */
   secondary?: boolean;
+  /** Other paths (and their sub-paths) that highlight this item: a section whose pages are tabs. */
+  activeFor?: readonly string[];
 }
 
 export interface MenuGroup {
@@ -249,18 +251,13 @@ export const MENU_GROUPS: readonly MenuGroup[] = [
     legacyHeadings: [],
     defaultRoles: ROLE_GROUPS.WORKFORCE,
     items: [
-      { href: '/workforce', label: 'لوحة القرار', iconName: 'Gauge', iconClassName: 'text-indigo-500', roles: PAGE_ROLES.workforce },
-      { href: '/workforce/true-cost', label: 'الكلفة الحقيقية', iconName: 'Calculator', iconClassName: 'text-emerald-500', roles: PAGE_ROLES.workforce },
-      { href: '/workforce/exit-cost', label: 'كلفة الإنهاء', iconName: 'UserMinus', iconClassName: 'text-rose-500', roles: PAGE_ROLES.workforce },
-      { href: '/workforce/saudization', label: 'مخطط السعودة', iconName: 'ShieldCheck', iconClassName: 'text-green-600', roles: PAGE_ROLES.workforce },
-      { href: '/workforce/hire-scenario', label: 'سيناريوهات التوظيف', iconName: 'UserPlus', iconClassName: 'text-sky-500', roles: PAGE_ROLES.workforce },
-      { href: '/workforce/plans', label: 'خطة القوى العاملة', iconName: 'ClipboardList', iconClassName: 'text-violet-500', roles: PAGE_ROLES.workforce },
-      { href: '/workforce/sensitivity', label: 'حساسية القرار', iconName: 'Scale', iconClassName: 'text-fuchsia-500', roles: PAGE_ROLES.workforce },
-      { href: '/workforce/benchmarks', label: 'المؤشرات الداخلية', iconName: 'ChartColumn', iconClassName: 'text-cyan-600', roles: PAGE_ROLES.workforce },
-      { href: '/workforce/nitaqat-register', label: 'سجل نطاقات والتوطين', iconName: 'Landmark', iconClassName: 'text-emerald-700', roles: PAGE_ROLES.workforce },
-      { href: '/workforce/assumptions', label: 'الافتراضات', iconName: 'SlidersHorizontal', iconClassName: 'text-amber-500', roles: PAGE_ROLES.workforce },
-      { href: '/workforce/rules', label: 'سجل القواعد والأدلة', iconName: 'BookOpenCheck', iconClassName: 'text-teal-600', roles: PAGE_ROLES.workforce },
-      { href: '/workforce/calculations', label: 'الحسابات المحفوظة', iconName: 'Archive', iconClassName: 'text-slate-500', roles: PAGE_ROLES.workforce },
+      // Six entries, one per question; the pages of a section are tabs inside it (src/app/workforce/_components/ui.tsx WF_SECTIONS).
+      { href: '/workforce', label: 'نظرة عامة', iconName: 'Gauge', iconClassName: 'text-indigo-500', roles: PAGE_ROLES.workforce },
+      { href: '/workforce/true-cost', label: 'الكلفة', iconName: 'Calculator', iconClassName: 'text-emerald-500', roles: PAGE_ROLES.workforce, activeFor: ['/workforce/exit-cost'] },
+      { href: '/workforce/saudization', label: 'السعودة ونطاقات', iconName: 'ShieldCheck', iconClassName: 'text-green-600', roles: PAGE_ROLES.workforce, activeFor: ['/workforce/nitaqat-register'] },
+      { href: '/workforce/hire-scenario', label: 'التوظيف والتخطيط', iconName: 'UserPlus', iconClassName: 'text-sky-500', roles: PAGE_ROLES.workforce, activeFor: ['/workforce/plans', '/workforce/sensitivity'] },
+      { href: '/workforce/benchmarks', label: 'مؤشرات المنشأة', iconName: 'ChartColumn', iconClassName: 'text-cyan-600', roles: PAGE_ROLES.workforce },
+      { href: '/workforce/assumptions', label: 'الإعدادات والمصادر', iconName: 'SlidersHorizontal', iconClassName: 'text-amber-500', roles: PAGE_ROLES.workforce, activeFor: ['/workforce/rules', '/workforce/calculations'] },
     ],
   },
   {

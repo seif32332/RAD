@@ -1,10 +1,10 @@
 "use client";
 
-// «سجل القواعد والأدلة»: every regulatory value with its versions, effective dates, evidence status, source
-// link and quote, grouped by domain. SUPER_ADMIN adds a NEW version (history is never edited).
-// GET/POST /api/workforce/rules.
+// «القواعد النظامية ومصادرها» (the evidence register): every regulatory value with its versions, effective
+// dates, evidence status, source link and quote, one folded card per domain (opened while filtering).
+// SUPER_ADMIN adds a NEW version (history is never edited). GET/POST /api/workforce/rules.
 import React, { useMemo, useState } from 'react';
-import { BookOpenCheck, ExternalLink, Plus } from 'lucide-react';
+import { BookOpenCheck, ChevronDown, ExternalLink, Plus } from 'lucide-react';
 import Modal from '@/components/ui/Modal';
 import { confirmDialog, toast } from '@/components/ui/feedback';
 import { formatDate, todayKey } from '@/lib/dates';
@@ -12,7 +12,7 @@ import type { WfStatus } from '@/lib/workforce/types';
 import type { RuleDomainView, RuleKeyView, RuleVersionView } from '@/app/api/workforce/_lib/views';
 import { RULE_INPUT_STATUSES, STATUS_LABELS, UNIT_LABELS, domainLabel, formatRuleValue } from '@/app/api/workforce/_lib/shared';
 import { callApi, useApi } from '../_components/api';
-import { Card, EmptyBlock, ErrorBlock, ExportButton, LoadingBlock, SelectField, StatusBadge, WfPage, buttonClass, inputClass } from '../_components/ui';
+import { Card, EmptyBlock, ErrorBlock, ExportMenu, LoadingBlock, SelectField, StatusBadge, WfPage, buttonClass, inputClass } from '../_components/ui';
 
 interface RulesResponse {
   today: string;
@@ -107,6 +107,8 @@ export default function RulesPage() {
       .filter((d) => d.keys.length);
   }, [data, statusFilter, search]);
 
+  const filtering = !!statusFilter || !!search.trim();
+
   const counts = useMemo(() => {
     const c: Partial<Record<WfStatus, number>> = {};
     for (const d of data?.domains ?? []) for (const k of d.keys) for (const v of k.versions) c[v.status] = (c[v.status] ?? 0) + 1;
@@ -151,13 +153,20 @@ export default function RulesPage() {
     <WfPage
       current="/workforce/rules"
       icon={<BookOpenCheck size={24} />}
-      title="سجل القواعد والأدلة"
-      subtitle="كل قيمة نظامية يستخدمها المحرك بإصداراتها وتواريخ سريانها ومصدرها وحالتها. يُضاف إصدار جديد ولا يُعدَّل التاريخ."
+      title="القواعد النظامية ومصادرها"
+      subtitle="القيم النظامية التي يستخدمها المحرك ومصدر كل منها. نادراً ما تحتاج إلى تعديل شيء هنا."
+      help={
+        <>
+          <p>كل قيمة نظامية يستخدمها المحرك بإصداراتها وتواريخ سريانها ومصدرها وحالة دليلها.</p>
+          <p>التعديل بإضافة إصدار جديد بتاريخ سريانه، ولا يُعدَّل التاريخ ولا يُحذف، لتبقى الحسابات المحفوظة قابلة للتفسير.</p>
+          <p>نسب التأمينات تأتي من جدول نسب التأمينات وتُحدَّث بترحيل قاعدة البيانات، لا من هذه الشاشة.</p>
+        </>
+      }
       actions={
         <>
-          <ExportButton kind="rules" disabled={!data || loading} />
+          <ExportMenu disabled={!data || loading} excel={{ kind: 'rules' }} />
           {data?.canAddVersion && (
-            <button type="button" className={buttonClass.primary} onClick={() => setDraft(emptyDraft())}>
+            <button type="button" className={buttonClass.secondary} onClick={() => setDraft(emptyDraft())}>
               <Plus size={16} aria-hidden="true" /> إضافة إصدار جديد
             </button>
           )}
@@ -185,8 +194,19 @@ export default function RulesPage() {
       {data && !domains.length && <EmptyBlock text="لا توجد قواعد مطابقة." />}
 
       {domains.map((d) => (
-        <Card key={d.domain} title={domainLabel(d.domain)} subtitle={`${d.keys.length} قاعدة`}>
-          <ul className="space-y-3">
+        <details
+          key={`${d.domain}|${filtering ? 'f' : ''}`}
+          open={filtering || undefined}
+          className="group rounded-3xl border border-slate-100 bg-white shadow-[0_10px_30px_rgba(0,0,0,0.02)]"
+        >
+          <summary className="flex cursor-pointer list-none items-center gap-3 p-5 sm:p-6 [&::-webkit-details-marker]:hidden">
+            <div className="min-w-0 flex-1">
+              <h2 className="text-[16px] font-black text-slate-800">{domainLabel(d.domain)}</h2>
+              <p className="mt-1 text-[12px] font-bold text-slate-500">{`${d.keys.length} قاعدة`}</p>
+            </div>
+            <ChevronDown size={20} className="shrink-0 text-slate-400 transition group-open:rotate-180" aria-hidden="true" />
+          </summary>
+          <ul className="space-y-3 border-t border-slate-100 p-4 sm:p-6">
             {d.keys.map((k) => {
               const shown = k.current ?? k.versions[k.versions.length - 1];
               const future = k.versions.filter((v) => v.state === 'FUTURE');
@@ -232,7 +252,7 @@ export default function RulesPage() {
               );
             })}
           </ul>
-        </Card>
+        </details>
       ))}
 
       <Modal open={!!draft} onClose={() => setDraft(null)} busy={saving} title="إضافة إصدار جديد" description="لا يُعدَّل إصدار سابق: يُضاف إصدار بتاريخ سريانه." tone="indigo" size="lg">

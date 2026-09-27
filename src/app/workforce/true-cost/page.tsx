@@ -1,12 +1,13 @@
 "use client";
 
-// «الكلفة الحقيقية»: employer cost per employee (monthly now, 12 / 36 months, after the HRDF subsidy,
-// data flags) and, for one employee (?employeeId=), the month-by-month lines with «لماذا؟» (formula +
-// every rule used with its status, effective date and source). Data: GET /api/workforce/true-cost.
+// «الكلفة الحقيقية» (tab «كلفة الموظفين»): filters first (scope and search; the scenario, sort and «with
+// notes only» folded under «خيارات أكثر»), then the rounded totals, then the employee list. For one employee
+// (?employeeId=): the month-by-month lines with «لماذا؟» (formula + every rule used with its status,
+// effective date and source). Exports: one «تصدير» menu (Excel + PDF). Data: GET /api/workforce/true-cost.
 import React, { Suspense, useEffect, useMemo, useState } from 'react';
 import Link from 'next/link';
 import { useRouter, useSearchParams } from 'next/navigation';
-import { ArrowRight, Calculator, Download, Save, Search, UserMinus } from 'lucide-react';
+import { ArrowRight, Calculator, ChevronDown, Info, Save, Search, SlidersHorizontal, UserMinus } from 'lucide-react';
 import { toast } from '@/components/ui/feedback';
 import type { CostLine, Scenario } from '@/lib/workforce/types';
 import {
@@ -17,20 +18,21 @@ import {
   SCENARIOS,
   SCENARIO_LABELS,
   evidenceForLine,
-  toCsv,
   windowField,
   type Horizon,
 } from '@/app/api/workforce/_lib/shared';
-import { callApi, downloadText, useApi } from '../_components/api';
+import { callApi, useApi } from '../_components/api';
 import type { EmployeeSummary, OptionsResponse, TrueCostDetail, TrueCostResponse } from '../_components/types';
 import {
   Card,
   EmptyBlock,
   ErrorBlock,
-  ExportButton,
+  ExportMenu,
   LoadingBlock,
   Money,
   Num,
+  SCENARIO_FIELD_HINT,
+  SCENARIO_FIELD_LABEL,
   Segmented,
   SelectField,
   SeriesChart,
@@ -42,7 +44,6 @@ import {
   inputClass,
   type WhyContent,
 } from '../_components/ui';
-import PdfReportButton from '../_components/PdfReportButton';
 
 const PAGE = 50;
 
@@ -91,12 +92,6 @@ function EmployeeDetail({ detail, horizon, scenario, onClose }: { detail: TrueCo
     else toast.error(res.message);
   };
 
-  const exportCsv = () => {
-    const rows: Array<Array<string | number | null>> = [['الشهر', 'البند', 'النوع', 'المبلغ', 'الحساب', 'الحالة']];
-    for (const m of months) for (const l of m.lines) rows.push([m.month, l.label, l.kind === 'COST' ? 'كلفة' : l.kind === 'SUBSIDY' ? 'دعم' : 'للعلم', l.amount, l.basis, l.status]);
-    downloadText(`true-cost-${s.employeeNo ?? s.employeeId}.csv`, toCsv(rows));
-  };
-
   return (
     <Card>
       <div className="flex flex-col lg:flex-row lg:items-start justify-between gap-4">
@@ -117,13 +112,9 @@ function EmployeeDetail({ detail, horizon, scenario, onClose }: { detail: TrueCo
           <Link href={`/workforce/exit-cost?employeeId=${s.employeeId}`} className={buttonClass.secondary}>
             <UserMinus size={16} aria-hidden="true" /> كلفة الإنهاء
           </Link>
-          <button type="button" onClick={exportCsv} className={buttonClass.secondary}>
-            <Download size={16} aria-hidden="true" /> تصدير CSV
-          </button>
-          <ExportButton kind="true-cost" query={{ employeeId: s.employeeId, months: horizon, scenario }} />
-          <PdfReportButton kind="true-cost" query={{ employeeId: s.employeeId, months: horizon, scenario }} />
-          <button type="button" onClick={save} disabled={saving} className={buttonClass.primary}>
-            <Save size={16} aria-hidden="true" /> {saving ? 'جارٍ الحفظ…' : 'حفظ الحساب'}
+          <ExportMenu excel={{ kind: 'true-cost', query: { employeeId: s.employeeId, months: horizon, scenario } }} pdf={{ kind: 'true-cost', query: { employeeId: s.employeeId, months: horizon, scenario } }} />
+          <button type="button" onClick={save} disabled={saving} className={buttonClass.secondary} title="يحفظ الأرقام مع نسخ القواعد المستخدمة للرجوع إليها لاحقاً">
+            <Save size={16} aria-hidden="true" /> {saving ? 'جارٍ الحفظ…' : 'حفظ نسخة'}
           </button>
         </div>
       </div>
@@ -131,16 +122,16 @@ function EmployeeDetail({ detail, horizon, scenario, onClose }: { detail: TrueCo
       <dl className="mt-5 grid grid-cols-2 lg:grid-cols-4 gap-3">
         {[
           { t: 'الشهر الأول', v: s.month1 },
-          { t: '12 شهراً', v: s.next12 },
-          { t: `${horizon} شهراً`, v: s[wf] },
+          { t: 'خلال 12 شهراً', v: s.next12 },
+          { t: `خلال ${horizon} شهراً`, v: s[wf] },
           { t: 'نهاية الخدمة المستحقة الآن', v: null, x: s.eosbLiabilityEmployer },
         ].map((k) => (
           <div key={k.t} className="rounded-2xl bg-slate-50 p-3">
             <dt className="text-[11px] font-black text-slate-500">{k.t}</dt>
-            <dd className="mt-1 text-[16px] font-black text-slate-900">{k.v ? <Money value={k.v.cost} /> : <Money value={k.x ?? 0} />}</dd>
+            <dd className="mt-1 text-[16px] font-black text-slate-900">{k.v ? <Money value={k.v.cost} round /> : <Money value={k.x ?? 0} round />}</dd>
             {k.v && (
               <dd className="text-[11px] font-bold text-green-700">
-                بعد الدعم <Money value={k.v.net} />
+                بعد الدعم <Money value={k.v.net} round />
               </dd>
             )}
           </div>
@@ -148,13 +139,13 @@ function EmployeeDetail({ detail, horizon, scenario, onClose }: { detail: TrueCo
       </dl>
 
       <div className="mt-6">
-        <h3 className="text-[14px] font-black text-slate-800 mb-2">السلسلة الشهرية</h3>
+        <h3 className="text-[14px] font-black text-slate-800 mb-2">الكلفة شهراً بشهر</h3>
         <SeriesChart series={months.map((m) => ({ month: m.month, cost: m.totals.cost, net: m.totals.net }))} title={`كلفة ${s.name} الشهرية`} />
       </div>
 
       <div className="mt-6 grid grid-cols-1 xl:grid-cols-5 gap-6">
         <div className="xl:col-span-2">
-          <h3 className="text-[14px] font-black text-slate-800 mb-2">شهراً بشهر</h3>
+          <h3 className="text-[14px] font-black text-slate-800 mb-2">الأشهر</h3>
           <div className="max-h-[520px] overflow-auto rounded-2xl border border-slate-100">
             <table className="w-full text-[12px]">
               <caption className="sr-only">الكلفة الشهرية للموظف؛ اختر شهراً لعرض بنوده</caption>
@@ -240,7 +231,8 @@ function TrueCostInner() {
   const [sort, setSort] = useState<'cost' | 'name' | 'flags'>('cost');
   const [flagged, setFlagged] = useState(params.get('flagged') === '1');
   const [skip, setSkip] = useState(0);
-  const [exporting, setExporting] = useState(false);
+  // «خيارات أكثر» opens by itself when the page arrives filtered to employees with notes (?flagged=1 from the overview).
+  const [moreOpen] = useState(params.get('flagged') === '1');
 
   useEffect(() => {
     const t = setTimeout(() => {
@@ -279,34 +271,6 @@ function TrueCostInner() {
   const openEmployee = (id: string) => router.push(`/workforce/true-cost?employeeId=${encodeURIComponent(id)}`);
   const closeEmployee = () => router.push('/workforce/true-cost');
 
-  const exportList = async () => {
-    setExporting(true);
-    const all: EmployeeSummary[] = [];
-    for (let off = 0; off < 5000; off += 200) {
-      const u = new URLSearchParams(baseQuery);
-      if (q) u.set('q', q);
-      u.set('sort', sort);
-      if (flagged) u.set('flagged', '1');
-      u.set('take', '200');
-      u.set('skip', String(off));
-      const res = await callApi<TrueCostResponse>(`/api/workforce/true-cost?${u.toString()}`);
-      if (!res.ok) {
-        setExporting(false);
-        toast.error(res.message);
-        return;
-      }
-      all.push(...res.data.employees);
-      if (off + 200 >= res.data.total) break;
-    }
-    const wf = windowField(horizon);
-    const rows: Array<Array<string | number | null>> = [
-      ['الرقم الوظيفي', 'الاسم', 'الجنسية', 'الشركة', 'الفرع', 'الإدارة', 'الشهر الأول', '12 شهراً', `${horizon} شهراً`, `${horizon} شهراً بعد الدعم`, 'الملاحظات'],
-      ...all.map((e) => [e.employeeNo, e.name, NATIONALITY_LABELS[e.nationalityClass] ?? e.nationalityClass, e.companyName, e.branchName, e.departmentName, e.month1.cost, e.next12.cost, e[wf].cost, e[wf].net, e.flags.map((f) => FLAG_TITLES[f.code] ?? f.code).join('؛ ')]),
-    ];
-    downloadText(`true-cost-${new Date().toISOString().slice(0, 10)}.csv`, toCsv(rows));
-    setExporting(false);
-  };
-
   const data = list.data;
   const wf = windowField(horizon);
   const opts = options.data;
@@ -315,8 +279,24 @@ function TrueCostInner() {
     <WfPage
       current="/workforce/true-cost"
       icon={<Calculator size={24} />}
-      title="الكلفة الحقيقية"
-      subtitle="كلفة كل موظف على صاحب العمل شهراً بشهر لمدة 36 شهراً: الراتب والبدلات والتأمينات ونهاية الخدمة ورسوم الوافدين والتأمين الطبي، ودعم هدف سطراً مستقلاً. اضغط «لماذا؟» بجانب أي بند لترى المعادلة ومصدر كل قيمة."
+      title="كلفة الموظفين"
+      subtitle="كم يكلفك كل موظف فعلاً هذا الشهر وخلال السنوات القادمة."
+      help={
+        <>
+          <p>كلفة كل موظف على صاحب العمل شهراً بشهر لمدة 36 شهراً: الراتب والبدلات والتأمينات ونهاية الخدمة ورسوم الوافدين والتأمين الطبي.</p>
+          <p>دعم هدف يظهر سطراً مستقلاً لأنه مشروط بقبول طلب الدعم، فالرقم الرئيسي قبل الدعم.</p>
+          <p>اضغط اسم الموظف ثم «لماذا؟» بجانب أي بند لترى المعادلة ومصدر كل قيمة.</p>
+        </>
+      }
+      actions={
+        !employeeId && (
+          <ExportMenu
+            disabled={!data || list.loading}
+            excel={data?.total ? { kind: 'true-cost', query: { companyId, branchId, departmentId, months: horizon, scenario, q, sort, flagged } } : undefined}
+            pdf={{ kind: 'true-cost', query: { companyId, months: horizon, scenario } }}
+          />
+        )
+      }
     >
       <Card>
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
@@ -332,27 +312,42 @@ function TrueCostInner() {
           </div>
         </div>
         <div className="mt-4 flex flex-wrap items-end gap-4">
-          <Segmented label="أفق التوقع" value={horizon} onChange={setHorizon} options={HORIZONS.map((h) => ({ value: h, label: `${h} شهراً` }))} />
-          <Segmented label="السيناريو" value={scenario} onChange={setScenario} options={SCENARIOS.map((s) => ({ value: s, label: SCENARIO_LABELS[s] }))} />
-          {!employeeId && (
-            <>
-              <SelectField
-                label="الترتيب"
-                value={sort}
-                onChange={(v) => { setSort(v as 'cost' | 'name' | 'flags'); setSkip(0); }}
-                options={[
-                  { value: 'cost', label: 'الأعلى كلفة (12 شهراً)' },
-                  { value: 'name', label: 'الاسم' },
-                  { value: 'flags', label: 'الأكثر ملاحظات' },
-                ]}
-              />
-              <label className="inline-flex items-center gap-2 pb-2 text-[12px] font-black text-slate-700">
-                <input type="checkbox" checked={flagged} onChange={(e) => { setFlagged(e.target.checked); setSkip(0); }} className="h-4 w-4 rounded border-slate-300" />
-                من لديهم ملاحظات فقط
-              </label>
-            </>
-          )}
+          <Segmented label="المدة" value={horizon} onChange={setHorizon} options={HORIZONS.map((h) => ({ value: h, label: `${h} شهراً` }))} />
         </div>
+        <details open={moreOpen} className="group mt-4 rounded-2xl border border-slate-100 bg-slate-50/60">
+          <summary className="flex cursor-pointer list-none items-center gap-2 px-3 py-2 text-[12.5px] font-black text-slate-600 [&::-webkit-details-marker]:hidden">
+            <SlidersHorizontal size={15} className="text-indigo-500" aria-hidden="true" />
+            خيارات أكثر
+            {(scenario !== 'base' || sort !== 'cost' || flagged) && <span className="rounded-md bg-indigo-100 px-1.5 py-0.5 text-[10.5px] font-black text-indigo-700">مفعّلة</span>}
+            <ChevronDown size={15} className="mr-auto text-slate-400 transition group-open:rotate-180" aria-hidden="true" />
+          </summary>
+          <div className="flex flex-wrap items-end gap-4 border-t border-slate-100 px-3 py-3">
+            <div>
+              <Segmented label={SCENARIO_FIELD_LABEL} value={scenario} onChange={setScenario} options={SCENARIOS.map((s) => ({ value: s, label: SCENARIO_LABELS[s] }))} />
+              <p className="mt-1 flex items-center gap-1.5 text-[11px] font-bold text-slate-400">
+                <Info size={12} aria-hidden="true" /> {SCENARIO_FIELD_HINT}
+              </p>
+            </div>
+            {!employeeId && (
+              <>
+                <SelectField
+                  label="الترتيب"
+                  value={sort}
+                  onChange={(v) => { setSort(v as 'cost' | 'name' | 'flags'); setSkip(0); }}
+                  options={[
+                    { value: 'cost', label: 'الأعلى كلفة (12 شهراً)' },
+                    { value: 'name', label: 'الاسم' },
+                    { value: 'flags', label: 'الأكثر ملاحظات' },
+                  ]}
+                />
+                <label className="inline-flex items-center gap-2 pb-2 text-[12px] font-black text-slate-700">
+                  <input type="checkbox" checked={flagged} onChange={(e) => { setFlagged(e.target.checked); setSkip(0); }} className="h-4 w-4 rounded border-slate-300" />
+                  من لديهم ملاحظات فقط
+                </label>
+              </>
+            )}
+          </div>
+        </details>
         {options.error && <p role="alert" className="mt-3 text-[12px] font-bold text-rose-700">{`تعذر تحميل قوائم التصفية: ${options.error}`}</p>}
       </Card>
 
@@ -375,14 +370,17 @@ function TrueCostInner() {
               <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
                 {[
                   { t: 'هذا الشهر', v: data.totals.month1 },
-                  { t: '12 شهراً', v: data.totals.next12 },
-                  { t: `${horizon} شهراً`, v: data.totals[wf] },
-                ].map((k) => (
-                  <div key={k.t} className="rounded-2xl border border-slate-100 bg-white p-4">
-                    <p className="text-[12px] font-black text-slate-500">{`${k.t} · ${data.total} موظف`}</p>
-                    <p className="mt-1 text-[20px] font-black text-slate-900"><Money value={k.v.cost} /></p>
+                  { t: 'خلال 12 شهراً', v: data.totals.next12 },
+                  { t: `خلال ${horizon} شهراً`, v: data.totals[wf] },
+                ].map((k, i) => (
+                  <div key={i} className="rounded-3xl border border-slate-100 bg-white p-5 shadow-[0_10px_30px_rgba(0,0,0,0.02)]">
+                    <h2 className="text-[13px] font-black text-slate-500">{k.t}</h2>
+                    <p className="mt-2 text-[24px] font-black text-slate-900 leading-tight"><Money value={k.v.cost} round /></p>
+                    <p className="mt-2 text-[12px] font-bold text-slate-500">
+                      بعد دعم هدف المتوقع: <Money value={k.v.net} round className="text-slate-700" />
+                    </p>
                     <p className="text-[11.5px] font-bold text-green-700">
-                      دعم هدف <Money value={k.v.subsidy} /> · بعد الدعم <Money value={k.v.net} />
+                      الدعم <Money value={k.v.subsidy} round />
                     </p>
                   </div>
                 ))}
@@ -390,36 +388,27 @@ function TrueCostInner() {
 
               <Card
                 title="الموظفون"
-                subtitle={`${data.total} موظف ضمن التصفية، من شهر ${data.startMonth.split("-").reverse().join("/")}.`}
-                actions={
-                  <div className="flex flex-wrap gap-2">
-                    <button type="button" onClick={exportList} disabled={exporting || !data.total} className={buttonClass.secondary}>
-                      <Download size={16} aria-hidden="true" /> {exporting ? 'جارٍ التصدير…' : 'تصدير CSV'}
-                    </button>
-                    <ExportButton kind="true-cost" query={{ companyId, branchId, departmentId, months: horizon, scenario, q, sort, flagged }} disabled={list.loading || !data.total} />
-                    <PdfReportButton kind="true-cost" query={{ companyId, months: horizon, scenario }} disabled={list.loading} />
-                  </div>
-                }
+                subtitle={`${data.total} موظف ضمن التصفية، من شهر ${data.startMonth.split("-").reverse().join("/")}. اضغط الاسم للتفاصيل.`}
               >
                 {data.employees.length ? (
                   <div className="overflow-x-auto">
-                    <table className="w-full min-w-[860px] text-[12.5px]">
+                    <table className="w-full min-w-[900px] text-[12.5px]">
                       <caption className="sr-only">كلفة الموظفين</caption>
                       <thead>
                         <tr className="border-b border-slate-200 text-slate-500">
-                          <th scope="col" className="py-2 text-right font-black">الموظف</th>
-                          <th scope="col" className="py-2 text-right font-black">الشركة</th>
-                          <th scope="col" className="py-2 text-right font-black">شهرياً الآن</th>
-                          <th scope="col" className="py-2 text-right font-black">12 شهراً</th>
-                          <th scope="col" className="py-2 text-right font-black">36 شهراً</th>
-                          <th scope="col" className="py-2 text-right font-black">{`${horizon} شهراً بعد الدعم`}</th>
-                          <th scope="col" className="py-2 text-right font-black">ملاحظات</th>
+                          <th scope="col" className="px-3 py-2 text-right font-black whitespace-nowrap">الموظف</th>
+                          <th scope="col" className="px-3 py-2 text-right font-black whitespace-nowrap">الشركة</th>
+                          <th scope="col" className="px-3 py-2 text-right font-black whitespace-nowrap">هذا الشهر</th>
+                          <th scope="col" className="px-3 py-2 text-right font-black whitespace-nowrap">خلال 12 شهراً</th>
+                          <th scope="col" className="px-3 py-2 text-right font-black whitespace-nowrap">خلال 36 شهراً</th>
+                          <th scope="col" className="px-3 py-2 text-right font-black whitespace-nowrap">{`بعد دعم هدف (${horizon} شهراً)`}</th>
+                          <th scope="col" className="px-3 py-2 text-right font-black whitespace-nowrap">ملاحظات</th>
                         </tr>
                       </thead>
                       <tbody>
                         {data.employees.map((e) => (
                           <tr key={e.employeeId} className="border-b border-slate-100 font-bold text-slate-700 align-top">
-                            <th scope="row" className="py-2 text-right">
+                            <th scope="row" className="px-3 py-2 text-right">
                               <button type="button" onClick={() => openEmployee(e.employeeId)} className="text-right font-black text-indigo-700 hover:underline">
                                 {e.name}
                               </button>
@@ -428,12 +417,12 @@ function TrueCostInner() {
                                 {e.exitDate && <> · حتى <span dir="ltr">{e.exitDate}</span></>}
                               </span>
                             </th>
-                            <td className="py-2 text-[12px]">{e.companyName ?? <span className="text-amber-700">بلا شركة قانونية</span>}</td>
-                            <td className="py-2"><Money value={e.month1.cost} /></td>
-                            <td className="py-2"><Money value={e.next12.cost} /></td>
-                            <td className="py-2"><Money value={e.next36.cost} /></td>
-                            <td className="py-2"><Money value={e[wf].net} /></td>
-                            <td className="py-2 max-w-[220px]"><FlagChips flags={e.flags} /></td>
+                            <td className="px-3 py-2 text-[12px]">{e.companyName ?? <span className="text-amber-700">بلا شركة قانونية</span>}</td>
+                            <td className="px-3 py-2"><Money value={e.month1.cost} round /></td>
+                            <td className="px-3 py-2"><Money value={e.next12.cost} round /></td>
+                            <td className="px-3 py-2"><Money value={e.next36.cost} round /></td>
+                            <td className="px-3 py-2"><Money value={e[wf].net} round /></td>
+                            <td className="px-3 py-2 max-w-[220px]"><FlagChips flags={e.flags} /></td>
                           </tr>
                         ))}
                       </tbody>

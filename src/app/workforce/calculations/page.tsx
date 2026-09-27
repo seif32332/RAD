@@ -1,17 +1,18 @@
 "use client";
 
 // «الحسابات المحفوظة»: saved snapshots (engine version, exact rule versions, inputs and outputs), newest
-// first, and the detail of one snapshot (?id=). GET /api/workforce/calculations[/id]. Snapshots are immutable.
+// first, and the detail of one snapshot (?id=): the results first, then the inputs, the rule versions and the
+// raw JSON folded. GET /api/workforce/calculations[/id]. Snapshots are immutable.
 import React, { Suspense, useState } from 'react';
 import Link from 'next/link';
 import { useRouter, useSearchParams } from 'next/navigation';
-import { Archive, ArrowRight } from 'lucide-react';
+import { Archive, ArrowRight, ChevronDown } from 'lucide-react';
 import { formatDateTime } from '@/lib/dates';
 import type { MoneyTriple, WfStatus } from '@/lib/workforce/types';
 import { useApi } from '../_components/api';
-import { Card, EmptyBlock, ErrorBlock, ExportButton, LoadingBlock, Money, Num, SelectField, StatusBadge, WfPage, buttonClass } from '../_components/ui';
+import { Card, EmptyBlock, ErrorBlock, ExportMenu, LoadingBlock, Money, Num, SelectField, StatusBadge, WfPage, buttonClass } from '../_components/ui';
 
-const KIND_LABELS: Record<string, string> = { TRUE_COST: 'الكلفة الحقيقية', EXIT_COST: 'كلفة الإنهاء', OVERVIEW: 'لوحة القرار', SAUDIZATION: 'مخطط السعودة', HIRE_SCENARIO: 'سيناريو توظيف', WORKFORCE_PLAN: 'خطة القوى العاملة' };
+const KIND_LABELS: Record<string, string> = { TRUE_COST: 'كلفة الموظفين', EXIT_COST: 'كلفة إنهاء الخدمة', OVERVIEW: 'نظرة عامة', SAUDIZATION: 'وضع النطاقات', HIRE_SCENARIO: 'مقارنة خيارات التوظيف', WORKFORCE_PLAN: 'خطة القوى العاملة' };
 const BAND_TEXT: Record<string, string> = { RED: 'أحمر', LOW_GREEN: 'أخضر منخفض', MEDIUM_GREEN: 'أخضر متوسط', HIGH_GREEN: 'أخضر مرتفع', PLATINUM: 'بلاتيني' };
 const SUBJECT_LABELS: Record<string, string> = { EMPLOYEE: 'موظف', COMPANY: 'شركة', BRANCH: 'فرع', DEPARTMENT: 'إدارة', ALL: 'كل الموظفين', PLAN: 'خطة' };
 const PAGE = 25;
@@ -91,7 +92,7 @@ function OutputsSummary({ d }: { d: DetailResponse }) {
       <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 text-[12.5px] font-bold">
         <div className="rounded-2xl bg-slate-50 p-3"><p className="text-slate-500">النطاق التقديري</p><p className="mt-1 text-[15px] font-black text-slate-900">{e.band ? BAND_TEXT[e.band] : e.status}</p></div>
         <div className="rounded-2xl bg-slate-50 p-3"><p className="text-slate-500">نسبة التوطين</p><p className="mt-1 text-[15px] font-black text-slate-900" dir="ltr">{e.pct ?? 0}%</p></div>
-        <div className="rounded-2xl bg-slate-50 p-3"><p className="text-slate-500">العاملون المحتسبون (X)</p><p className="mt-1 text-[15px] font-black text-slate-900"><Num value={e.counts?.x} /></p></div>
+        <div className="rounded-2xl bg-slate-50 p-3"><p className="text-slate-500">العدد الموزون</p><p className="mt-1 text-[15px] font-black text-slate-900"><Num value={e.counts?.x} /></p></div>
         {solve && (
           <div className="sm:col-span-3 rounded-2xl bg-indigo-50 p-3 text-indigo-900">
             {`الوصول إلى ${BAND_TEXT[solve.targetBand ?? ''] ?? solve.targetBand}: ${solve.hires ?? '—'} تعيين`}
@@ -168,7 +169,7 @@ function Detail({ id, onBack }: { id: string; onBack: () => void }) {
           <button type="button" onClick={onBack} className={buttonClass.link}>
             <ArrowRight size={14} aria-hidden="true" /> العودة إلى القائمة
           </button>
-          <ExportButton kind="calculation" query={{ id: data.id }} />
+          <ExportMenu excel={{ kind: 'calculation', query: { id: data.id } }} />
         </div>
         <h2 className="mt-2 text-[20px] font-black text-slate-900">{data.title ?? KIND_LABELS[data.kind]}</h2>
         <dl className="mt-3 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 text-[12.5px] font-bold">
@@ -182,7 +183,15 @@ function Detail({ id, onBack }: { id: string; onBack: () => void }) {
         )}
       </Card>
 
-      <Card title="المدخلات">
+      <Card title="ملخص النتائج">
+        <OutputsSummary d={data} />
+        <details className="mt-3">
+          <summary className="cursor-pointer text-[12px] font-black text-slate-600">كل النتائج (JSON)</summary>
+          <pre dir="ltr" className="mt-2 max-h-96 overflow-auto rounded-xl bg-slate-900 p-3 text-[11px] text-slate-100 whitespace-pre-wrap break-all">{JSON.stringify(data.outputs, null, 2).slice(0, 200_000)}</pre>
+        </details>
+      </Card>
+
+      <Card title="المدخلات" subtitle="الاختيارات التي حُسب بها الرقم.">
         <dl className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2 text-[12.5px] font-bold">
           {Object.entries(params).map(([k, v]) => (
             <div key={k} className="rounded-xl bg-slate-50 px-3 py-2">
@@ -197,43 +206,44 @@ function Detail({ id, onBack }: { id: string; onBack: () => void }) {
         </details>
       </Card>
 
-      <Card title="ملخص النتائج">
-        <OutputsSummary d={data} />
-        <details className="mt-3">
-          <summary className="cursor-pointer text-[12px] font-black text-slate-600">كل النتائج (JSON)</summary>
-          <pre dir="ltr" className="mt-2 max-h-96 overflow-auto rounded-xl bg-slate-900 p-3 text-[11px] text-slate-100 whitespace-pre-wrap break-all">{JSON.stringify(data.outputs, null, 2).slice(0, 200_000)}</pre>
-        </details>
-      </Card>
-
-      <Card title="نسخ القواعد المستخدمة" subtitle="القيمة وتاريخ السريان والحالة لكل قاعدة كما كانت وقت الحساب">
-        {data.ruleVersions?.length ? (
-          <div className="overflow-x-auto">
-            <table className="w-full min-w-[560px] text-[12.5px]">
-              <caption className="sr-only">نسخ القواعد المستخدمة</caption>
-              <thead>
-                <tr className="border-b border-slate-200 text-slate-500">
-                  <th scope="col" className="py-2 text-right font-black">المفتاح</th>
-                  <th scope="col" className="py-2 text-right font-black">القيمة</th>
-                  <th scope="col" className="py-2 text-right font-black">يسري من</th>
-                  <th scope="col" className="py-2 text-right font-black">الحالة</th>
-                </tr>
-              </thead>
-              <tbody>
-                {data.ruleVersions.map((r) => (
-                  <tr key={`${r.key}@${r.effectiveFrom}`} className="border-b border-slate-100 font-bold text-slate-700">
-                    <th scope="row" className="py-1.5 text-right font-mono text-[11px] font-normal" dir="ltr">{r.key}</th>
-                    <td className="py-1.5">{r.value === null ? '—' : <Num value={r.value} />}</td>
-                    <td className="py-1.5" dir="ltr">{r.effectiveFrom ?? '—'}</td>
-                    <td className="py-1.5"><StatusBadge status={r.status} /></td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+      <details className="group rounded-3xl border border-slate-100 bg-white shadow-[0_10px_30px_rgba(0,0,0,0.02)]">
+        <summary className="flex cursor-pointer list-none items-center gap-3 p-5 sm:p-6 [&::-webkit-details-marker]:hidden">
+          <div className="min-w-0 flex-1">
+            <h2 className="text-[16px] font-black text-slate-800">{`نسخ القواعد المستخدمة (${data.ruleVersions?.length ?? 0})`}</h2>
+            <p className="mt-1 text-[12px] font-bold text-slate-500">القيمة وتاريخ السريان والحالة لكل قاعدة كما كانت وقت الحساب.</p>
           </div>
-        ) : (
-          <EmptyBlock text="لا توجد قواعد مسجلة" />
-        )}
-      </Card>
+          <ChevronDown size={20} className="shrink-0 text-slate-400 transition group-open:rotate-180" aria-hidden="true" />
+        </summary>
+        <div className="border-t border-slate-100 p-4 sm:p-6">
+          {data.ruleVersions?.length ? (
+            <div className="overflow-x-auto">
+              <table className="w-full min-w-[560px] text-[12.5px]">
+                <caption className="sr-only">نسخ القواعد المستخدمة</caption>
+                <thead>
+                  <tr className="border-b border-slate-200 text-slate-500">
+                    <th scope="col" className="py-2 text-right font-black">المفتاح</th>
+                    <th scope="col" className="py-2 text-right font-black">القيمة</th>
+                    <th scope="col" className="py-2 text-right font-black">يسري من</th>
+                    <th scope="col" className="py-2 text-right font-black">الحالة</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {data.ruleVersions.map((r) => (
+                    <tr key={`${r.key}@${r.effectiveFrom}`} className="border-b border-slate-100 font-bold text-slate-700">
+                      <th scope="row" className="py-1.5 text-right font-mono text-[11px] font-normal" dir="ltr">{r.key}</th>
+                      <td className="py-1.5">{r.value === null ? '—' : <Num value={r.value} />}</td>
+                      <td className="py-1.5" dir="ltr">{r.effectiveFrom ?? '—'}</td>
+                      <td className="py-1.5"><StatusBadge status={r.status} /></td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          ) : (
+            <EmptyBlock text="لا توجد قواعد مسجلة" />
+          )}
+        </div>
+      </details>
     </div>
   );
 }
@@ -251,57 +261,65 @@ function CalculationsInner() {
       current="/workforce/calculations"
       icon={<Archive size={24} />}
       title="الحسابات المحفوظة"
-      subtitle="كل حساب محفوظ بنسخة المحرك ونسخ القواعد ومدخلاته ونتيجته، ليُعرف بعد سنة لماذا ظهر الرقم. الحسابات المحفوظة لا تُعدَّل."
+      subtitle="النسخ التي حفظتها من الحسابات، لتعرف لاحقاً لماذا ظهر الرقم وقتها."
+      help={
+        <>
+          <p>كل نسخة محفوظة بنسخة المحرك ونسخ القواعد ومدخلاتها ونتيجتها، ليُعرف بعد سنة لماذا ظهر الرقم.</p>
+          <p>النسخ المحفوظة لا تُعدَّل.</p>
+        </>
+      }
     >
       {id ? (
         <Detail id={id} onBack={() => router.push('/workforce/calculations')} />
       ) : (
         <>
-          <SelectField
-            className="max-w-xs"
-            label="النوع"
-            value={kind}
-            onChange={(v) => {
-              setKind(v);
-              setSkip(0);
-            }}
-            placeholder="كل الأنواع"
-            options={Object.entries(KIND_LABELS).map(([value, label]) => ({ value, label }))}
-          />
           {list.error && <ErrorBlock message={list.error} onRetry={list.reload} />}
-          {list.loading && !list.data && <LoadingBlock label="جارٍ التحميل…" />}
-          {list.data && (
-            <Card>
-              {list.data.items.length ? (
-                <ul className="divide-y divide-slate-100">
-                  {list.data.items.map((c) => (
-                    <li key={c.id} className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 py-3">
-                      <div className="min-w-0">
-                        <Link href={`/workforce/calculations?id=${c.id}`} className="text-[14px] font-black text-indigo-700 hover:underline">
-                          {c.title ?? KIND_LABELS[c.kind] ?? c.kind}
-                        </Link>
-                        <p className="text-[11.5px] font-bold text-slate-500">
-                          {[KIND_LABELS[c.kind] ?? c.kind, c.subjectType ? SUBJECT_LABELS[c.subjectType] ?? c.subjectType : null, formatDateTime(c.createdAt), c.createdByName].filter(Boolean).join(' · ')}
-                        </p>
-                      </div>
-                      <span className="text-[11px] font-bold text-slate-400" dir="ltr">{c.engineVersion}</span>
-                    </li>
-                  ))}
-                </ul>
-              ) : (
-                <EmptyBlock text="لا توجد حسابات محفوظة بعد. استخدم «حفظ الحساب» في لوحة القرار أو الكلفة الحقيقية أو كلفة الإنهاء." />
-              )}
-              {list.data.total > PAGE && (
-                <nav aria-label="صفحات الحسابات" className="mt-4 flex items-center justify-between gap-2 text-[12px] font-bold text-slate-600">
-                  <button type="button" className={buttonClass.secondary} disabled={skip === 0} onClick={() => setSkip(Math.max(0, skip - PAGE))}>السابق</button>
-                  <span>
-                    <Num value={skip + 1} />–<Num value={Math.min(skip + PAGE, list.data.total)} /> من <Num value={list.data.total} />
-                  </span>
-                  <button type="button" className={buttonClass.secondary} disabled={skip + PAGE >= list.data.total} onClick={() => setSkip(skip + PAGE)}>التالي</button>
-                </nav>
-              )}
-            </Card>
-          )}
+          <Card>
+            <SelectField
+              className="mb-2 max-w-xs"
+              label="النوع"
+              value={kind}
+              onChange={(v) => {
+                setKind(v);
+                setSkip(0);
+              }}
+              placeholder="كل الأنواع"
+              options={Object.entries(KIND_LABELS).map(([value, label]) => ({ value, label }))}
+            />
+            {list.loading && !list.data && <LoadingBlock label="جارٍ التحميل…" />}
+            {list.data && (
+              <>
+                {list.data.items.length ? (
+                  <ul className="divide-y divide-slate-100">
+                    {list.data.items.map((c) => (
+                      <li key={c.id} className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 py-3">
+                        <div className="min-w-0">
+                          <Link href={`/workforce/calculations?id=${c.id}`} className="text-[14px] font-black text-indigo-700 hover:underline">
+                            {c.title ?? KIND_LABELS[c.kind] ?? c.kind}
+                          </Link>
+                          <p className="text-[11.5px] font-bold text-slate-500">
+                            {[KIND_LABELS[c.kind] ?? c.kind, c.subjectType ? SUBJECT_LABELS[c.subjectType] ?? c.subjectType : null, formatDateTime(c.createdAt), c.createdByName].filter(Boolean).join(' · ')}
+                          </p>
+                        </div>
+                        <span className="text-[11px] font-bold text-slate-400" dir="ltr">{c.engineVersion}</span>
+                      </li>
+                    ))}
+                  </ul>
+                ) : (
+                  <EmptyBlock text="لا توجد نسخ محفوظة بعد. استخدم «حفظ نسخة» في نظرة عامة أو كلفة الموظفين أو كلفة إنهاء الخدمة." />
+                )}
+                {list.data.total > PAGE && (
+                  <nav aria-label="صفحات الحسابات" className="mt-4 flex items-center justify-between gap-2 text-[12px] font-bold text-slate-600">
+                    <button type="button" className={buttonClass.secondary} disabled={skip === 0} onClick={() => setSkip(Math.max(0, skip - PAGE))}>السابق</button>
+                    <span>
+                      <Num value={skip + 1} />–<Num value={Math.min(skip + PAGE, list.data.total)} /> من <Num value={list.data.total} />
+                    </span>
+                    <button type="button" className={buttonClass.secondary} disabled={skip + PAGE >= list.data.total} onClick={() => setSkip(skip + PAGE)}>التالي</button>
+                  </nav>
+                )}
+              </>
+            )}
+          </Card>
         </>
       )}
     </WfPage>

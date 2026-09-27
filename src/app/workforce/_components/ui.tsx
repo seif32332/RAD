@@ -1,44 +1,82 @@
 "use client";
 
-// Shared building blocks of the workforce pages («محرك القرارات»): page frame with the disclaimer,
+// Shared building blocks of the workforce pages («محرك القرارات»): page frame with the section tabs,
 // status badges, money, selectors, composition bars, a monthly series chart and the «لماذا؟» dialog.
-import React, { useId, useState } from 'react';
+import React, { useEffect, useId, useRef, useState } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
-import { AlertTriangle, ExternalLink, FileSpreadsheet, Info, Loader2, RefreshCw, Scale } from 'lucide-react';
+import { AlertTriangle, ChevronDown, ChevronLeft, Download, ExternalLink, FileSpreadsheet, HelpCircle, Info, Loader2, RefreshCw, Scale } from 'lucide-react';
 import DashboardLayout from '@/components/DashboardLayout';
 import Modal from '@/components/ui/Modal';
 import { readApiError, toast } from '@/components/ui/feedback';
 import { formatMoney } from '@/lib/money';
 import { ESTIMATE_DISCLAIMER } from '@/lib/workforce/version';
 import type { RuleEvidence, WfStatus } from '@/lib/workforce/types';
+import PdfReportButton from './PdfReportButton';
 import { LINE_COLORS, QIWA_NOTE, STATUS_LABELS, STATUS_STYLES, formatRuleValue } from '@/app/api/workforce/_lib/shared';
 
 // ---------------------------------------------------------------------------
 // Page frame
 // ---------------------------------------------------------------------------
 
-export const WF_NAV = [
-  { href: '/workforce', label: 'لوحة القرار' },
-  { href: '/workforce/true-cost', label: 'الكلفة الحقيقية' },
-  { href: '/workforce/exit-cost', label: 'كلفة الإنهاء' },
-  { href: '/workforce/saudization', label: 'مخطط السعودة' },
-  { href: '/workforce/hire-scenario', label: 'سيناريوهات التوظيف' },
-  { href: '/workforce/plans', label: 'خطة القوى العاملة' },
-  { href: '/workforce/sensitivity', label: 'حساسية القرار' },
-  { href: '/workforce/benchmarks', label: 'المؤشرات الداخلية' },
-  { href: '/workforce/nitaqat-register', label: 'سجل نطاقات والتوطين' },
-  { href: '/workforce/assumptions', label: 'الافتراضات' },
-  { href: '/workforce/rules', label: 'سجل القواعد' },
-  { href: '/workforce/calculations', label: 'الحسابات المحفوظة' },
+/**
+ * The engine in six sections, one per question the owner asks (mirrors the sidebar in src/lib/menu.ts).
+ * A section with several pages shows them as tabs under the title.
+ */
+export const WF_SECTIONS = [
+  { key: 'overview', label: 'نظرة عامة', pages: [{ href: '/workforce', label: 'نظرة عامة' }] },
+  {
+    key: 'cost',
+    label: 'الكلفة',
+    pages: [
+      { href: '/workforce/true-cost', label: 'كلفة الموظفين' },
+      { href: '/workforce/exit-cost', label: 'كلفة إنهاء الخدمة' },
+    ],
+  },
+  {
+    key: 'saudization',
+    label: 'السعودة ونطاقات',
+    pages: [
+      { href: '/workforce/saudization', label: 'وضع النطاقات' },
+      { href: '/workforce/nitaqat-register', label: 'الأنشطة وقرارات التوطين' },
+    ],
+  },
+  {
+    key: 'planning',
+    label: 'التوظيف والتخطيط',
+    pages: [
+      { href: '/workforce/hire-scenario', label: 'مقارنة خيارات التوظيف' },
+      { href: '/workforce/plans', label: 'خطط القوى العاملة' },
+      { href: '/workforce/sensitivity', label: 'اختبار القرار' },
+    ],
+  },
+  { key: 'benchmarks', label: 'مؤشرات المنشأة', pages: [{ href: '/workforce/benchmarks', label: 'مؤشرات المنشأة' }] },
+  {
+    key: 'settings',
+    label: 'الإعدادات والمصادر',
+    pages: [
+      { href: '/workforce/assumptions', label: 'الافتراضات' },
+      { href: '/workforce/rules', label: 'القواعد النظامية ومصادرها' },
+      { href: '/workforce/calculations', label: 'الحسابات المحفوظة' },
+    ],
+  },
 ] as const;
 
+function sectionOf(current: string) {
+  return WF_SECTIONS.find((s) => s.pages.some((p) => p.href === current)) ?? WF_SECTIONS[0];
+}
+
+/**
+ * Page frame: breadcrumb, title with one short sentence, actions, the section tabs, the content, and the
+ * estimate disclaimer as a quiet footer. `help` is the longer explanation, folded under «كيف يُحسب هذا؟».
+ */
 export function WfPage({
   icon,
   title,
   subtitle,
   actions,
   current,
+  help,
   children,
 }: {
   icon: React.ReactNode;
@@ -46,54 +84,85 @@ export function WfPage({
   subtitle: string;
   actions?: React.ReactNode;
   current: string;
+  help?: React.ReactNode;
   children: React.ReactNode;
 }) {
+  const section = sectionOf(current);
   return (
     <DashboardLayout>
       <div className="max-w-7xl mx-auto px-4 sm:px-8 py-6 md:py-10 mb-32 space-y-6">
-        <div className="flex flex-col lg:flex-row lg:items-end justify-between gap-4 pb-5 border-b border-indigo-100">
-          <div className="min-w-0">
-            <p className="text-[12px] font-black text-indigo-600 mb-2">محرك القرارات</p>
-            <h1 className="text-2xl md:text-3xl font-black text-slate-900 tracking-tight flex items-center gap-3">
-              <span className="bg-indigo-100 text-indigo-700 p-2.5 rounded-2xl shrink-0" aria-hidden="true">
-                {icon}
-              </span>
-              {title}
-            </h1>
-            <p className="text-slate-500 font-bold mt-3 text-[13px] md:text-[14px] leading-relaxed max-w-3xl">{subtitle}</p>
+        <header className="space-y-4">
+          {/* The overview's own title is «محرك القرارات», so the path only shows on the other sections. */}
+          {section.key !== 'overview' && (
+            <nav aria-label="مسار الصفحة" className="flex items-center gap-1.5 text-[12px] font-black text-slate-400">
+              <Link href="/workforce" className="text-indigo-600 hover:underline">
+                محرك القرارات
+              </Link>
+              <ChevronLeft size={14} aria-hidden="true" />
+              <span className="text-slate-500">{section.label}</span>
+            </nav>
+          )}
+          <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4">
+            <div className="min-w-0">
+              <h1 className="text-2xl md:text-[28px] font-black text-slate-900 tracking-tight flex items-center gap-3">
+                <span className="bg-indigo-50 text-indigo-600 p-2 rounded-xl shrink-0" aria-hidden="true">
+                  {icon}
+                </span>
+                {title}
+              </h1>
+              <p className="text-slate-500 font-bold mt-2 text-[13.5px] leading-relaxed max-w-3xl">{subtitle}</p>
+            </div>
+            {actions && <div className="flex flex-wrap items-center gap-2">{actions}</div>}
           </div>
-          {actions && <div className="flex flex-wrap items-center gap-2">{actions}</div>}
-        </div>
-        <nav aria-label="أقسام محرك القرارات" className="-mt-2 flex gap-1.5 overflow-x-auto pb-1">
-          {WF_NAV.map((n) => (
-            <Link
-              key={n.href}
-              href={n.href}
-              aria-current={current === n.href ? 'page' : undefined}
-              className={`whitespace-nowrap rounded-xl px-3.5 py-2 text-[12px] font-black transition ${
-                current === n.href ? 'bg-indigo-600 text-white' : 'bg-white text-slate-600 border border-slate-200 hover:bg-slate-50'
-              }`}
-            >
-              {n.label}
-            </Link>
-          ))}
-        </nav>
-        <Disclaimer />
+          {section.pages.length > 1 && (
+            <nav aria-label={`صفحات ${section.label}`} className="flex gap-1 overflow-x-auto border-b border-slate-200">
+              {section.pages.map((p) => (
+                <Link
+                  key={p.href}
+                  href={p.href}
+                  aria-current={current === p.href ? 'page' : undefined}
+                  className={`-mb-px whitespace-nowrap border-b-2 px-4 py-2.5 text-[13px] font-black transition ${
+                    current === p.href ? 'border-indigo-600 text-indigo-700' : 'border-transparent text-slate-500 hover:text-slate-800'
+                  }`}
+                >
+                  {p.label}
+                </Link>
+              ))}
+            </nav>
+          )}
+          {help && <HelpNote>{help}</HelpNote>}
+        </header>
         {children}
+        <Disclaimer />
       </div>
     </DashboardLayout>
   );
 }
 
+/** «كيف يُحسب هذا؟»: the longer explanation of a page, closed by default. */
+export function HelpNote({ title = 'كيف يُحسب هذا؟', children }: { title?: string; children: React.ReactNode }) {
+  return (
+    <details className="group rounded-2xl border border-slate-200 bg-white">
+      <summary className="flex cursor-pointer list-none items-center gap-2 px-4 py-2.5 text-[12.5px] font-black text-slate-600 [&::-webkit-details-marker]:hidden">
+        <HelpCircle size={16} className="text-indigo-500" aria-hidden="true" />
+        {title}
+        <ChevronDown size={15} className="mr-auto text-slate-400 transition group-open:rotate-180" aria-hidden="true" />
+      </summary>
+      <div className="border-t border-slate-100 px-4 py-3 text-[12.5px] font-bold leading-relaxed text-slate-600 space-y-2">{children}</div>
+    </details>
+  );
+}
+
+/** Estimate disclaimer (SPEC principle 6): once per page, as a quiet footer. */
 export function Disclaimer({ extra }: { extra?: string }) {
   return (
-    <div role="note" className="flex items-start gap-3 rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-[12.5px] font-bold text-amber-900 leading-relaxed">
-      <Info size={18} className="shrink-0 mt-0.5 text-amber-600" aria-hidden="true" />
-      <p>
+    <p role="note" className="flex items-start gap-2 border-t border-slate-100 pt-4 text-[11.5px] font-bold text-slate-400 leading-relaxed">
+      <Info size={14} className="shrink-0 mt-0.5" aria-hidden="true" />
+      <span>
         {ESTIMATE_DISCLAIMER} {QIWA_NOTE}
         {extra ? ` ${extra}` : ''}
-      </p>
-    </div>
+      </span>
+    </p>
   );
 }
 
@@ -132,12 +201,15 @@ export function EmptyBlock({ text }: { text: string }) {
 // Values
 // ---------------------------------------------------------------------------
 
-/** SAR amount with Latin digits (the number is isolated left-to-right so a minus sign stays in place). */
-export function Money({ value, className = '', unit = true }: { value: number | null | undefined; className?: string; unit?: boolean }) {
+/**
+ * SAR amount with Latin digits (the number is isolated left-to-right so a minus sign stays in place).
+ * `round`: whole riyals, for headline figures (the exact amount stays in the tables and «لماذا؟»).
+ */
+export function Money({ value, className = '', unit = true, round = false }: { value: number | null | undefined; className?: string; unit?: boolean; round?: boolean }) {
   return (
     <span className={`whitespace-nowrap ${className}`}>
       <span dir="ltr" className="tabular-nums">
-        {formatMoney(value ?? 0)}
+        {formatMoney(round ? Math.round(value ?? 0) : (value ?? 0))}
       </span>
       {unit && <span className="text-[0.8em] font-bold text-slate-400"> ر.س</span>}
     </span>
@@ -495,7 +567,21 @@ function dispositionName(h: string | null): string | null {
  * «تصدير Excel»: GET /api/workforce/export?kind=…&query (or POST with `body`, the page's own request body),
  * then downloads the .xlsx. Disabled while loading; errors as a toast.
  */
-export function ExportButton({ kind, query, body, disabled, label = 'تصدير Excel' }: { kind: string; query?: Record<string, QueryValue>; body?: unknown; disabled?: boolean; label?: string }) {
+export function ExportButton({
+  kind,
+  query,
+  body,
+  disabled,
+  label = 'تصدير Excel',
+  className = buttonClass.secondary,
+}: {
+  kind: string;
+  query?: Record<string, QueryValue>;
+  body?: unknown;
+  disabled?: boolean;
+  label?: string;
+  className?: string;
+}) {
   const [busy, setBusy] = useState(false);
   const run = async () => {
     setBusy(true);
@@ -527,7 +613,7 @@ export function ExportButton({ kind, query, body, disabled, label = 'تصدير 
     }
   };
   return (
-    <button type="button" onClick={run} disabled={disabled || busy} aria-busy={busy} className={buttonClass.secondary}>
+    <button type="button" onClick={run} disabled={disabled || busy} aria-busy={busy} className={className}>
       {busy ? <Loader2 size={16} className="animate-spin" aria-hidden="true" /> : <FileSpreadsheet size={16} aria-hidden="true" />} {busy ? 'جارٍ التصدير…' : label}
     </button>
   );
@@ -561,3 +647,50 @@ export function SensitivityButton({ decision, body, planId, disabled }: { decisi
     </button>
   );
 }
+
+const MENU_ITEM_CLASS =
+  'flex w-full items-center gap-2 rounded-xl px-3 py-2.5 text-right text-[13px] font-black text-slate-700 hover:bg-slate-50 disabled:opacity-50';
+
+type ExportTarget = { kind: string; query?: Record<string, QueryValue>; body?: unknown; label?: string };
+
+/**
+ * «تصدير»: one button that opens the Excel file and the PDF report of the view on screen (they were two
+ * buttons on every page). The menu stays open while a file is being prepared; Escape or a click outside closes it.
+ */
+export function ExportMenu({ excel, pdf, disabled, label = 'تصدير' }: { excel?: ExportTarget; pdf?: ExportTarget; disabled?: boolean; label?: string }) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+  const menuId = useId();
+  useEffect(() => {
+    if (!open) return;
+    const onDown = (e: MouseEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setOpen(false);
+    };
+    document.addEventListener('mousedown', onDown);
+    document.addEventListener('keydown', onKey);
+    return () => {
+      document.removeEventListener('mousedown', onDown);
+      document.removeEventListener('keydown', onKey);
+    };
+  }, [open]);
+  return (
+    <div ref={ref} className="relative">
+      <button type="button" aria-expanded={open} aria-controls={menuId} disabled={disabled} onClick={() => setOpen((o) => !o)} className={buttonClass.secondary}>
+        <Download size={16} aria-hidden="true" /> {label} <ChevronDown size={14} className={`transition ${open ? 'rotate-180' : ''}`} aria-hidden="true" />
+      </button>
+      {open && (
+        <div id={menuId} className="absolute left-0 z-30 mt-2 w-60 rounded-2xl border border-slate-200 bg-white p-1.5 shadow-xl">
+          {excel && <ExportButton kind={excel.kind} query={excel.query} body={excel.body} label={excel.label ?? 'ملف Excel بالتفاصيل'} className={MENU_ITEM_CLASS} />}
+          {pdf && <PdfReportButton kind={pdf.kind} query={pdf.query} body={pdf.body} label={pdf.label ?? 'تقرير PDF للطباعة'} className={MENU_ITEM_CLASS} />}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** Label and hint of the scenario selector, the same on every page. */
+export const SCENARIO_FIELD_LABEL = 'التقدير';
+export const SCENARIO_FIELD_HINT = 'يغيّر الافتراضات التي لها مدى فقط، مثل نسبة الزيادة السنوية.';

@@ -1,22 +1,24 @@
 "use client";
 
-// «لوحة القرار»: employer cost of the whole workforce (this month / 12 / 36 months, before and after the
-// HRDF subsidy), composition, groups, legal companies (levy tiers), upcoming regulatory changes and data
-// quality. Data: GET /api/workforce/overview (the engine; this page only displays).
+// «نظرة عامة» of the decision engine. Answers three questions first, in plain words: how much the workforce
+// costs, where each legal company stands in Nitaqat, and what needs attention (data to fix, contracts to
+// document, regulatory changes coming). Then the decisions the engine helps with, and the cost details
+// (composition, monthly series, by structure, expat levy) folded below.
+// Data: GET /api/workforce/overview, /api/workforce/saudization?summary=1, /api/workforce/plans?summary=1.
 import React, { useState } from 'react';
 import Link from 'next/link';
-import { Gauge, Save } from 'lucide-react';
+import { Calculator, ChevronDown, ClipboardList, Gauge, Info, Save, ShieldCheck, UserMinus, UserPlus, type LucideIcon } from 'lucide-react';
 import { toast } from '@/components/ui/feedback';
 import { formatDate } from '@/lib/dates';
+import { formatMoney } from '@/lib/money';
 import type { OverviewResponse } from '@/app/api/workforce/_lib/views';
-import { FLAG_TITLES, HORIZONS, SCENARIOS, SCENARIO_LABELS, SEVERITY_LABELS, formatRuleValue, type Horizon } from '@/app/api/workforce/_lib/shared';
+import { FLAG_TITLES, HORIZONS, SCENARIOS, SCENARIO_LABELS, formatRuleValue, type Horizon } from '@/app/api/workforce/_lib/shared';
 import type { Scenario } from '@/lib/workforce/types';
 import { companySettingsHref } from '@/lib/workforce/company-settings';
-import { callApi, useApi } from './_components/api';
-import { Card, CompositionBars, EmptyBlock, ErrorBlock, ExportButton, LoadingBlock, Money, Num, Segmented, SeriesChart, StatusBadge, WfPage, buttonClass } from './_components/ui';
-import PdfReportButton from './_components/PdfReportButton';
-import { BandBadge, RowStatusBadge } from './_components/nitaqat-ui';
 import type { NitaqatBand } from '@/lib/workforce/nitaqat';
+import { callApi, useApi } from './_components/api';
+import { Card, CompositionBars, EmptyBlock, ErrorBlock, ExportMenu, LoadingBlock, Money, Num, SCENARIO_FIELD_HINT, SCENARIO_FIELD_LABEL, Segmented, SeriesChart, WfPage, buttonClass } from './_components/ui';
+import { BandBadge } from './_components/nitaqat-ui';
 
 interface SaudizationSummary {
   date: string;
@@ -36,87 +38,226 @@ interface SaudizationSummary {
   }>;
 }
 
-/** «السعودة» summary per legal company (band + Qiwa documentation alert), linking to the planner. */
-function SaudizationSummaryCard() {
-  const { data, error, loading, reload } = useApi<SaudizationSummary>('/api/workforce/saudization?summary=1');
+interface PlansSummary {
+  counts: Record<string, number>;
+  labels: Record<string, string>;
+  latestApproved: { id: string; name: string; fromMonth: string; months: number; decidedAt: string | null } | null;
+}
+
+// ---------------------------------------------------------------------------
+// Headline figures
+// ---------------------------------------------------------------------------
+
+function Headline({ title, children, foot }: { title: string; children: React.ReactNode; foot?: React.ReactNode }) {
   return (
-    <Card
-      title="السعودة حسب الشركة القانونية"
-      subtitle="تقدير نطاقات المطوّر بأوزان قوى وعقودها الموثّقة؛ التفاصيل والحل الأمثل في «مخطط السعودة». المرجع منصة قوى."
-      actions={<Link href="/workforce/saudization" className={buttonClass.link}>مخطط السعودة ←</Link>}
-    >
-      {error && <ErrorBlock message={error} onRetry={reload} />}
-      {loading && !data && <LoadingBlock label="جارٍ التقدير…" />}
-      {data && !data.companies.length && <EmptyBlock text="لا توجد شركات قانونية" />}
-      {data && data.companies.length > 0 && (
-        <div className="overflow-x-auto">
-          <table className="w-full min-w-[640px] text-[12.5px]">
-            <caption className="sr-only">نطاق كل شركة قانونية</caption>
-            <thead>
-              <tr className="border-b border-slate-200 text-slate-500">
-                <th scope="col" className="py-2 text-right font-black">الشركة</th>
-                <th scope="col" className="py-2 text-right font-black">النطاق</th>
-                <th scope="col" className="py-2 text-right font-black">النسبة</th>
-                <th scope="col" className="py-2 text-right font-black">X</th>
-                <th scope="col" className="py-2 text-right font-black">عقود غير موثّقة</th>
-                <th scope="col" className="py-2 text-right font-black">النشاط</th>
-              </tr>
-            </thead>
-            <tbody>
-              {data.companies.map((c) => (
-                <tr key={c.companyId} className="border-b border-slate-100 font-bold text-slate-700">
-                  <th scope="row" className="py-2 text-right font-black text-slate-800">
-                    <Link href={`/workforce/saudization?companyId=${encodeURIComponent(c.companyId)}`} className="hover:underline">{c.companyName}</Link>
-                  </th>
-                  <td className="py-2">{c.status === 'OK' ? <BandBadge band={c.band} /> : <span className="text-[11.5px] text-slate-500">{c.status === 'NO_ACTIVITY' ? 'لا نشاط' : 'لا عاملين'}</span>}</td>
-                  <td className="py-2">{c.status === 'OK' ? <span dir="ltr">{c.pct}%</span> : '—'}</td>
-                  <td className="py-2"><Num value={c.x} /></td>
-                  <td className="py-2">{c.undocumentedCount ? <span className="text-rose-700">{c.undocumentedCount}</span> : '0'}</td>
-                  <td className="py-2">
-                    {c.activityName ? (
-                      <span className="inline-flex flex-wrap items-center gap-1">{c.activityName} <RowStatusBadge status={c.activityStatus} /></span>
-                    ) : (
-                      <Link href={c.settingsHref} className="text-amber-700 underline">اختر النشاط</Link>
-                    )}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
+    <div className="rounded-3xl border border-slate-100 bg-white p-5 shadow-[0_10px_30px_rgba(0,0,0,0.02)]">
+      <h2 className="text-[13px] font-black text-slate-500">{title}</h2>
+      <div className="mt-2 text-[24px] sm:text-[28px] font-black text-slate-900 leading-tight">{children}</div>
+      {foot && <div className="mt-2 text-[12px] font-bold text-slate-500 leading-relaxed">{foot}</div>}
+    </div>
+  );
+}
+
+function NationalityBar({ saudi, gcc, expat }: { saudi: number; gcc: number; expat: number }) {
+  const total = Math.max(1, saudi + gcc + expat);
+  const parts = [
+    { key: 'saudi', label: 'سعودي', n: saudi, cls: 'bg-emerald-500' },
+    { key: 'gcc', label: 'خليجي', n: gcc, cls: 'bg-sky-400' },
+    { key: 'expat', label: 'وافد', n: expat, cls: 'bg-amber-400' },
+  ];
+  return (
+    <div className="mt-3">
+      <div className="flex h-2 overflow-hidden rounded-full bg-slate-100" aria-hidden="true">
+        {parts.map((p) => (p.n ? <div key={p.key} className={p.cls} style={{ width: `${(p.n / total) * 100}%` }} /> : null))}
+      </div>
+      <ul className="mt-2 flex flex-wrap gap-x-3 gap-y-1 text-[12px] font-bold text-slate-600">
+        {parts.map((p) => (
+          <li key={p.key} className="inline-flex items-center gap-1.5">
+            <span className={`inline-block h-2 w-2 rounded-full ${p.cls}`} aria-hidden="true" />
+            {p.label} <Num value={p.n} />
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// «يحتاج انتباهك»
+// ---------------------------------------------------------------------------
+
+type Tone = 'red' | 'amber' | 'slate';
+interface Attention {
+  key: string;
+  tone: Tone;
+  title: string;
+  detail: string;
+  href?: string;
+  action?: string;
+}
+
+const TONE_DOT: Record<Tone, string> = { red: 'bg-rose-500', amber: 'bg-amber-400', slate: 'bg-slate-300' };
+const TONE_RANK: Record<Tone, number> = { red: 0, amber: 1, slate: 2 };
+
+function attentionItems(data: OverviewResponse | null, sz: SaudizationSummary | null): Attention[] {
+  const out: Attention[] = [];
+  for (const c of sz?.companies ?? []) {
+    if (c.status === 'NO_ACTIVITY') {
+      out.push({ key: `act:${c.companyId}`, tone: 'amber', title: `${c.companyName}: نشاط نطاقات غير محدد`, detail: 'لا يمكن تقدير النطاق قبل اختيار النشاط.', href: c.settingsHref, action: 'اختر النشاط' });
+      continue;
+    }
+    if (c.status === 'OK' && c.band === 'RED') {
+      out.push({ key: `red:${c.companyId}`, tone: 'red', title: `${c.companyName} في النطاق الأحمر`, detail: 'اعرف أقل عدد تعيينات للخروج منه وكلفته.', href: `/workforce/saudization?companyId=${encodeURIComponent(c.companyId)}`, action: 'خطة الخروج' });
+    }
+    if (c.undocumentedCount > 0) {
+      out.push({
+        key: `qiwa:${c.companyId}`,
+        tone: 'red',
+        title: `${c.companyName}: ${c.undocumentedCount} عقود غير موثّقة في قوى`,
+        detail: 'السعودي أو الخليجي بعقد غير موثّق لا يُحتسب في نطاقات.',
+        href: `/workforce/saudization?companyId=${encodeURIComponent(c.companyId)}`,
+        action: 'عرض الأسماء',
+      });
+    }
+  }
+  for (const d of data?.dataQuality ?? []) {
+    const who = d.employees > 0 ? `${d.employees} موظف` : `${d.count} حالة`;
+    const fix =
+      d.fix === 'EMPLOYEE'
+        ? { href: '/workforce/true-cost?flagged=1', action: 'عرض الموظفين' }
+        : d.fix === 'COMPANY'
+          ? { href: d.companies.length ? companySettingsHref(d.companies[0].id) : '/companies', action: 'إعدادات الشركة' }
+          : d.fix === 'ASSUMPTIONS'
+            ? { href: '/workforce/assumptions', action: 'أدخل الافتراض' }
+            : d.fix === 'RULES'
+              ? { href: '/workforce/rules', action: 'راجع القاعدة' }
+              : {};
+    out.push({ key: `dq:${d.code}`, tone: d.severity === 'ERROR' ? 'red' : d.severity === 'WARNING' ? 'amber' : 'slate', title: `${FLAG_TITLES[d.code] ?? d.code} (${who})`, detail: d.message, ...fix });
+  }
+  for (const e of data?.upcomingEvents ?? []) {
+    const change = `${e.previousValue !== null ? `${formatRuleValue(e.previousValue, e.unit)} ← ` : ''}${formatRuleValue(e.value, e.unit)}`;
+    const impact = e.estimatedMonthlyImpact === null ? '' : ` · أثره على الكلفة الشهرية نحو ${formatMoney(Math.round(e.estimatedMonthlyImpact))} ر.س`;
+    out.push({ key: `ev:${e.key}`, tone: 'slate', title: `تغيير نظامي من ${formatDate(e.effectiveFrom)}: ${e.label}`, detail: `${change}${impact}`, href: '/workforce/rules', action: 'المصدر' });
+  }
+  return out.sort((a, b) => TONE_RANK[a.tone] - TONE_RANK[b.tone]);
+}
+
+function AttentionCard({ items, loading }: { items: Attention[]; loading: boolean }) {
+  const [all, setAll] = useState(false);
+  const shown = all ? items : items.slice(0, 5);
+  return (
+    <Card title="يحتاج انتباهك" subtitle={items.length ? `${items.length} ملاحظة، الأهم أولاً` : undefined} className="lg:col-span-3">
+      {loading && !items.length ? (
+        <LoadingBlock label="جارٍ الفحص…" />
+      ) : !items.length ? (
+        <p className="rounded-2xl bg-emerald-50 px-4 py-6 text-center text-[13px] font-black text-emerald-800">لا شيء يحتاج انتباهك الآن.</p>
+      ) : (
+        <>
+          <ul className="divide-y divide-slate-100">
+            {shown.map((a) => (
+              <li key={a.key} className="flex items-start gap-3 py-3">
+                <span className={`mt-1.5 inline-block h-2.5 w-2.5 shrink-0 rounded-full ${TONE_DOT[a.tone]}`} aria-hidden="true" />
+                <div className="min-w-0 flex-1">
+                  <p className="text-[13px] font-black text-slate-800 leading-relaxed">{a.title}</p>
+                  <p className="mt-0.5 text-[12px] font-bold text-slate-500 leading-relaxed">{a.detail}</p>
+                </div>
+                {a.href && (
+                  <Link href={a.href} className="shrink-0 whitespace-nowrap rounded-lg bg-indigo-50 px-2.5 py-1 text-[11.5px] font-black text-indigo-700 hover:bg-indigo-100">
+                    {a.action ?? 'عرض'}
+                  </Link>
+                )}
+              </li>
+            ))}
+          </ul>
+          {items.length > 5 && (
+            <button type="button" onClick={() => setAll(!all)} className="mt-2 text-[12px] font-black text-indigo-700 hover:underline">
+              {all ? 'عرض أقل' : `عرض الكل (${items.length})`}
+            </button>
+          )}
+        </>
       )}
     </Card>
   );
 }
 
-type GroupTab = 'company' | 'branch' | 'department';
+// ---------------------------------------------------------------------------
+// Nitaqat by legal company
+// ---------------------------------------------------------------------------
 
-function Kpi({ title, cost, net, subsidy, hint }: { title: string; cost: number; net: number; subsidy: number; hint?: string }) {
+function SaudizationCard({ data, error, reload }: { data: SaudizationSummary | null; error: string | null; reload: () => void }) {
   return (
-    <div className="rounded-3xl border border-slate-100 bg-white p-5 shadow-[0_10px_30px_rgba(0,0,0,0.02)]">
-      <h3 className="text-[13px] font-black text-slate-500">{title}</h3>
-      <p className="mt-2 text-[22px] sm:text-[26px] font-black text-slate-900 leading-tight">
-        <Money value={cost} />
-      </p>
-      <p className="text-[11px] font-bold text-slate-400">كلفة صاحب العمل قبل دعم هدف</p>
-      <dl className="mt-3 space-y-1 border-t border-slate-100 pt-3 text-[12px] font-bold">
-        <div className="flex justify-between gap-2">
-          <dt className="text-green-700">دعم هدف (مشروط)</dt>
-          <dd className="text-green-700">
-            <Money value={subsidy} />
-          </dd>
-        </div>
-        <div className="flex justify-between gap-2">
-          <dt className="text-slate-600">بعد الدعم</dt>
-          <dd className="text-slate-900">
-            <Money value={net} />
-          </dd>
-        </div>
-      </dl>
-      {hint && <p className="mt-2 text-[11px] font-bold text-slate-400">{hint}</p>}
-    </div>
+    <Card title="نطاقات حسب الشركة" subtitle="تقدير بأوزان قوى" className="lg:col-span-2" actions={<Link href="/workforce/saudization" className={buttonClass.link}>التفاصيل ←</Link>}>
+      {error && <ErrorBlock message={error} onRetry={reload} />}
+      {!data && !error && <LoadingBlock label="جارٍ التقدير…" />}
+      {data && !data.companies.length && <EmptyBlock text="لا توجد شركات قانونية" />}
+      {data && data.companies.length > 0 && (
+        <ul className="divide-y divide-slate-100">
+          {data.companies.map((c) => (
+            <li key={c.companyId}>
+              <Link href={`/workforce/saudization?companyId=${encodeURIComponent(c.companyId)}`} className="flex items-center justify-between gap-3 py-3 hover:bg-slate-50 -mx-2 px-2 rounded-xl">
+                <span className="min-w-0 truncate text-[13px] font-black text-slate-800">{c.companyName}</span>
+                <span className="flex shrink-0 items-center gap-2">
+                  {c.status === 'OK' ? (
+                    <>
+                      <span dir="ltr" className="text-[12.5px] font-black text-slate-600 tabular-nums">
+                        {c.pct}%
+                      </span>
+                      <BandBadge band={c.band} />
+                    </>
+                  ) : (
+                    <span className="text-[11.5px] font-bold text-slate-500">{c.status === 'NO_ACTIVITY' ? 'النشاط غير محدد' : 'لا عاملين'}</span>
+                  )}
+                </span>
+              </Link>
+            </li>
+          ))}
+        </ul>
+      )}
+    </Card>
   );
 }
+
+// ---------------------------------------------------------------------------
+// «ماذا تريد أن تقرر؟»
+// ---------------------------------------------------------------------------
+
+const DECISIONS: ReadonlyArray<{ href: string; icon: LucideIcon; tint: string; q: string; a: string }> = [
+  { href: '/workforce/true-cost', icon: Calculator, tint: 'bg-emerald-50 text-emerald-600', q: 'كم يكلفني كل موظف فعلاً؟', a: 'الراتب مع التأمينات والرسوم ونهاية الخدمة، شهراً بشهر.' },
+  { href: '/workforce/hire-scenario', icon: UserPlus, tint: 'bg-sky-50 text-sky-600', q: 'أوظّف سعودياً أم وافداً؟', a: 'قارن الخيارات بالكلفة وأثرها على نطاقات قبل التعيين.' },
+  { href: '/workforce/exit-cost', icon: UserMinus, tint: 'bg-rose-50 text-rose-600', q: 'كم يكلف إنهاء خدمة موظف؟', a: 'المستحقات حسب السبب، والمخاطر، وكلفة الإحلال.' },
+  { href: '/workforce/saudization', icon: ShieldCheck, tint: 'bg-green-50 text-green-700', q: 'كيف أحافظ على نطاقي أو أرفعه؟', a: 'الهامش قبل الهبوط، وأقل عدد تعيينات للنطاق الأعلى.' },
+  { href: '/workforce/plans', icon: ClipboardList, tint: 'bg-violet-50 text-violet-600', q: 'ما خطة القوى العاملة للسنة القادمة؟', a: 'التعيينات والخروج والزيادات، واعتماد الخطة ومقارنتها بالفعلي.' },
+];
+
+function DecisionTiles({ plans }: { plans: PlansSummary | null }) {
+  return (
+    <section aria-labelledby="wf-decisions">
+      <h2 id="wf-decisions" className="mb-3 text-[16px] font-black text-slate-800">
+        ماذا تريد أن تقرر؟
+      </h2>
+      <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-5 gap-3">
+        {DECISIONS.map((d) => (
+          <Link key={d.href} href={d.href} className="group rounded-3xl border border-slate-100 bg-white p-4 shadow-[0_10px_30px_rgba(0,0,0,0.02)] transition hover:border-indigo-200 hover:shadow-md">
+            <span className={`inline-flex rounded-xl p-2 ${d.tint}`} aria-hidden="true">
+              <d.icon size={20} />
+            </span>
+            <p className="mt-3 text-[14px] font-black text-slate-800 leading-snug group-hover:text-indigo-700">{d.q}</p>
+            <p className="mt-1 text-[12px] font-bold text-slate-500 leading-relaxed">{d.a}</p>
+            {d.href === '/workforce/plans' && plans && (
+              <p className="mt-2 text-[11.5px] font-black text-violet-700">{plans.latestApproved ? `المعتمدة: ${plans.latestApproved.name}` : 'لا توجد خطة معتمدة بعد'}</p>
+            )}
+          </Link>
+        ))}
+      </div>
+    </section>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Cost details (folded)
+// ---------------------------------------------------------------------------
+
+type GroupTab = 'company' | 'branch' | 'department';
 
 function GroupTable({ rows: all, horizon, label }: { rows: OverviewResponse['byCompany']; horizon: Horizon; label: string }) {
   const [expanded, setExpanded] = useState(false);
@@ -131,8 +272,8 @@ function GroupTable({ rows: all, horizon, label }: { rows: OverviewResponse['byC
             <th scope="col" className="py-2 text-right font-black">{label}</th>
             <th scope="col" className="py-2 text-right font-black">الموظفون</th>
             <th scope="col" className="py-2 text-right font-black">هذا الشهر</th>
-            <th scope="col" className="py-2 text-right font-black">{`${horizon} شهراً قبل الدعم`}</th>
-            <th scope="col" className="py-2 text-right font-black">{`${horizon} شهراً بعد الدعم`}</th>
+            <th scope="col" className="py-2 text-right font-black">{`خلال ${horizon} شهراً`}</th>
+            <th scope="col" className="py-2 text-right font-black">بعد دعم هدف</th>
           </tr>
         </thead>
         <tbody>
@@ -140,9 +281,9 @@ function GroupTable({ rows: all, horizon, label }: { rows: OverviewResponse['byC
             <tr key={r.id || 'none'} className="border-b border-slate-100 font-bold text-slate-700">
               <th scope="row" className="py-2 text-right font-black text-slate-800">{r.name}</th>
               <td className="py-2"><Num value={r.headcount} /></td>
-              <td className="py-2"><Money value={r.month1.cost} /></td>
-              <td className="py-2"><Money value={r.window.cost} /></td>
-              <td className="py-2"><Money value={r.window.net} /></td>
+              <td className="py-2"><Money value={r.month1.cost} round /></td>
+              <td className="py-2"><Money value={r.window.cost} round /></td>
+              <td className="py-2"><Money value={r.window.net} round /></td>
             </tr>
           ))}
         </tbody>
@@ -156,49 +297,134 @@ function GroupTable({ rows: all, horizon, label }: { rows: OverviewResponse['byC
   );
 }
 
-interface PlansSummary {
-  counts: Record<string, number>;
-  labels: Record<string, string>;
-  latestApproved: { id: string; name: string; fromMonth: string; months: number; decidedAt: string | null } | null;
-}
-
-/** «الخطط»: plans by status and the latest approved plan, linking to «خطة القوى العاملة». */
-function PlansSummaryCard() {
-  const { data, error, reload } = useApi<PlansSummary>('/api/workforce/plans?summary=1');
+function LevyTable({ rows }: { rows: OverviewResponse['legalCompanies'] }) {
+  if (!rows.length) return <EmptyBlock text="لا توجد شركات قانونية" />;
   return (
-    <Card title="الخطط" subtitle="خطط القوى العاملة بنسخها واعتمادها، والمخطط مقابل الفعلي من الرواتب." actions={<Link href="/workforce/plans" className={buttonClass.link}>خطة القوى العاملة ←</Link>}>
-      {error && <ErrorBlock message={error} onRetry={reload} />}
-      {data && (
-        <div className="space-y-3">
-          <ul className="flex flex-wrap gap-2 text-[12px] font-bold">
-            {Object.entries(data.counts).map(([k, v]) => (
-              <li key={k} className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-1.5 text-slate-700">
-                {data.labels[k] ?? k}: <Num value={v} />
-              </li>
-            ))}
-          </ul>
-          {data.latestApproved ? (
-            <p className="text-[12.5px] font-bold text-slate-700">
-              آخر خطة معتمدة:{' '}
-              <Link href={`/workforce/plans/${encodeURIComponent(data.latestApproved.id)}`} className="font-black text-indigo-700 hover:underline">{data.latestApproved.name}</Link>{' '}
-              <span className="text-slate-500">{`(من ${data.latestApproved.fromMonth}، ${data.latestApproved.months} شهراً)`}</span>
-            </p>
-          ) : (
-            <p className="text-[12px] font-bold text-slate-500">لا توجد خطة معتمدة بعد.</p>
-          )}
-        </div>
-      )}
-    </Card>
+    <div className="overflow-x-auto">
+      <table className="w-full min-w-[720px] text-[12.5px]">
+        <caption className="sr-only">المقابل المالي على الوافدين لكل شركة قانونية هذا الشهر</caption>
+        <thead>
+          <tr className="border-b border-slate-200 text-slate-500">
+            <th scope="col" className="py-2 text-right font-black">الشركة</th>
+            <th scope="col" className="py-2 text-right font-black">سعودي</th>
+            <th scope="col" className="py-2 text-right font-black">خليجي</th>
+            <th scope="col" className="py-2 text-right font-black">وافد</th>
+            <th scope="col" className="py-2 text-right font-black">وافدون بمقابل 700 ر.س</th>
+            <th scope="col" className="py-2 text-right font-black">وافدون بمقابل 800 ر.س</th>
+            <th scope="col" className="py-2 text-right font-black">معفَون</th>
+            <th scope="col" className="py-2 text-right font-black">المقابل المالي الشهري</th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((c) => (
+            <tr key={c.companyId} className="border-b border-slate-100 font-bold text-slate-700">
+              <th scope="row" className="py-2 text-right font-black text-slate-800">
+                {c.name}
+                {(c.industrialZero || c.isIndustrialLicensed) && <span className="mr-1.5 text-[11px] font-bold text-slate-400">(صناعي{c.industrialZero ? '، معفى' : ''})</span>}
+              </th>
+              <td className="py-2"><Num value={c.saudi} /></td>
+              <td className="py-2"><Num value={c.gcc} /></td>
+              <td className="py-2"><Num value={c.expat} /></td>
+              <td className="py-2"><Num value={c.within} /></td>
+              <td className="py-2"><Num value={c.above} /></td>
+              <td className="py-2"><Num value={c.exempt} /></td>
+              <td className="py-2"><Money value={c.monthlyLevy} round /></td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
   );
 }
+
+function CostDetails({ data, horizon, setHorizon, scenario, setScenario }: { data: OverviewResponse; horizon: Horizon; setHorizon: (h: Horizon) => void; scenario: Scenario; setScenario: (s: Scenario) => void }) {
+  const [groupTab, setGroupTab] = useState<GroupTab>('company');
+  const [compositionView, setCompositionView] = useState<'window' | 'month'>('window');
+  const groups = groupTab === 'company' ? data.byCompany : groupTab === 'branch' ? data.byBranch : data.byDepartment;
+  return (
+    <details className="group rounded-3xl border border-slate-100 bg-white shadow-[0_10px_30px_rgba(0,0,0,0.02)]">
+      <summary className="flex cursor-pointer list-none items-center gap-3 p-5 sm:p-6 [&::-webkit-details-marker]:hidden">
+        <div className="min-w-0 flex-1">
+          <h2 className="text-[16px] font-black text-slate-800">تفاصيل الكلفة</h2>
+          <p className="mt-1 text-[12px] font-bold text-slate-500">مما تتكون الكلفة، وتطورها شهرياً، وتوزيعها على الشركات والفروع والإدارات، والمقابل المالي على الوافدين.</p>
+        </div>
+        <ChevronDown size={20} className="shrink-0 text-slate-400 transition group-open:rotate-180" aria-hidden="true" />
+      </summary>
+      <div className="space-y-6 border-t border-slate-100 p-4 sm:p-6">
+        <div className="flex flex-wrap items-end gap-4">
+          <Segmented label="المدة" value={horizon} onChange={setHorizon} options={HORIZONS.map((h) => ({ value: h, label: `${h} شهراً` }))} />
+          <div>
+            <Segmented label={SCENARIO_FIELD_LABEL} value={scenario} onChange={setScenario} options={SCENARIOS.map((s) => ({ value: s, label: SCENARIO_LABELS[s] }))} />
+          </div>
+          <p className="flex items-center gap-1.5 pb-2 text-[11.5px] font-bold text-slate-400">
+            <Info size={13} aria-hidden="true" /> {SCENARIO_FIELD_HINT}
+          </p>
+        </div>
+
+        <div className="grid grid-cols-1 lg:grid-cols-5 gap-6">
+          <div className="lg:col-span-3">
+            <div className="mb-3 flex flex-wrap items-end justify-between gap-2">
+              <h3 className="text-[14px] font-black text-slate-700">مما تتكون الكلفة</h3>
+              <Segmented
+                label="الفترة"
+                value={compositionView}
+                onChange={setCompositionView}
+                options={[
+                  { value: 'window', label: `${data.horizon} شهراً` },
+                  { value: 'month', label: 'هذا الشهر' },
+                ]}
+              />
+            </div>
+            {data.composition.length ? (
+              <CompositionBars items={data.composition.map((c) => ({ key: c.key, label: c.label, kind: c.kind, amount: compositionView === 'window' ? c.amount : c.month1 }))} />
+            ) : (
+              <EmptyBlock text="لا توجد بنود" />
+            )}
+          </div>
+          <div className="lg:col-span-2">
+            <h3 className="mb-3 text-[14px] font-black text-slate-700">الكلفة شهراً بشهر (36 شهراً)</h3>
+            <SeriesChart series={data.series} title="الكلفة الشهرية للمنشأة" />
+          </div>
+        </div>
+
+        <div>
+          <div className="mb-3 flex flex-wrap items-end justify-between gap-2">
+            <h3 className="text-[14px] font-black text-slate-700">التوزيع</h3>
+            <Segmented
+              label="حسب"
+              value={groupTab}
+              onChange={setGroupTab}
+              options={[
+                { value: 'company', label: 'الشركة' },
+                { value: 'branch', label: 'الفرع' },
+                { value: 'department', label: 'الإدارة' },
+              ]}
+            />
+          </div>
+          <GroupTable rows={groups} horizon={data.horizon} label={groupTab === 'company' ? 'الشركة القانونية' : groupTab === 'branch' ? 'الفرع' : 'الإدارة'} />
+        </div>
+
+        <div>
+          <h3 className="text-[14px] font-black text-slate-700">المقابل المالي على الوافدين هذا الشهر</h3>
+          <p className="mb-3 mt-1 text-[12px] font-bold text-slate-500">يُحدَّد المبلغ لكل وافد بعدد السعوديين مقابل الوافدين في الشركة القانونية، وليس بلون النطاق.</p>
+          <LevyTable rows={data.legalCompanies} />
+        </div>
+      </div>
+    </details>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Page
+// ---------------------------------------------------------------------------
 
 export default function WorkforceOverviewPage() {
   const [horizon, setHorizon] = useState<Horizon>(36);
   const [scenario, setScenario] = useState<Scenario>('base');
-  const [groupTab, setGroupTab] = useState<GroupTab>('company');
-  const [compositionView, setCompositionView] = useState<'window' | 'month'>('window');
   const [saving, setSaving] = useState(false);
   const { data, error, loading, reload } = useApi<OverviewResponse>(`/api/workforce/overview?months=${horizon}&scenario=${scenario}`);
+  const sz = useApi<SaudizationSummary>('/api/workforce/saudization?summary=1');
+  const plans = useApi<PlansSummary>('/api/workforce/plans?summary=1');
 
   const save = async () => {
     setSaving(true);
@@ -208,250 +434,81 @@ export default function WorkforceOverviewPage() {
     else toast.error(res.message);
   };
 
-  const groups = data ? (groupTab === 'company' ? data.byCompany : groupTab === 'branch' ? data.byBranch : data.byDepartment) : [];
+  const k = data?.kpis;
+  const items = attentionItems(data, sz.data);
 
   return (
     <WfPage
       current="/workforce"
       icon={<Gauge size={24} />}
-      title="لوحة القرار"
-      subtitle="الكلفة الكلية للمنشأة على صاحب العمل شهراً بشهر، وتركيبتها، وحسب الشركة والفرع والإدارة، مع التغييرات النظامية القادمة وجودة البيانات."
+      title="محرك القرارات"
+      subtitle="كم تكلفك القوى العاملة، وأين تقف في نطاقات، وما يحتاج قراراً منك."
+      help={
+        <>
+          <p>الكلفة هنا كلفة صاحب العمل: الراتب والبدلات، وحصة المنشأة في التأمينات، ومخصص نهاية الخدمة، ورسوم الوافدين والمقابل المالي، والتأمين الطبي.</p>
+          <p>دعم هدف (صندوق تنمية الموارد البشرية) يظهر منفصلاً لأنه مشروط بقبول طلب الدعم، فالرقم الرئيسي قبل الدعم.</p>
+          <p>كل رقم في الصفحات التفصيلية عليه زر «لماذا؟» يبيّن المعادلة ومصدر كل قيمة نظامية.</p>
+        </>
+      }
       actions={
         <>
-          <ExportButton kind="overview" query={{ months: horizon, scenario }} disabled={!data || loading} />
-          <PdfReportButton kind="true-cost" query={{ months: horizon, scenario }} disabled={!data || loading} />
-          <button type="button" onClick={save} disabled={saving || !data} className={buttonClass.primary}>
-            <Save size={16} aria-hidden="true" /> {saving ? 'جارٍ الحفظ…' : 'حفظ الحساب'}
+          <ExportMenu disabled={!data || loading} excel={{ kind: 'overview', query: { months: horizon, scenario } }} pdf={{ kind: 'true-cost', query: { months: horizon, scenario } }} />
+          <button type="button" onClick={save} disabled={saving || !data} className={buttonClass.secondary} title="يحفظ الأرقام مع نسخ القواعد المستخدمة للرجوع إليها لاحقاً">
+            <Save size={16} aria-hidden="true" /> {saving ? 'جارٍ الحفظ…' : 'حفظ نسخة'}
           </button>
         </>
       }
     >
-      <div className="flex flex-wrap items-end gap-4">
-        <Segmented label="أفق التوقع" value={horizon} onChange={setHorizon} options={HORIZONS.map((h) => ({ value: h, label: `${h} شهراً` }))} />
-        <Segmented label="السيناريو (للافتراضات ذات النطاق)" value={scenario} onChange={setScenario} options={SCENARIOS.map((s) => ({ value: s, label: SCENARIO_LABELS[s] }))} />
-        {data && (
-          <p className="text-[12px] font-bold text-slate-500 pb-2">
-            {"يبدأ التوقع من "}
-            <span dir="ltr">{data.startMonth}</span>
-            {" · نسخة المحرك "}
-            <span dir="ltr">{data.engineVersion}</span>
-          </p>
-        )}
-      </div>
-
       {error && <ErrorBlock message={error} onRetry={reload} />}
       {loading && !data && <LoadingBlock />}
 
-      {data && (
+      {data && k && (
         <div className={`space-y-6 transition-opacity ${loading ? 'opacity-60' : ''}`} aria-busy={loading}>
           <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-4">
-            <Kpi title="هذا الشهر" cost={data.kpis.thisMonth.cost} subsidy={data.kpis.thisMonth.subsidy} net={data.kpis.thisMonth.net} />
-            <Kpi title="الأشهر الـ12 القادمة" cost={data.kpis.next12.cost} subsidy={data.kpis.next12.subsidy} net={data.kpis.next12.net} />
-            <Kpi title="الأشهر الـ36 القادمة" cost={data.kpis.next36.cost} subsidy={data.kpis.next36.subsidy} net={data.kpis.next36.net} />
-            <div className="rounded-3xl border border-slate-100 bg-white p-5 shadow-[0_10px_30px_rgba(0,0,0,0.02)]">
-              <h3 className="text-[13px] font-black text-slate-500">القوى العاملة هذا الشهر</h3>
-              <p className="mt-2 text-[26px] font-black text-slate-900">
-                <Num value={data.kpis.headcount} /> <span className="text-[13px] text-slate-400">موظف</span>
-              </p>
-              <p className="text-[12px] font-bold text-slate-600">
-                سعودي <Num value={data.kpis.saudi} /> · خليجي <Num value={data.kpis.gcc} /> · وافد <Num value={data.kpis.expat} />
-              </p>
-              <dl className="mt-3 space-y-1 border-t border-slate-100 pt-3 text-[12px] font-bold">
-                <div className="flex justify-between gap-2">
-                  <dt className="text-slate-600">نهاية الخدمة المستحقة (إنهاء صاحب العمل)</dt>
-                  <dd><Money value={data.kpis.eosbLiabilityEmployer} /></dd>
-                </div>
-                <div className="flex justify-between gap-2">
-                  <dt className="text-slate-600">لو استقال الجميع (المادة 85)</dt>
-                  <dd><Money value={data.kpis.eosbLiabilityResignation} /></dd>
-                </div>
-              </dl>
-            </div>
+            <Headline
+              title="كلفة القوى العاملة هذا الشهر"
+              foot={
+                <>
+                  بعد دعم هدف المتوقع: <Money value={k.thisMonth.net} round className="text-slate-700" />
+                </>
+              }
+            >
+              <Money value={k.thisMonth.cost} round />
+            </Headline>
+            <Headline
+              title="خلال 12 شهراً"
+              foot={
+                <>
+                  خلال 36 شهراً: <Money value={k.next36.cost} round className="text-slate-700" />
+                </>
+              }
+            >
+              <Money value={k.next12.cost} round />
+            </Headline>
+            <Headline title="الموظفون" foot={<NationalityBar saudi={k.saudi} gcc={k.gcc} expat={k.expat} />}>
+              <Num value={k.headcount} /> <span className="text-[14px] text-slate-400">موظف</span>
+            </Headline>
+            <Headline
+              title="مكافأة نهاية الخدمة المتراكمة"
+              foot={
+                <>
+                  لو استقال الجميع اليوم: <Money value={k.eosbLiabilityResignation} round className="text-slate-700" />
+                </>
+              }
+            >
+              <Money value={k.eosbLiabilityEmployer} round />
+            </Headline>
           </div>
 
           <div className="grid grid-cols-1 lg:grid-cols-5 gap-6">
-            <Card
-              className="lg:col-span-3"
-              title="تركيبة الكلفة"
-              subtitle={compositionView === 'window' ? `مجموع ${data.horizon} شهراً حسب البند` : 'الشهر الحالي حسب البند'}
-              actions={
-                <Segmented
-                  label="الفترة"
-                  value={compositionView}
-                  onChange={setCompositionView}
-                  options={[
-                    { value: 'window', label: `${data.horizon} شهراً` },
-                    { value: 'month', label: 'هذا الشهر' },
-                  ]}
-                />
-              }
-            >
-              {data.composition.length ? (
-                <CompositionBars items={data.composition.map((c) => ({ key: c.key, label: c.label, kind: c.kind, amount: compositionView === 'window' ? c.amount : c.month1 }))} />
-              ) : (
-                <EmptyBlock text="لا توجد بنود" />
-              )}
-            </Card>
-            <Card className="lg:col-span-2" title="الكلفة الشهرية" subtitle="36 شهراً من الشهر الحالي">
-              <SeriesChart series={data.series} title="الكلفة الشهرية للمنشأة" />
-            </Card>
+            <AttentionCard items={items} loading={sz.loading} />
+            <SaudizationCard data={sz.data} error={sz.error} reload={sz.reload} />
           </div>
 
-          <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-            <Card title="تغييرات نظامية قادمة" subtitle={`ضمن ${data.horizon} شهراً، بأثرها التقديري على الكلفة الشهرية لهذه القوى العاملة`}>
-              {data.upcomingEvents.length ? (
-                <ul className="space-y-3">
-                  {data.upcomingEvents.map((e) => (
-                    <li key={e.key} className="rounded-2xl border border-slate-200 p-3">
-                      <div className="flex flex-wrap items-start justify-between gap-2">
-                        <p className="text-[13px] font-black text-slate-800 leading-relaxed">{e.label}</p>
-                        <StatusBadge status={e.status} />
-                      </div>
-                      <p className="mt-1 text-[12px] font-bold text-slate-600">
-                        {`يسري من ${formatDate(e.effectiveFrom)} · `}
-                        {e.previousValue !== null && `${formatRuleValue(e.previousValue, e.unit)} ← `}
-                        {formatRuleValue(e.value, e.unit)}
-                      </p>
-                      <p className="mt-1 text-[12px] font-bold text-slate-700">
-                        الأثر الشهري التقديري:{' '}
-                        {e.estimatedMonthlyImpact === null ? <span className="text-slate-400">غير مقدَّر آلياً</span> : <Money value={e.estimatedMonthlyImpact} className="text-rose-700" />}
-                        {e.affected !== null && <span className="text-slate-500">{` · ${e.affected} موظف متأثر`}</span>}
-                      </p>
-                      <p className="mt-1 text-[11px] font-bold text-slate-400">{e.impactBasis}</p>
-                    </li>
-                  ))}
-                </ul>
-              ) : (
-                <EmptyBlock text="لا توجد تغييرات مسجلة في سجل القواعد خلال هذا الأفق." />
-              )}
-            </Card>
+          <DecisionTiles plans={plans.data} />
 
-            <Card title="جودة البيانات" subtitle="ما ينقص الحساب أو يُفترض فيه، ومكان إصلاحه">
-              {data.dataQuality.length ? (
-                <ul className="space-y-3">
-                  {data.dataQuality.map((d) => (
-                    <li key={d.code} className="rounded-2xl border border-slate-200 p-3">
-                      <div className="flex flex-wrap items-center justify-between gap-2">
-                        <p className="text-[13px] font-black text-slate-800">{FLAG_TITLES[d.code] ?? d.code}</p>
-                        <span
-                          className={`rounded-md px-1.5 py-0.5 text-[10.5px] font-black ${d.severity === 'ERROR' ? 'bg-rose-100 text-rose-800' : d.severity === 'WARNING' ? 'bg-amber-100 text-amber-800' : 'bg-slate-100 text-slate-600'}`}
-                        >
-                          {SEVERITY_LABELS[d.severity]}
-                          {d.employees > 0 ? ` · ${d.employees} موظف` : ` · ${d.count}`}
-                        </span>
-                      </div>
-                      <p className="mt-1 text-[12px] font-bold text-slate-600 leading-relaxed">{d.message}</p>
-                      {d.fix === 'EMPLOYEE' && d.sample.length > 0 && (
-                        <div className="mt-2 flex flex-wrap gap-1.5">
-                          {d.sample.slice(0, 6).map((s) => (
-                            <Link key={s.id} href={`/employees/${s.id}/edit`} className="rounded-lg bg-indigo-50 px-2 py-1 text-[11px] font-black text-indigo-700 hover:bg-indigo-100">
-                              {s.name}
-                            </Link>
-                          ))}
-                          {d.employees > 6 && (
-                            <Link href="/workforce/true-cost?flagged=1" className="rounded-lg px-2 py-1 text-[11px] font-black text-slate-500 hover:underline">
-                              {`و${d.employees - 6} غيرهم ←`}
-                            </Link>
-                          )}
-                        </div>
-                      )}
-                      {d.fix === 'COMPANY' && (
-                        <div className="mt-2 flex flex-wrap gap-1.5">
-                          {d.companies.length ? (
-                            d.companies.map((c) => (
-                              <Link key={c.id} href={companySettingsHref(c.id)} className="rounded-lg bg-indigo-50 px-2 py-1 text-[11px] font-black text-indigo-700 hover:bg-indigo-100">
-                                {`إعدادات الكلفة: ${c.name} ←`}
-                              </Link>
-                            ))
-                          ) : (
-                            <Link href="/companies" className="text-[12px] font-black text-indigo-700 hover:underline">
-                              أدخلها في إعدادات الشركة ←
-                            </Link>
-                          )}
-                        </div>
-                      )}
-                      {d.fix === 'ASSUMPTIONS' && (
-                        <Link href="/workforce/assumptions" className="mt-2 inline-block text-[12px] font-black text-indigo-700 hover:underline">
-                          أدخل الافتراضات ←
-                        </Link>
-                      )}
-                      {d.fix === 'RULES' && (
-                        <Link href="/workforce/rules" className="mt-2 inline-block text-[12px] font-black text-indigo-700 hover:underline">
-                          {`راجع سجل القواعد${d.ruleKeys.length ? ` (${d.ruleKeys.join('، ')})` : ''} ←`}
-                        </Link>
-                      )}
-                    </li>
-                  ))}
-                </ul>
-              ) : (
-                <EmptyBlock text="لا توجد ملاحظات على البيانات." />
-              )}
-            </Card>
-          </div>
+          <CostDetails data={data} horizon={horizon} setHorizon={setHorizon} scenario={scenario} setScenario={setScenario} />
 
-          <Card
-            title="الكلفة حسب الهيكل"
-            actions={
-              <Segmented
-                label="التجميع"
-                value={groupTab}
-                onChange={setGroupTab}
-                options={[
-                  { value: 'company', label: 'الشركة' },
-                  { value: 'branch', label: 'الفرع' },
-                  { value: 'department', label: 'الإدارة' },
-                ]}
-              />
-            }
-          >
-            <GroupTable rows={groups} horizon={data.horizon} label={groupTab === 'company' ? 'الشركة القانونية' : groupTab === 'branch' ? 'الفرع' : 'الإدارة'} />
-          </Card>
-
-          <Card title="الشركات القانونية والمقابل المالي" subtitle="هذا الشهر. شريحة المقابل المالي حسب عدد السعوديين مقابل الوافدين في الكيان (وليس لون النطاق). النسبة الخام ليست نسبة نطاقات الموزونة؛ المرجع منصة قوى.">
-            {data.legalCompanies.length ? (
-              <div className="overflow-x-auto">
-                <table className="w-full min-w-[820px] text-[12.5px]">
-                  <caption className="sr-only">الشركات القانونية وشرائح المقابل المالي</caption>
-                  <thead>
-                    <tr className="border-b border-slate-200 text-slate-500">
-                      <th scope="col" className="py-2 text-right font-black">الشركة</th>
-                      <th scope="col" className="py-2 text-right font-black">الموظفون</th>
-                      <th scope="col" className="py-2 text-right font-black">سعودي</th>
-                      <th scope="col" className="py-2 text-right font-black">خليجي</th>
-                      <th scope="col" className="py-2 text-right font-black">وافد</th>
-                      <th scope="col" className="py-2 text-right font-black">شريحة 700</th>
-                      <th scope="col" className="py-2 text-right font-black">شريحة 800</th>
-                      <th scope="col" className="py-2 text-right font-black">معفى</th>
-                      <th scope="col" className="py-2 text-right font-black">صناعي</th>
-                      <th scope="col" className="py-2 text-right font-black">المقابل الشهري</th>
-                      <th scope="col" className="py-2 text-right font-black">النسبة الخام</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {data.legalCompanies.map((c) => (
-                      <tr key={c.companyId} className="border-b border-slate-100 font-bold text-slate-700">
-                        <th scope="row" className="py-2 text-right font-black text-slate-800">{c.name}</th>
-                        <td className="py-2"><Num value={c.headcount} /></td>
-                        <td className="py-2"><Num value={c.saudi} /></td>
-                        <td className="py-2"><Num value={c.gcc} /></td>
-                        <td className="py-2"><Num value={c.expat} /></td>
-                        <td className="py-2"><Num value={c.within} /></td>
-                        <td className="py-2"><Num value={c.above} /></td>
-                        <td className="py-2"><Num value={c.exempt} /></td>
-                        <td className="py-2">{c.industrialZero ? 'معفى' : c.isIndustrialLicensed ? 'مرخّص' : '—'}</td>
-                        <td className="py-2"><Money value={c.monthlyLevy} /></td>
-                        <td className="py-2">{c.rawSaudiRatioPct === null ? '—' : <span dir="ltr">{c.rawSaudiRatioPct}%</span>}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            ) : (
-              <EmptyBlock text="لا توجد شركات قانونية" />
-            )}
-          </Card>
-          <SaudizationSummaryCard />
-          <PlansSummaryCard />
         </div>
       )}
     </WfPage>

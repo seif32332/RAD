@@ -1,7 +1,7 @@
 "use client";
 
-// «خطة القوى العاملة»: the plans (versions) with their status, a new plan, and the side-by-side comparison
-// of 2–3 versions (?compare=a,b[,c]). GET /api/workforce/plans, POST /api/workforce/plans,
+// «خطط القوى العاملة»: the plans (versions) with their status, a new plan, and the side-by-side comparison
+// of 2–3 versions (?compare=a,b[,c]). With no plan yet, one line says what a plan is, with «خطة جديدة». GET /api/workforce/plans, POST /api/workforce/plans,
 // GET /api/workforce/plans/compare. A plan is scenario data: nothing is written to the employee file or payroll.
 import React, { Suspense, useMemo, useState } from 'react';
 import Link from 'next/link';
@@ -14,7 +14,7 @@ import { PLAN_MONTHS, PLAN_STATUSES, PLAN_STATUS_LABELS, POSITION_KIND_LABELS, t
 import { callApi, useApi } from '../_components/api';
 import type { OptionsResponse } from '../_components/types';
 import { BandBadge } from '../_components/nitaqat-ui';
-import { Card, EmptyBlock, ErrorBlock, LoadingBlock, Money, Num, Segmented, SelectField, WfPage, buttonClass, inputClass } from '../_components/ui';
+import { Card, EmptyBlock, ErrorBlock, HelpNote, LoadingBlock, Money, Num, Segmented, SelectField, WfPage, buttonClass, inputClass } from '../_components/ui';
 import { PlanStatusBadge } from './_components/plan-ui';
 
 interface PlanListItem {
@@ -116,7 +116,7 @@ function CompareView({ ids, onClose }: { ids: string[]; onClose: () => void }) {
     return [...m.entries()];
   }, [cols]);
   return (
-    <Card title="مقارنة النسخ" subtitle="العمود الأول هو المرجع. الإجمالي بعد دعم هدف ومع تكاليف الخروج والدوران المتوقع. الخطط المعتمدة بتوقعها المجمّد عند الاعتماد." actions={<button type="button" onClick={onClose} className={buttonClass.link}>إغلاق المقارنة</button>}>
+    <Card title="مقارنة النسخ" subtitle="العمود الأول هو المرجع، والفرق محسوب عنه." actions={<button type="button" onClick={onClose} className={buttonClass.link}>إغلاق المقارنة</button>}>
       {error && <ErrorBlock message={error} onRetry={reload} />}
       {loading && !data && <LoadingBlock />}
       {cols.length > 0 && (
@@ -180,6 +180,12 @@ function CompareView({ ids, onClose }: { ids: string[]; onClose: () => void }) {
           </table>
         </div>
       )}
+      <div className="mt-3">
+        <HelpNote title="ما الذي يُقارن؟">
+          <p>الإجمالي بعد دعم هدف ومع تكاليف الخروج والدوران المتوقع.</p>
+          <p>الخطط المعتمدة بتوقعها المجمّد عند الاعتماد.</p>
+        </HelpNote>
+      </div>
     </Card>
   );
 }
@@ -193,13 +199,21 @@ function PlansContent() {
   const [picked, setPicked] = useState<string[]>([]);
   const options = useApi<OptionsResponse>('/api/workforce/options');
   const list = useApi<ListResponse>(`/api/workforce/plans?take=200${status ? `&status=${status}` : ''}`);
+  const noPlans = !status && !!list.data && !list.data.items.length;
   const toggle = (id: string) => setPicked((p) => (p.includes(id) ? p.filter((x) => x !== id) : p.length >= 3 ? p : [...p, id]));
   return (
     <WfPage
       icon={<ClipboardList size={24} />}
-      title="خطة القوى العاملة"
-      subtitle="نسخ الخطة: التعيينات والإحلال والخروج المخطط والزيادات المؤرخة، وتوقع الكلفة والعدد ونطاقات شهراً بشهر، ثم الاعتماد بمبدأ الفصل بين المُعِدّ والمعتمِد، والمخطط مقابل الفعلي من الرواتب. الخطة سيناريو: لا تُكتب في ملف الموظف ولا المسير."
+      title="خطط القوى العاملة"
+      subtitle="من ستعيّن ومن سيغادر وما الزيادات في السنوات القادمة، وكم يكلف ذلك وأثره على نطاقات."
       current="/workforce/plans"
+      help={
+        <>
+          <p>الخطة نسخ: التعيينات والإحلال والخروج المخطط والزيادات المؤرخة، وتوقع الكلفة والعدد ونطاقات شهراً بشهر.</p>
+          <p>تُعتمد بمبدأ الفصل بين المُعِدّ والمعتمِد، ثم تُقارن بالفعلي من الرواتب.</p>
+          <p>الخطة سيناريو: لا تُكتب في ملف الموظف ولا المسير.</p>
+        </>
+      }
       actions={
         <button type="button" onClick={() => setOpen(true)} className={buttonClass.primary}>
           <Plus size={15} aria-hidden="true" /> خطة جديدة
@@ -207,18 +221,27 @@ function PlansContent() {
       }
     >
       {compare.length >= 2 && <CompareView ids={compare} onClose={() => router.push('/workforce/plans')} />}
-      <Card>
-        <div className="flex flex-wrap items-end justify-between gap-3">
-          <Segmented label="الحالة" value={status} options={[{ value: '' as const, label: 'الكل' }, ...PLAN_STATUSES.map((s) => ({ value: s, label: PLAN_STATUS_LABELS[s] }))]} onChange={setStatus} />
-          <button type="button" disabled={picked.length < 2} onClick={() => router.push(`/workforce/plans?compare=${picked.map(encodeURIComponent).join(',')}`)} className={buttonClass.secondary}>
-            <GitCompare size={15} aria-hidden="true" /> {`قارن المحدد (${picked.length})`}
+      {noPlans ? (
+        <div className="flex flex-col items-center gap-4 rounded-3xl border border-dashed border-slate-300 bg-white px-4 py-12 text-center">
+          <p className="max-w-xl text-[14px] font-bold text-slate-600 leading-relaxed">الخطة تجمع التعيينات والخروج والزيادات المتوقعة لفترة قادمة، وتحسب كلفتها وأثرها على نطاقات قبل أن تقرر.</p>
+          <button type="button" onClick={() => setOpen(true)} className={buttonClass.primary}>
+            <Plus size={15} aria-hidden="true" /> خطة جديدة
           </button>
         </div>
-        <p className="mt-2 text-[11.5px] font-bold text-slate-500">حدّد خطتين أو ثلاثاً للمقارنة جنباً إلى جنب.</p>
-      </Card>
+      ) : (
+        <Card>
+          <div className="flex flex-wrap items-end justify-between gap-3">
+            <Segmented label="الحالة" value={status} options={[{ value: '' as const, label: 'الكل' }, ...PLAN_STATUSES.map((s) => ({ value: s, label: PLAN_STATUS_LABELS[s] }))]} onChange={setStatus} />
+            <button type="button" disabled={picked.length < 2} onClick={() => router.push(`/workforce/plans?compare=${picked.map(encodeURIComponent).join(',')}`)} className={buttonClass.secondary}>
+              <GitCompare size={15} aria-hidden="true" /> {`قارن المحدد (${picked.length})`}
+            </button>
+          </div>
+          <p className="mt-2 text-[11.5px] font-bold text-slate-500">حدّد خطتين أو ثلاثاً للمقارنة جنباً إلى جنب.</p>
+        </Card>
+      )}
       {list.error && <ErrorBlock message={list.error} onRetry={list.reload} />}
       {list.loading && !list.data && <LoadingBlock label="جارٍ التحميل…" />}
-      {list.data && !list.data.items.length && <EmptyBlock text="لا توجد خطط بعد. أنشئ خطة جديدة ثم أضف التعيينات والخروج والزيادات." />}
+      {list.data && !list.data.items.length && !noPlans && <EmptyBlock text="لا توجد خطط بهذه الحالة." />}
       {list.data && list.data.items.length > 0 && (
         <ul className="grid grid-cols-1 lg:grid-cols-2 gap-3">
           {list.data.items.map((p) => (
@@ -235,7 +258,7 @@ function PlansContent() {
               <dl className="mt-3 grid grid-cols-2 sm:grid-cols-4 gap-2 text-[11.5px] font-bold">
                 <div><dt className="text-slate-400">البنود</dt><dd className="text-slate-800"><Num value={p.positionsCount} /></dd></div>
                 <div><dt className="text-slate-400">الزيادات</dt><dd className="text-slate-800"><Num value={p.raisesCount} /></dd></div>
-                <div><dt className="text-slate-400">الدوران</dt><dd className="text-slate-800">{p.attritionPct === null ? 'الفعلي' : <span dir="ltr">{p.attritionPct}%</span>}</dd></div>
+                <div><dt className="text-slate-400">الدوران المفترض</dt><dd className="text-slate-800">{p.attritionPct === null ? 'الفعلي' : <span dir="ltr">{p.attritionPct}%</span>}</dd></div>
                 <div><dt className="text-slate-400">أنشأها</dt><dd className="text-slate-800 truncate">{p.createdByName ?? '—'}</dd></div>
               </dl>
               {p.basedOnName && <p className="mt-2 text-[11.5px] font-bold text-slate-500">{`نسخة من «${p.basedOnName}»`}</p>}

@@ -114,7 +114,7 @@ export function NitaqatActivitySelect({
       <p className="text-[11px] font-bold text-slate-500 leading-relaxed">
         يُستخدم في «مخطط السعودة» لحساب حدود النطاقات Y = m·ln(X) + c.{' '}
         <Link href="/workforce/nitaqat-register" className="inline-flex items-center gap-1 text-blue-700 hover:underline">
-          سجل نطاقات والتوطين <ExternalLink size={11} aria-hidden="true" />
+          الأنشطة وقرارات التوطين <ExternalLink size={11} aria-hidden="true" />
         </Link>
       </p>
       {legacyText.trim() && (

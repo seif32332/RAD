@@ -3,9 +3,11 @@
 // «سيناريوهات التوظيف»: 1–4 alternatives side by side — Saudi hire, expat hire, overtime, outsourcing —
 // over 12 / 24 / 36 months: employer cost, HRDF subsidy, levy tier effect on the other expats, Nitaqat
 // before / after, localization effect of the occupation and overtime capacity. «لماذا؟» per line.
-// POST /api/workforce/hire-scenario (hypothetical: nothing is written). Display only.
+// Layout: the inputs, then a one-glance ranking of the options by the comparison cost (the cheapest marked),
+// then one column per option; the assumptions used are folded last. Header: one «تصدير» menu,
+// «حساسية القرار», «حفظ نسخة». POST /api/workforce/hire-scenario (hypothetical: nothing is written). Display only.
 import React, { useMemo, useState } from 'react';
-import { Plus, Save, Trash2, UserPlus } from 'lucide-react';
+import { ChevronDown, Plus, Save, Trash2, TrendingDown, UserPlus } from 'lucide-react';
 import { toast } from '@/components/ui/feedback';
 import { todayKey } from '@/lib/dates';
 import { MEDICAL_INSURANCE_CLASSES } from '@/lib/workforce/reasons';
@@ -15,8 +17,7 @@ import { HORIZONS, evidenceForLine, type Horizon } from '@/app/api/workforce/_li
 import { callApi, useApi } from '../_components/api';
 import type { OptionsResponse } from '../_components/types';
 import { BAND_TEXT, BandBadge } from '../_components/nitaqat-ui';
-import { Card, ErrorBlock, ExportButton, Money, Segmented, SelectField, SensitivityButton, StatusBadge, WfPage, WhyButton, WhyDialog, buttonClass, inputClass, type WhyContent } from '../_components/ui';
-import PdfReportButton from '../_components/PdfReportButton';
+import { Card, ErrorBlock, ExportMenu, HelpNote, Money, Segmented, SelectField, SensitivityButton, StatusBadge, WfPage, WhyButton, WhyDialog, buttonClass, inputClass, type WhyContent } from '../_components/ui';
 
 interface HireResponse {
   result: HireScenarioResult;
@@ -118,35 +119,45 @@ function CandidateEditor({ i, c, set, remove, employees }: { i: number; c: Candi
           {money('basicSalary', 'الراتب الأساسي الشهري')}
           {money('housingAllowance', 'بدل السكن (يدخل في التأمينات)')}
           {money('otherAllowances', 'بدلات أخرى')}
-          <SelectField label="الجنس" value={c.gender} onChange={(v) => up('gender', v as 'MALE' | 'FEMALE')} options={[{ value: 'MALE', label: 'ذكر' }, { value: 'FEMALE', label: 'أنثى' }]} />
-          <Field id={id('city')} label="المدينة (دعم هدف خارج المدن الكبرى)">
-            <input id={id('city')} className={inputClass} value={c.city} onChange={(e) => up('city', e.target.value)} />
-          </Field>
-          <Field id={id('occ')} label="المهنة (لقرارات التوطين)">
-            <input id={id('occ')} className={inputClass} value={c.occupationName} onChange={(e) => up('occupationName', e.target.value)} />
-          </Field>
-          <Field id={id('occc')} label="رمز المهنة (اختياري)">
-            <input id={id('occc')} inputMode="numeric" className={inputClass} value={c.occupationCode} onChange={(e) => up('occupationCode', e.target.value.replace(/[^\d]/g, ''))} />
-          </Field>
-          <SelectField label="فئة التأمين الطبي" value={c.medicalClass} onChange={(v) => up('medicalClass', v)} placeholder="غير محددة" options={MEDICAL_INSURANCE_CLASSES.map((m) => ({ value: m, label: m }))} />
         </>
       )}
-      {c.kind === 'SAUDI' && (
-        <div className="flex flex-wrap gap-x-4 gap-y-1 text-[12px] font-bold text-slate-700">
-          <label className="inline-flex items-center gap-2"><input type="checkbox" checked={c.isDisabled} onChange={(e) => up('isDisabled', e.target.checked)} /> ذو إعاقة (مرشح افتراضي)</label>
-          <label className="inline-flex items-center gap-2"><input type="checkbox" checked={c.partTime} onChange={(e) => up('partTime', e.target.checked)} /> دوام جزئي</label>
-        </div>
-      )}
-      {c.kind === 'EXPAT' && (
-        <>
-          <Field id={id('nat')} label="الجنسية (اختياري)">
-            <input id={id('nat')} className={inputClass} value={c.nationality} onChange={(e) => up('nationality', e.target.value)} />
-          </Field>
-          <Field id={id('deps')} label="عدد المرافقين">
-            <input id={id('deps')} inputMode="numeric" className={inputClass} value={c.dependentsCount} onChange={(e) => up('dependentsCount', e.target.value.replace(/[^\d]/g, ''))} />
-          </Field>
-          <SelectField label="رسوم المرافقين يدفعها" value={c.dependentsFeePaidBy} onChange={(v) => up('dependentsFeePaidBy', v as CandidateForm['dependentsFeePaidBy'])} placeholder="حسب افتراض الشركة" options={[{ value: 'COMPANY', label: 'الشركة' }, { value: 'EMPLOYEE', label: 'الموظف' }]} />
-        </>
+      {(c.kind === 'SAUDI' || c.kind === 'EXPAT') && (
+        <details className="group rounded-xl border border-slate-100 bg-slate-50/60">
+          <summary className="flex cursor-pointer list-none items-center justify-between px-3 py-2 text-[12px] font-black text-slate-600 [&::-webkit-details-marker]:hidden">
+            بيانات إضافية (اختيارية)
+            <ChevronDown size={14} className="text-slate-400 transition group-open:rotate-180" aria-hidden="true" />
+          </summary>
+          <div className="space-y-2.5 border-t border-slate-100 p-3">
+            <SelectField label="الجنس" value={c.gender} onChange={(v) => up('gender', v as 'MALE' | 'FEMALE')} options={[{ value: 'MALE', label: 'ذكر' }, { value: 'FEMALE', label: 'أنثى' }]} />
+            <Field id={id('city')} label="المدينة (دعم هدف خارج المدن الكبرى)">
+              <input id={id('city')} className={inputClass} value={c.city} onChange={(e) => up('city', e.target.value)} />
+            </Field>
+            <Field id={id('occ')} label="المهنة (لقرارات التوطين)">
+              <input id={id('occ')} className={inputClass} value={c.occupationName} onChange={(e) => up('occupationName', e.target.value)} />
+            </Field>
+            <Field id={id('occc')} label="رمز المهنة (اختياري)">
+              <input id={id('occc')} inputMode="numeric" className={inputClass} value={c.occupationCode} onChange={(e) => up('occupationCode', e.target.value.replace(/[^\d]/g, ''))} />
+            </Field>
+            <SelectField label="فئة التأمين الطبي" value={c.medicalClass} onChange={(v) => up('medicalClass', v)} placeholder="غير محددة" options={MEDICAL_INSURANCE_CLASSES.map((m) => ({ value: m, label: m }))} />
+          {c.kind === 'SAUDI' && (
+            <div className="flex flex-wrap gap-x-4 gap-y-1 text-[12px] font-bold text-slate-700">
+              <label className="inline-flex items-center gap-2"><input type="checkbox" checked={c.isDisabled} onChange={(e) => up('isDisabled', e.target.checked)} /> ذو إعاقة (مرشح افتراضي)</label>
+              <label className="inline-flex items-center gap-2"><input type="checkbox" checked={c.partTime} onChange={(e) => up('partTime', e.target.checked)} /> دوام جزئي</label>
+            </div>
+          )}
+          {c.kind === 'EXPAT' && (
+            <>
+              <Field id={id('nat')} label="الجنسية (اختياري)">
+                <input id={id('nat')} className={inputClass} value={c.nationality} onChange={(e) => up('nationality', e.target.value)} />
+              </Field>
+              <Field id={id('deps')} label="عدد المرافقين">
+                <input id={id('deps')} inputMode="numeric" className={inputClass} value={c.dependentsCount} onChange={(e) => up('dependentsCount', e.target.value.replace(/[^\d]/g, ''))} />
+              </Field>
+              <SelectField label="رسوم المرافقين يدفعها" value={c.dependentsFeePaidBy} onChange={(v) => up('dependentsFeePaidBy', v as CandidateForm['dependentsFeePaidBy'])} placeholder="حسب افتراض الشركة" options={[{ value: 'COMPANY', label: 'الشركة' }, { value: 'EMPLOYEE', label: 'الموظف' }]} />
+            </>
+          )}
+          </div>
+        </details>
       )}
       {c.kind === 'OVERTIME' && (
         <>
@@ -169,21 +180,63 @@ function CandidateEditor({ i, c, set, remove, employees }: { i: number; c: Candi
 
 const STATUS_OF = (s: string): WfStatus => (['VERIFIED_PRIMARY', 'CORROBORATED_SECONDARY', 'PROVISIONAL', 'CONFLICTING', 'USER_INPUT', 'MISSING', 'DERIVED'].includes(s) ? (s as WfStatus) : 'DERIVED');
 
-function ResultColumn({ c, horizon, onWhy }: { c: CandidateResult; horizon: Horizon; onWhy: (c: CandidateResult, l: CandidateLine) => void }) {
+const KIND_LABEL = (k: CandidateKind) => KIND_OPTIONS.find((o) => o.value === k)?.label;
+
+function CheapestBadge() {
+  return (
+    <span className="inline-flex items-center gap-1 whitespace-nowrap rounded-md bg-emerald-100 px-1.5 py-0.5 text-[10.5px] font-black text-emerald-800">
+      <TrendingDown size={12} aria-hidden="true" /> الأقل كلفة
+    </span>
+  );
+}
+
+/** One line per option, ordered by the comparison cost of the chosen period (the value the API returned). */
+function Ranking({ candidates, horizon, cheapest }: { candidates: CandidateResult[]; horizon: Horizon; cheapest: number | null }) {
+  const sorted = [...candidates].sort((a, b) => a.windows[horizon].total - b.windows[horizon].total);
+  return (
+    <ol className="divide-y divide-slate-100 rounded-2xl border border-slate-100">
+      {sorted.map((c) => {
+        const low = cheapest !== null && c.windows[horizon].total === cheapest;
+        return (
+          <li key={c.index} className={`flex flex-wrap items-center justify-between gap-2 px-3 py-2.5 ${low ? 'bg-emerald-50/60' : ''}`}>
+            <span className="flex min-w-0 flex-wrap items-center gap-2">
+              <span className="text-[13px] font-black text-slate-800">{c.label}</span>
+              <span className="text-[11px] font-bold text-slate-500">{KIND_LABEL(c.kind)}</span>
+              {low && <CheapestBadge />}
+            </span>
+            <span className="flex items-center gap-3">
+              {c.nitaqat.status === 'OK' && (
+                <span className="flex items-center gap-1 text-[11.5px] font-bold text-slate-500">
+                  النطاق بعده <BandBadge band={c.nitaqat.after.band} />
+                </span>
+              )}
+              <Money value={c.windows[horizon].total} round className={`text-[15px] font-black ${low ? 'text-emerald-800' : 'text-slate-900'}`} />
+            </span>
+          </li>
+        );
+      })}
+    </ol>
+  );
+}
+
+function ResultColumn({ c, horizon, onWhy, cheapest }: { c: CandidateResult; horizon: Horizon; onWhy: (c: CandidateResult, l: CandidateLine) => void; cheapest: boolean }) {
   const w = c.windows[horizon];
   const lineVal = (l: CandidateLine) => (horizon === 12 ? l.w12 : horizon === 24 ? l.w24 : l.w36);
   return (
-    <div className="rounded-2xl border border-slate-200 bg-white p-3 space-y-3 min-w-0">
-      <div>
-        <p className="text-[13px] font-black text-slate-800">{c.label}</p>
-        <p className="text-[11px] font-bold text-slate-500">{KIND_OPTIONS.find((k) => k.value === c.kind)?.label}</p>
+    <div className={`rounded-2xl border bg-white p-3 space-y-3 min-w-0 ${cheapest ? 'border-emerald-300 ring-1 ring-emerald-200' : 'border-slate-200'}`}>
+      <div className="flex items-start justify-between gap-2">
+        <div className="min-w-0">
+          <p className="text-[13px] font-black text-slate-800">{c.label}</p>
+          <p className="text-[11px] font-bold text-slate-500">{KIND_LABEL(c.kind)}</p>
+        </div>
+        {cheapest && <CheapestBadge />}
       </div>
-      <div className="rounded-xl bg-indigo-50 p-3">
-        <p className="text-[11px] font-black text-indigo-700">{`${horizon} شهراً: الكلفة للمقارنة`}</p>
-        <p className="mt-1 text-[22px] font-black text-slate-900"><Money value={w.total} /></p>
+      <div className={`rounded-xl p-3 ${cheapest ? 'bg-emerald-50' : 'bg-indigo-50'}`}>
+        <p className={`text-[11px] font-black ${cheapest ? 'text-emerald-800' : 'text-indigo-700'}`}>{`الكلفة للمقارنة خلال ${horizon} شهراً`}</p>
+        <p className="mt-1 text-[22px] font-black text-slate-900"><Money value={w.total} round /></p>
         <dl className="mt-2 space-y-0.5 text-[11.5px] font-bold text-slate-600">
           <div className="flex justify-between gap-2"><dt>كلفة صاحب العمل</dt><dd><Money value={w.cost} /></dd></div>
-          <div className="flex justify-between gap-2 text-green-700"><dt>دعم هدف (مشروط)</dt><dd><Money value={w.subsidy} /></dd></div>
+          <div className="flex justify-between gap-2 text-green-700"><dt>دعم هدف المتوقع</dt><dd><Money value={w.subsidy} /></dd></div>
           <div className="flex justify-between gap-2"><dt>بعد الدعم</dt><dd><Money value={w.net} /></dd></div>
           <div className="flex justify-between gap-2"><dt>أثر المقابل المالي على بقية الوافدين</dt><dd><Money value={w.levyOthers} /></dd></div>
         </dl>
@@ -251,6 +304,8 @@ export default function HireScenarioPage() {
     [options.data, companyId],
   );
   const body = () => ({ companyId, startMonth, months: horizon, candidates: cands.map(toPayload) });
+  // The cheapest option: the lowest comparison cost returned for the chosen period (none with a single option).
+  const cheapest = res && res.result.candidates.length > 1 ? Math.min(...res.result.candidates.map((c) => c.windows[horizon].total)) : null;
 
   const run = async (ev: React.FormEvent) => {
     ev.preventDefault();
@@ -294,17 +349,23 @@ export default function HireScenarioPage() {
   return (
     <WfPage
       icon={<UserPlus size={24} />}
-      title="سيناريوهات التوظيف"
-      subtitle="قارن بين توظيف سعودي أو وافد أو العمل الإضافي أو الإسناد: الكلفة لـ 12 و24 و36 شهراً بعد دعم هدف، وأثر المقابل المالي على بقية الوافدين، والنطاق قبل وبعد، وقرارات التوطين."
+      title="مقارنة خيارات التوظيف"
+      subtitle="أيهما أوفر لسد الحاجة: توظيف سعودي أو وافد، أو عمل إضافي، أو إسناد؟"
+      help={
+        <>
+          <p>قارن حتى أربعة بدائل: توظيف سعودي أو وافد أو العمل الإضافي أو الإسناد، لمدة 12 أو 24 أو 36 شهراً.</p>
+          <p>لكل بديل: كلفة صاحب العمل، ودعم هدف المتوقع، والكلفة بعد الدعم، وأثر المقابل المالي على بقية الوافدين.</p>
+          <p>ويظهر النطاق قبل التعيين وبعده، وأثر المهنة على قرارات التوطين. لا يُحفظ شيء في ملفات الموظفين.</p>
+        </>
+      }
       current="/workforce/hire-scenario"
       actions={
         res ? (
           <>
-            <ExportButton kind="hire-scenario" body={body()} disabled={busy} />
-            <PdfReportButton kind="hire-scenario" body={body()} disabled={busy} />
+            <ExportMenu disabled={busy} excel={{ kind: 'hire-scenario', body: body() }} pdf={{ kind: 'hire-scenario', body: body() }} />
             <SensitivityButton decision="hire" body={body()} disabled={busy} />
-            <button type="button" onClick={save} disabled={saving} className={buttonClass.secondary}>
-              <Save size={15} aria-hidden="true" /> {saving ? 'جارٍ الحفظ…' : 'حفظ السيناريو'}
+            <button type="button" onClick={save} disabled={saving} className={buttonClass.secondary} title="يحفظ الأرقام مع نسخ القواعد المستخدمة للرجوع إليها لاحقاً">
+              <Save size={15} aria-hidden="true" /> {saving ? 'جارٍ الحفظ…' : 'حفظ نسخة'}
             </button>
           </>
         ) : undefined
@@ -318,7 +379,7 @@ export default function HireScenarioPage() {
               <label htmlFor="hs-start" className="block text-[12px] font-extrabold text-slate-600 mb-1.5">شهر المباشرة</label>
               <input id="hs-start" type="month" className={inputClass} value={startMonth} onChange={(e) => setStartMonth(e.target.value || todayKey().slice(0, 7))} />
             </div>
-            <Segmented label="الأفق" value={horizon} options={HORIZONS.map((h) => ({ value: h, label: `${h} شهراً` }))} onChange={setHorizon} />
+            <Segmented label="المدة" value={horizon} options={HORIZONS.map((h) => ({ value: h, label: `${h} شهراً` }))} onChange={setHorizon} />
           </div>
         </Card>
         <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-3">
@@ -340,27 +401,36 @@ export default function HireScenarioPage() {
             </button>
           )}
           <button type="submit" disabled={busy} className={buttonClass.primary}>
-            {busy ? 'جارٍ الحساب…' : 'قارن'}
+            {busy ? 'جارٍ الحساب…' : 'قارن البدائل'}
           </button>
         </div>
       </form>
       {error && <ErrorBlock message={error} />}
       {res && (
-        <Card title="المقارنة" subtitle={`من ${res.result.startMonth}. النطاق الحالي: ${res.result.nitaqatBefore.band ? BAND_TEXT[res.result.nitaqatBefore.band] : (res.result.nitaqatBefore.message ?? '—')}`}>
-          <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-3">
-            {res.result.candidates.map((c) => (
-              <ResultColumn key={c.index} c={c} horizon={horizon} onWhy={openWhy} />
-            ))}
-          </div>
-          <ul className="mt-3 list-disc pr-5 text-[11.5px] font-bold text-slate-500 space-y-0.5">
-            {res.result.assumptions.map((a) => (
-              <li key={a}>{a}</li>
-            ))}
-          </ul>
-          <p className="mt-2 text-[11px] font-bold text-slate-400">
-            <StatusBadge status="USER_INPUT" /> عروض الإسناد وساعات العمل الإضافي إدخالك.
-          </p>
-        </Card>
+        <div className="space-y-4" aria-live="polite">
+          <Card title="النتيجة" subtitle={`من ${res.result.startMonth}. النطاق الحالي: ${res.result.nitaqatBefore.band ? BAND_TEXT[res.result.nitaqatBefore.band] : (res.result.nitaqatBefore.message ?? '—')}`}>
+            <Ranking candidates={res.result.candidates} horizon={horizon} cheapest={cheapest} />
+          </Card>
+          <Card title="التفاصيل لكل بديل">
+            <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-3">
+              {res.result.candidates.map((c) => (
+                <ResultColumn key={c.index} c={c} horizon={horizon} onWhy={openWhy} cheapest={cheapest !== null && c.windows[horizon].total === cheapest} />
+              ))}
+            </div>
+            <p className="mt-3 text-[11px] font-bold text-slate-400">
+              <StatusBadge status="USER_INPUT" /> عروض الإسناد وساعات العمل الإضافي إدخالك.
+            </p>
+          </Card>
+          {res.result.assumptions.length > 0 && (
+            <HelpNote title="الافتراضات المستخدمة">
+              <ul className="list-disc pr-5 space-y-0.5">
+                {res.result.assumptions.map((a) => (
+                  <li key={a}>{a}</li>
+                ))}
+              </ul>
+            </HelpNote>
+          )}
+        </div>
       )}
       <WhyDialog content={why} onClose={() => setWhy(null)} />
     </WfPage>

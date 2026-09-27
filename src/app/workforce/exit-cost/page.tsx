@@ -1,8 +1,10 @@
 "use client";
 
-// «كلفة الإنهاء والإحلال»: what an exit costs before the decision, by reason: payable (EOSB, notice, leave),
-// offsets (loans, notice owed by the employee), legal risk (art. 77, never in the total), sunk prepaid fees,
-// replacement cost and the levy-tier effect on the rest of the legal company. POST /api/workforce/exit-cost.
+// «كلفة الإنهاء والإحلال»: what an exit costs before the decision, by reason. Order: the inputs, then the
+// answer (net to pay, payable, legal risk, replacement), then the detail: payable (EOSB, notice, leave),
+// offsets (loans, notice owed by the employee), legal risk (art. 77, never in the total), replacement cost
+// and the levy-tier effect on the rest of the legal company; sunk prepaid fees and the calculation notes
+// last, folded. Header: one «تصدير» menu, «حساسية القرار», «حفظ نسخة». POST /api/workforce/exit-cost.
 import React, { Suspense, useMemo, useState } from 'react';
 import Link from 'next/link';
 import { useSearchParams } from 'next/navigation';
@@ -17,8 +19,7 @@ import type { ExitLine, ExitLineKind, Scenario } from '@/lib/workforce/types';
 import { SCENARIOS, SCENARIO_LABELS, evidenceForLine } from '@/app/api/workforce/_lib/shared';
 import { callApi, useApi } from '../_components/api';
 import type { ExitCostResponse, OptionsResponse } from '../_components/types';
-import { Card, EmptyBlock, ErrorBlock, ExportButton, LoadingBlock, Money, Num, Segmented, SelectField, SensitivityButton, StatusBadge, WfPage, WhyButton, WhyDialog, buttonClass, inputClass, type WhyContent } from '../_components/ui';
-import PdfReportButton from '../_components/PdfReportButton';
+import { Card, EmptyBlock, ErrorBlock, ExportMenu, HelpNote, LoadingBlock, Money, Num, SCENARIO_FIELD_HINT, SCENARIO_FIELD_LABEL, Segmented, SelectField, SensitivityButton, StatusBadge, WfPage, WhyButton, WhyDialog, buttonClass, inputClass, type WhyContent } from '../_components/ui';
 
 const COUNSEL_BADGE = 'مؤقت — بانتظار تأكيد المستشار';
 
@@ -149,8 +150,27 @@ function ExitCostInner() {
     <WfPage
       current="/workforce/exit-cost"
       icon={<UserMinus size={24} />}
-      title="كلفة الإنهاء والإحلال"
-      subtitle="كلفة خروج الموظف قبل اتخاذ القرار حسب السبب: المستحقات والمقاصّة، والمخاطر النظامية منفصلة عن الإجمالي، والرسوم المدفوعة مقدماً، وكلفة البديل، وأثر الخروج على المقابل المالي لبقية الوافدين. لا يُحفظ شيء في ملف الموظف."
+      title="كلفة إنهاء الخدمة"
+      subtitle="كم يكلفك خروج موظف قبل أن تقرر، حسب سبب الخروج."
+      help={
+        <>
+          <p>الحساب حسب سبب الخروج: المستحقات (مكافأة نهاية الخدمة والإشعار والإجازة) ناقص المقاصّة (السلف، وبدل الإشعار المستحق على الموظف).</p>
+          <p>المخاطر النظامية (المادة 77) تُعرض منفصلة ولا تدخل في الإجمالي. الرسوم المدفوعة مقدماً للعلم فقط.</p>
+          <p>وتظهر كلفة البديل، وأثر الخروج على المقابل المالي لبقية الوافدين في الشركة القانونية.</p>
+          <p>لا يُحفظ شيء في ملف الموظف.</p>
+        </>
+      }
+      actions={
+        result && (
+          <>
+            <ExportMenu disabled={busy} excel={{ kind: 'exit-cost', body: body() }} pdf={{ kind: 'exit-cost', body: body() }} />
+            <SensitivityButton decision="exit" body={body()} disabled={busy} />
+            <button type="button" onClick={save} disabled={saving || busy} className={buttonClass.secondary} title="يحفظ الأرقام مع نسخ القواعد المستخدمة للرجوع إليها لاحقاً">
+              <Save size={16} aria-hidden="true" /> {saving ? 'جارٍ الحفظ…' : 'حفظ نسخة'}
+            </button>
+          </>
+        )
+      }
     >
       <Card>
         <form onSubmit={compute} className="space-y-4" noValidate>
@@ -220,22 +240,13 @@ function ExitCostInner() {
           </div>
 
           <div className="flex flex-wrap items-end justify-between gap-4">
-            <Segmented label="السيناريو" value={scenario} onChange={setScenario} options={SCENARIOS.map((s) => ({ value: s, label: SCENARIO_LABELS[s] }))} />
-            <div className="flex flex-wrap gap-2">
-              {result && (
-                <>
-                  <ExportButton kind="exit-cost" body={body()} disabled={busy} />
-                  <PdfReportButton kind="exit-cost" body={body()} disabled={busy} />
-                  <SensitivityButton decision="exit" body={body()} disabled={busy} />
-                  <button type="button" onClick={save} disabled={saving || busy} className={buttonClass.secondary}>
-                    <Save size={16} aria-hidden="true" /> {saving ? 'جارٍ الحفظ…' : 'حفظ الحساب'}
-                  </button>
-                </>
-              )}
-              <button type="submit" disabled={busy} className={buttonClass.primary}>
-                <Calculator size={16} aria-hidden="true" /> {busy ? 'جارٍ الحساب…' : 'احسب كلفة الإنهاء'}
-              </button>
+            <div>
+              <Segmented label={SCENARIO_FIELD_LABEL} value={scenario} onChange={setScenario} options={SCENARIOS.map((s) => ({ value: s, label: SCENARIO_LABELS[s] }))} />
+              <p className="mt-1 text-[11px] font-bold text-slate-400">{SCENARIO_FIELD_HINT}</p>
             </div>
+            <button type="submit" disabled={busy} className={buttonClass.primary}>
+              <Calculator size={16} aria-hidden="true" /> {busy ? 'جارٍ الحساب…' : 'احسب كلفة الإنهاء'}
+            </button>
           </div>
         </form>
       </Card>
@@ -246,6 +257,39 @@ function ExitCostInner() {
 
       {result && (
         <div className={`space-y-5 ${busy ? 'opacity-60' : ''}`} aria-busy={busy} aria-live="polite">
+          <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-4">
+            <div className="rounded-3xl bg-gradient-to-l from-indigo-700 to-indigo-900 p-5 text-white">
+              <p className="text-[12px] font-black text-indigo-200">صافي ما يُدفع للموظف</p>
+              <p className="mt-2 text-[26px] font-black"><Money value={result.totals.netToEmployee} round className="[&_span]:text-white" /></p>
+              <p className="text-[11px] font-bold text-indigo-200">
+                {`${result.employee.name} · ${TERMINATION_REASON_LABELS[result.reason as TerminationReasonValue] ?? result.reason} · آخر يوم `}
+                <span dir="ltr">{result.lastWorkingDate}</span>
+              </p>
+            </div>
+            <div className="rounded-3xl border border-slate-100 bg-white p-5">
+              <p className="text-[12px] font-black text-slate-500">المستحقات</p>
+              <p className="mt-2 text-[20px] font-black text-slate-900"><Money value={result.totals.payable} round /></p>
+              <p className="text-[11px] font-bold text-slate-500">
+                المقاصّة <Money value={result.totals.offsets} round />
+              </p>
+            </div>
+            <div className="rounded-3xl border-2 border-rose-200 bg-rose-50/40 p-5">
+              <p className="text-[12px] font-black text-rose-700">خطر نظامي محتمل (المادة 77)</p>
+              <p className="mt-2 text-[20px] font-black text-rose-800"><Money value={result.totals.risk} round /></p>
+              <p className="text-[11px] font-bold text-rose-700">خارج الإجمالي</p>
+            </div>
+            <div className="rounded-3xl border border-slate-100 bg-white p-5">
+              <p className="text-[12px] font-black text-slate-500">كلفة الإحلال</p>
+              <p className="mt-2 text-[20px] font-black text-slate-900"><Money value={result.totals.replacement} round /></p>
+              <p className="text-[11px] font-bold text-slate-500">
+                {'سنوات الخدمة '}
+                <Num value={result.yearsOfService} />
+                {' · الأجر المستخدم '}
+                <Money value={result.wageUsed} />
+              </p>
+            </div>
+          </div>
+
           {result.warnings.length > 0 && (
             <div role="alert" className="rounded-2xl border border-rose-200 bg-rose-50 p-4 space-y-1.5">
               {result.warnings.map((w) => (
@@ -255,39 +299,6 @@ function ExitCostInner() {
               ))}
             </div>
           )}
-
-          <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-4">
-            <div className="rounded-3xl bg-gradient-to-l from-indigo-700 to-indigo-900 p-5 text-white">
-              <p className="text-[12px] font-black text-indigo-200">صافي ما يُدفع للموظف</p>
-              <p className="mt-2 text-[26px] font-black"><Money value={result.totals.netToEmployee} className="[&_span]:text-white" /></p>
-              <p className="text-[11px] font-bold text-indigo-200">
-                {`${result.employee.name} · ${TERMINATION_REASON_LABELS[result.reason as TerminationReasonValue] ?? result.reason} · آخر يوم `}
-                <span dir="ltr">{result.lastWorkingDate}</span>
-              </p>
-            </div>
-            <div className="rounded-3xl border border-slate-100 bg-white p-5">
-              <p className="text-[12px] font-black text-slate-500">المستحقات</p>
-              <p className="mt-2 text-[20px] font-black text-slate-900"><Money value={result.totals.payable} /></p>
-              <p className="text-[11px] font-bold text-slate-500">
-                المقاصّة <Money value={result.totals.offsets} />
-              </p>
-            </div>
-            <div className="rounded-3xl border-2 border-rose-200 bg-rose-50/40 p-5">
-              <p className="text-[12px] font-black text-rose-700">خطر نظامي محتمل (المادة 77)</p>
-              <p className="mt-2 text-[20px] font-black text-rose-800"><Money value={result.totals.risk} /></p>
-              <p className="text-[11px] font-bold text-rose-700">خارج الإجمالي</p>
-            </div>
-            <div className="rounded-3xl border border-slate-100 bg-white p-5">
-              <p className="text-[12px] font-black text-slate-500">كلفة الإحلال</p>
-              <p className="mt-2 text-[20px] font-black text-slate-900"><Money value={result.totals.replacement} /></p>
-              <p className="text-[11px] font-bold text-slate-500">
-                {'سنوات الخدمة '}
-                <Num value={result.yearsOfService} />
-                {' · الأجر المستخدم '}
-                <Money value={result.wageUsed} />
-              </p>
-            </div>
-          </div>
 
           <div className="rounded-xl bg-slate-50 px-3 py-2 text-[12px] font-bold text-slate-600 space-y-1">
             <p>
@@ -327,21 +338,19 @@ function ExitCostInner() {
             <h2 id="wf-risk" className="flex items-center gap-2 text-[16px] font-black text-rose-800">
               <Scale size={18} aria-hidden="true" /> مخاطر نظامية
             </h2>
-            <p className="mt-1 mb-3 text-[12px] font-bold text-rose-800 leading-relaxed">
-              التعويض عن الإنهاء غير المشروع (المادة 77) لا يُستحق إلا إذا نُوزع في الإنهاء وحُكم بأنه لسبب غير مشروع: 15 يوماً عن كل سنة في العقد غير محدد المدة أو باقي مدة العقد المحدد، وبحد أدنى أجر شهرين. يُعرض للتقدير فقط ولا يُضاف إلى المستحقات.
-            </p>
+            <p className="mt-1 mb-3 text-[12px] font-bold text-rose-800 leading-relaxed">يُعرض للتقدير فقط ولا يُضاف إلى المستحقات.</p>
             <LineList lines={by('RISK')} result={result} onWhy={openWhy} emptyText="لا خطر من هذا النوع لهذا السبب." />
+            <div className="mt-3">
+              <HelpNote title="متى يُستحق هذا التعويض؟">
+                <p>التعويض عن الإنهاء غير المشروع (المادة 77) لا يُستحق إلا إذا نُوزع في الإنهاء وحُكم بأنه لسبب غير مشروع: 15 يوماً عن كل سنة في العقد غير محدد المدة أو باقي مدة العقد المحدد، وبحد أدنى أجر شهرين.</p>
+              </HelpNote>
+            </div>
           </section>
 
-          <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
-            <Card title="رسوم مدفوعة مقدماً" subtitle="للعلم: رسوم حكومية مدفوعة لا تُسترد، ولا تدخل في المستحقات">
-              <LineList lines={by('SUNK')} result={result} onWhy={openWhy} emptyText="لا رسوم مدفوعة مقدماً غير مستهلكة." />
-            </Card>
-            <Card title="كلفة الإحلال" subtitle="من افتراضات المنشأة أو من إدخالك لهذا الحساب">
-              <LineList lines={by('REPLACEMENT')} result={result} onWhy={openWhy} emptyText="لا بيانات" />
-              <Link href="/workforce/assumptions" className="mt-2 inline-block text-[12px] font-black text-indigo-700 hover:underline">تعديل افتراضات التوظيف والشغور ←</Link>
-            </Card>
-          </div>
+          <Card title="كلفة الإحلال" subtitle="من افتراضات المنشأة أو من إدخالك لهذا الحساب">
+            <LineList lines={by('REPLACEMENT')} result={result} onWhy={openWhy} emptyText="لا بيانات" />
+            <Link href="/workforce/assumptions" className="mt-2 inline-block text-[12px] font-black text-indigo-700 hover:underline">تعديل افتراضات التوظيف والشغور ←</Link>
+          </Card>
 
           <Card title="أثر الخروج على المقابل المالي والتركيبة" subtitle="الكيان القانوني في الشهر التالي لآخر يوم عمل، قبل الخروج وبعده (شهرياً)">
             <LineList lines={by('ONGOING')} result={result} onWhy={openWhy} emptyText="لا يمكن حساب الأثر (لا توجد شركة قانونية)." />
@@ -381,8 +390,13 @@ function ExitCostInner() {
             )}
           </Card>
 
+          <HelpNote title="رسوم مدفوعة مقدماً">
+            <p>للعلم: رسوم حكومية مدفوعة لا تُسترد، ولا تدخل في المستحقات.</p>
+            <LineList lines={by('SUNK')} result={result} onWhy={openWhy} emptyText="لا رسوم مدفوعة مقدماً غير مستهلكة." />
+          </HelpNote>
+
           {result.flags.length > 0 && (
-            <Card title="ملاحظات الحساب">
+            <HelpNote title={`ملاحظات الحساب (${result.flags.length})`}>
               <ul className="space-y-1.5">
                 {result.flags.map((f, i) => (
                   <li key={`${f.code}-${i}`} className="text-[12px] font-bold text-slate-700">
@@ -393,7 +407,7 @@ function ExitCostInner() {
                   </li>
                 ))}
               </ul>
-            </Card>
+            </HelpNote>
           )}
         </div>
       )}

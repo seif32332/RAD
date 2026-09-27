@@ -3,7 +3,9 @@
 // «حساسية القرار» (SPEC §11): how much a decision's figure moves with the assumptions — the three scenarios
 // low / base / high and a tornado of one-factor-at-a-time sensitivities. Opened from the hire-scenario, exit
 // and plan pages («حساسية القرار» button): a plan by id (?decision=plan&planId=), a hire scenario or an exit
-// with its request body handed through sessionStorage. Data: /api/workforce/sensitivity (display only).
+// with its request body handed through sessionStorage. Layout: the three estimates (rounded), the tornado,
+// the table; «عوامل لم تُحرَّك» and the notes last, folded. Header: back link + one «تصدير» menu.
+// Data: /api/workforce/sensitivity (display only).
 import React, { Suspense, useEffect, useMemo, useState, useSyncExternalStore } from 'react';
 import Link from 'next/link';
 import { useRouter, useSearchParams } from 'next/navigation';
@@ -11,8 +13,7 @@ import { Scale } from 'lucide-react';
 import { formatMoney } from '@/lib/money';
 import type { SensitivityOutcome, SensitivityResult } from '@/lib/workforce/sensitivity';
 import { callApi, useApi } from '../_components/api';
-import { Card, EmptyBlock, ErrorBlock, ExportButton, LoadingBlock, Money, SelectField, SENSITIVITY_STORAGE_PREFIX, Segmented, WfPage, buttonClass } from '../_components/ui';
-import PdfReportButton from '../_components/PdfReportButton';
+import { Card, EmptyBlock, ErrorBlock, ExportMenu, HelpNote, LoadingBlock, Money, SelectField, SENSITIVITY_STORAGE_PREFIX, Segmented, WfPage, buttonClass } from '../_components/ui';
 
 type Decision = 'hire' | 'exit' | 'plan';
 interface SensitivityResponse {
@@ -23,8 +24,8 @@ interface SensitivityResponse {
 const noSubscribe = () => () => {};
 
 const BACK: Record<Decision, { href: string; label: string }> = {
-  hire: { href: '/workforce/hire-scenario', label: 'سيناريوهات التوظيف' },
-  exit: { href: '/workforce/exit-cost', label: 'كلفة الإنهاء' },
+  hire: { href: '/workforce/hire-scenario', label: 'مقارنة خيارات التوظيف' },
+  exit: { href: '/workforce/exit-cost', label: 'كلفة إنهاء الخدمة' },
   plan: { href: '/workforce/plans', label: 'خطة القوى العاملة' },
 };
 
@@ -75,7 +76,7 @@ function Tornado({ o }: { o: SensitivityOutcome }) {
   );
 }
 
-function Result({ r, exportProps }: { r: SensitivityResult; exportProps: { query?: Record<string, string>; body?: unknown } }) {
+function Result({ r }: { r: SensitivityResult }) {
   const [sel, setSel] = useState(r.outcomes[0]?.id ?? '');
   const o = r.outcomes.find((x) => x.id === sel) ?? r.outcomes[0];
   if (!o) return <EmptyBlock text="لا نتائج" />;
@@ -83,15 +84,14 @@ function Result({ r, exportProps }: { r: SensitivityResult; exportProps: { query
     <div className="space-y-5">
       <Card
         title={r.title}
-        subtitle={`الرقم المقيس: ${r.metricLabel}. كل عامل يُحرَّك وحده وبقية المدخلات على قيمتها الأساسية.`}
-        actions={<><ExportButton kind="sensitivity" query={exportProps.query} body={exportProps.body} /><PdfReportButton kind="sensitivity" query={exportProps.query} body={exportProps.body} /></>}
+        subtitle={`الرقم المقيس: ${r.metricLabel}.`}
       >
         {r.outcomes.length > 1 && <Segmented label="النتيجة" value={o.id} options={r.outcomes.map((x) => ({ value: x.id, label: x.label }))} onChange={setSel} />}
         <dl className="mt-4 grid grid-cols-1 sm:grid-cols-3 gap-3">
           {(['low', 'base', 'high'] as const).map((s) => (
             <div key={s} className={`rounded-2xl p-3 ${s === 'base' ? 'bg-indigo-50' : 'bg-slate-50'}`}>
-              <dt className="text-[11px] font-black text-slate-500">{s === 'low' ? 'السيناريو المنخفض' : s === 'base' ? 'السيناريو الأساسي' : 'السيناريو المرتفع'}</dt>
-              <dd className="mt-1 text-[17px] font-black text-slate-900"><Money value={o.scenarios[s]} /></dd>
+              <dt className="text-[11px] font-black text-slate-500">{s === 'low' ? 'التقدير المنخفض' : s === 'base' ? 'التقدير الأساسي' : 'التقدير المرتفع'}</dt>
+              <dd className="mt-1 text-[20px] font-black text-slate-900"><Money value={o.scenarios[s]} round /></dd>
             </div>
           ))}
         </dl>
@@ -113,8 +113,13 @@ function Result({ r, exportProps }: { r: SensitivityResult; exportProps: { query
         )}
       </Card>
 
-      <Card title="مخطط الحساسية" subtitle="طول العمود = تغيّر الرقم عن الأساس عند القيمة المنخفضة (أزرق) أو المرتفعة (برتقالي) للعامل، مرتبة حسب الأثر.">
+      <Card title="أي افتراض يحرّك الرقم أكثر؟" subtitle="الأكبر أثراً أولاً.">
         <Tornado o={o} />
+        <div className="mt-4">
+          <HelpNote title="كيف أقرأ المخطط؟">
+            <p>طول العمود = تغيّر الرقم عن الأساس عند القيمة المنخفضة (أزرق) أو المرتفعة (برتقالي) للعامل، مرتبة حسب الأثر.</p>
+          </HelpNote>
+        </div>
       </Card>
 
       <Card title="جدول الحساسية">
@@ -149,20 +154,23 @@ function Result({ r, exportProps }: { r: SensitivityResult; exportProps: { query
         )}
       </Card>
 
+      {r.notes.length > 0 && (
+        <HelpNote title="ملاحظات الحساب">
+          <ul className="space-y-1">
+            {r.notes.map((n) => <li key={n}>{n}</li>)}
+          </ul>
+        </HelpNote>
+      )}
       {r.skipped.length > 0 && (
-        <Card title="عوامل لم تُحرَّك" subtitle="لا تُخترع قيمة: العامل بلا نطاق مُدخل أو غير متعلق بهذا القرار يُذكر هنا بسببه.">
-          <ul className="space-y-1.5 text-[12.5px] font-bold text-slate-600">
+        <HelpNote title={`عوامل لم تُحرَّك (${r.skipped.length})`}>
+          <p>لا تُخترع قيمة: العامل بلا نطاق مُدخل أو غير متعلق بهذا القرار يُذكر هنا بسببه.</p>
+          <ul className="space-y-1.5">
             {r.skipped.map((s) => (
               <li key={s.key}><span className="text-slate-800">{s.label}:</span> {s.reason}</li>
             ))}
           </ul>
-          <Link href="/workforce/assumptions" className={`${buttonClass.link} mt-3`}>الافتراضات (أدخل نطاق منخفض/مرتفع) ←</Link>
-        </Card>
-      )}
-      {r.notes.length > 0 && (
-        <ul className="space-y-1 rounded-2xl border border-slate-200 bg-white px-4 py-3 text-[12px] font-bold text-slate-600">
-          {r.notes.map((n) => <li key={n}>{n}</li>)}
-        </ul>
+          <Link href="/workforce/assumptions" className={buttonClass.link}>الافتراضات (أدخل نطاق منخفض/مرتفع) ←</Link>
+        </HelpNote>
       )}
     </div>
   );
@@ -172,11 +180,11 @@ function PlanPicker() {
   const router = useRouter();
   const plans = useApi<{ items: Array<{ id: string; name: string; statusLabel: string }> }>('/api/workforce/plans?take=200');
   return (
-    <Card title="اختر القرار" subtitle="تُفتح الحساسية من صفحة القرار: «سيناريوهات التوظيف» و«كلفة الإنهاء» بعد الحساب، أو خطة من القائمة.">
+    <Card title="اختر القرار" subtitle="احسب في «مقارنة خيارات التوظيف» أو «كلفة إنهاء الخدمة» ثم اضغط «حساسية القرار»، أو اختر خطة هنا.">
       <div className="flex flex-wrap items-end gap-3">
         <SelectField className="min-w-[260px]" label="خطة القوى العاملة" value="" onChange={(v) => v && router.push(`/workforce/sensitivity?decision=plan&planId=${encodeURIComponent(v)}`)} placeholder="اختر خطة" options={(plans.data?.items ?? []).map((p) => ({ value: p.id, label: `${p.name} (${p.statusLabel})` }))} />
-        <Link href="/workforce/hire-scenario" className={buttonClass.secondary}>سيناريوهات التوظيف</Link>
-        <Link href="/workforce/exit-cost" className={buttonClass.secondary}>كلفة الإنهاء</Link>
+        <Link href="/workforce/hire-scenario" className={buttonClass.secondary}>مقارنة خيارات التوظيف</Link>
+        <Link href="/workforce/exit-cost" className={buttonClass.secondary}>كلفة إنهاء الخدمة</Link>
       </div>
     </Card>
   );
@@ -239,9 +247,22 @@ function SensitivityInner() {
     <WfPage
       current="/workforce/sensitivity"
       icon={<Scale size={24} />}
-      title="حساسية القرار"
-      subtitle="كم يتغيّر رقم القرار إذا تغيّرت الافتراضات: السيناريوهات المنخفض والأساسي والمرتفع، وأثر كل عامل وحده (نطاقات الافتراضات، وفئة التأمين الطبي، وطريقة العمل الإضافي، ودعم هدف)."
-      actions={back ? <Link href={back.href} className={buttonClass.secondary}>{`العودة إلى ${back.label}`}</Link> : undefined}
+      title="اختبار القرار"
+      subtitle="هل يبقى قرارك صحيحاً إذا تغيّرت الافتراضات؟"
+      help={
+        <>
+          <p>يُعاد حساب رقم القرار بثلاثة تقديرات: المنخفض والأساسي والمرتفع.</p>
+          <p>ثم يُحرَّك كل عامل وحده وبقية المدخلات على قيمتها الأساسية: نطاقات الافتراضات، وفئة التأمين الطبي، وطريقة العمل الإضافي، ودعم هدف.</p>
+        </>
+      }
+      actions={
+        back || data ? (
+          <>
+            {back && <Link href={back.href} className={buttonClass.secondary}>{`العودة إلى ${back.label}`}</Link>}
+            {data && <ExportMenu excel={{ kind: 'sensitivity', ...exportProps }} pdf={{ kind: 'sensitivity', ...exportProps }} />}
+          </>
+        ) : undefined
+      }
     >
       {!decision && <PlanPicker />}
       {decision === 'plan' && !planId && <PlanPicker />}
@@ -250,7 +271,7 @@ function SensitivityInner() {
       )}
       {error && <ErrorBlock message={error} />}
       {loading && !data && <LoadingBlock label="جارٍ تشغيل المحرك لكل سيناريو وعامل…" />}
-      {data && <Result key={data.result.title} r={data.result} exportProps={exportProps} />}
+      {data && <Result key={data.result.title} r={data.result} />}
     </WfPage>
   );
 }

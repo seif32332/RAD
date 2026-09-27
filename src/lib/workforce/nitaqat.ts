@@ -782,7 +782,7 @@ export function nitaqatEstimate(entity: NitaqatEntityInput, date: Date, opts: { 
       status: 'NO_ACTIVITY',
       message: !activity
         ? 'لم يُحدَّد نشاط الشركة في نطاقات: اختر النشاط من إعدادات الشركة (نطاقات والمقابل المالي) ليُحسب النطاق.'
-        : 'لا توجد ثوابت منحنى لهذا النشاط في سجل نطاقات: أضفها من «سجل نطاقات والتوطين» أو اختر نشاطاً متحققاً منه.',
+        : 'لا توجد ثوابت منحنى لهذا النشاط في سجل نطاقات: أضفها من «السعودة ونطاقات ← الأنشطة وقرارات التوطين» أو اختر نشاطاً متحققاً منه.',
       evidence: [NITAQAT_EVIDENCE['NITAQAT:WEIGHTS'], NITAQAT_EVIDENCE['NITAQAT:QIWA_DOCUMENTED']],
     };
   }

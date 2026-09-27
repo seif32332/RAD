@@ -1,12 +1,13 @@
 "use client";
 
-// «المؤشرات الداخلية» (SPEC §1 module 7, §9): turnover, tenure, new-hire attrition, time to hire, overtime,
+// «مؤشرات المنشأة» (SPEC §1 module 7, §9): turnover, tenure, new-hire attrition, time to hire, overtime,
 // absence, sick leave, end of service actually paid, government fees per expat, cost per employee and the
 // cost of turnover — computed ONLY from the organisation's own records (no industry figure). Aggregated:
-// groups below 5 people show «أقل من 5». Each card has «كيف حُسب؟» (formula, numerator / denominator,
-// period, data quality). Data: GET /api/workforce/benchmarks (this page only displays).
+// groups below 5 people show «أقل من 5». Order: filters, the KPI cards (each with «كيف حُسب؟»: formula,
+// numerator / denominator, period, data quality), the monthly trends and the group tables (their formulas
+// folded in a HelpNote), then the data notes folded. Data: GET /api/workforce/benchmarks (display only).
 import React, { useMemo, useState } from 'react';
-import { BarChart3, Info, ShieldCheck } from 'lucide-react';
+import { BarChart3, ShieldCheck } from 'lucide-react';
 import Modal from '@/components/ui/Modal';
 import { formatMoney } from '@/lib/money';
 import {
@@ -18,7 +19,7 @@ import {
   type SeriesPoint,
 } from '@/lib/workforce/benchmarks';
 import { useApi } from '../_components/api';
-import { Card, EmptyBlock, ErrorBlock, ExportButton, LoadingBlock, Segmented, SelectField, WfPage } from '../_components/ui';
+import { Card, EmptyBlock, ErrorBlock, ExportMenu, HelpNote, LoadingBlock, Segmented, SelectField, WfPage } from '../_components/ui';
 
 interface OptionsResponse {
   companies: Array<{ id: string; name: string }>;
@@ -115,14 +116,20 @@ const EXTRA_LABELS: Record<string, string> = {
 // ---------------------------------------------------------------------------
 
 function MetricCard({ metric, onHow, sub }: { metric: BenchmarkMetric; onHow: (m: BenchmarkMetric) => void; sub?: React.ReactNode }) {
+  // An indicator without enough data is drawn quiet (dashed, no shadow) so the figures that exist stand out.
+  const empty = metric.value === null;
   return (
-    <div className="flex flex-col rounded-3xl border border-slate-100 bg-white p-4 sm:p-5 shadow-[0_10px_30px_rgba(0,0,0,0.02)] min-w-0">
+    <div
+      className={`flex flex-col rounded-3xl min-w-0 p-4 sm:p-5 ${
+        empty ? 'border border-dashed border-slate-200 bg-slate-50/60' : 'border border-slate-100 bg-white shadow-[0_10px_30px_rgba(0,0,0,0.02)]'
+      }`}
+    >
       <div className="flex items-start justify-between gap-2">
         <h3 className="text-[12.5px] font-black text-slate-500 leading-snug">{metric.label}</h3>
         {metric.approximate && <span className="shrink-0 rounded-md border border-amber-200 bg-amber-50 px-1.5 py-0.5 text-[10.5px] font-black text-amber-800">تقريبي</span>}
       </div>
       {metric.value === null ? (
-        <p className="mt-2 text-[13px] font-black text-slate-400 leading-snug">{metric.reason ?? 'لا توجد بيانات كافية'}</p>
+        <p className="mt-2 text-[12px] font-bold text-slate-400 leading-snug">{metric.reason ?? 'لا توجد بيانات كافية بعد'}</p>
       ) : (
         <p className="mt-2 text-[22px] sm:text-[24px] font-black text-slate-900 leading-tight" dir="auto">
           <span dir="ltr" className="tabular-nums">{metric.unit === 'SAR' ? formatMoney(metric.value) : fmtNum(metric.value)}</span>
@@ -251,6 +258,17 @@ function BreakdownTable({
   );
 }
 
+/** The formula of a group table, folded under the table. */
+function CardHow({ text }: { text: string }) {
+  return (
+    <div className="mt-3">
+      <HelpNote title="كيف يُحسب؟">
+        <p>{text}</p>
+      </HelpNote>
+    </div>
+  );
+}
+
 const pctFmt = (v: number | null) => (v === null ? '—' : `${fmtNum(v)}%`);
 const sarFmt = (v: number | null) => (v === null ? '—' : formatMoney(v));
 
@@ -279,19 +297,29 @@ export default function BenchmarksPage() {
   return (
     <WfPage
       current="/workforce/benchmarks"
-      actions={<ExportButton kind="benchmarks" query={{ months, companyId, branchId, departmentId }} disabled={!d || loading} />}
+      actions={<ExportMenu disabled={!d || loading} excel={{ kind: 'benchmarks', query: { months, companyId, branchId, departmentId } }} />}
       icon={<BarChart3 size={24} />}
-      title="المؤشرات الداخلية"
-      subtitle="مؤشرات محسوبة من بيانات منشأتك في رديف فقط: الدوران، ومدة الخدمة، ومدة التوظيف، والإضافي، والغياب، ونهاية الخدمة المدفوعة، والرسوم الحكومية، وكلفة الموظف. لا أرقام مرجعية خارجية. تُعرض مجمّعة، وتُحجب أي مجموعة أقل من 5 أشخاص."
+      title="مؤشرات المنشأة"
+      subtitle="كيف تسير منشأتك في الدوران والغياب والإضافي والكلفة، محسوبة من بياناتك في رديف فقط."
+      help={
+        <>
+          <p>المؤشرات: الدوران، ومدة الخدمة، ومدة التوظيف، والإضافي، والغياب، ونهاية الخدمة المدفوعة، والرسوم الحكومية، وكلفة الموظف. كلها من بيانات منشأتك في رديف، ولا أرقام مرجعية خارجية.</p>
+          <p>تُعرض الأرقام مجمّعة، وتُحجب أي مجموعة أقل من 5 أشخاص.</p>
+          <p>الإدارة والفرع حسب ملف الموظف الحالي. «تقريبي» حيث لا يوجد في رديف تاريخ مخصص (مدة التوظيف) أو المبالغ مقطوعة (الرسوم الحكومية).</p>
+          <p>على كل مؤشر زر «كيف حُسب؟» يبيّن المعادلة والبسط والمقام والفترة وجودة البيانات.</p>
+        </>
+      }
     >
-      <div className="flex flex-col lg:flex-row lg:items-end gap-3 lg:gap-4">
-        <Segmented label="الفترة" value={months} options={BENCHMARK_PERIODS.map((m) => ({ value: m as number, label: `${m} شهراً` }))} onChange={setMonths} />
-        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 flex-1">
-          <SelectField label="الشركة (الكيان النظامي)" value={companyId} onChange={setCompanyId} placeholder="كل الشركات" options={(opts.data?.companies ?? []).map((c) => ({ value: c.id, label: c.name }))} />
-          <SelectField label="الفرع" value={branchId} onChange={setBranchId} placeholder="كل الفروع" options={(opts.data?.branches ?? []).map((c) => ({ value: c.id, label: c.name }))} />
-          <SelectField label="الإدارة" value={departmentId} onChange={setDepartmentId} placeholder="كل الإدارات" options={(opts.data?.departments ?? []).map((c) => ({ value: c.id, label: c.name }))} />
+      <Card>
+        <div className="flex flex-col lg:flex-row lg:items-end gap-3 lg:gap-4">
+          <Segmented label="الفترة" value={months} options={BENCHMARK_PERIODS.map((m) => ({ value: m as number, label: `${m} شهراً` }))} onChange={setMonths} />
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 flex-1">
+            <SelectField label="الشركة (الكيان النظامي)" value={companyId} onChange={setCompanyId} placeholder="كل الشركات" options={(opts.data?.companies ?? []).map((c) => ({ value: c.id, label: c.name }))} />
+            <SelectField label="الفرع" value={branchId} onChange={setBranchId} placeholder="كل الفروع" options={(opts.data?.branches ?? []).map((c) => ({ value: c.id, label: c.name }))} />
+            <SelectField label="الإدارة" value={departmentId} onChange={setDepartmentId} placeholder="كل الإدارات" options={(opts.data?.departments ?? []).map((c) => ({ value: c.id, label: c.name }))} />
+          </div>
         </div>
-      </div>
+      </Card>
 
       {error && <ErrorBlock message={error} onRetry={reload} />}
       {loading && !d && <LoadingBlock label="جارٍ حساب المؤشرات…" />}
@@ -313,13 +341,6 @@ export default function BenchmarksPage() {
             <p role="note" className="flex items-start gap-2 rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-[13px] font-bold text-slate-700">
               <ShieldCheck size={18} className="shrink-0 mt-0.5" aria-hidden="true" /> {d.turnover.overall.reason}
             </p>
-          )}
-          {d.notes.length > 0 && (
-            <ul className="rounded-2xl border border-slate-200 bg-white px-4 py-3 text-[12px] font-bold text-slate-600 list-disc pr-8 space-y-1">
-              {d.notes.map((n) => (
-                <li key={n}>{n}</li>
-              ))}
-            </ul>
           )}
 
           <section aria-labelledby="bm-people" className="space-y-3">
@@ -368,16 +389,16 @@ export default function BenchmarksPage() {
 
           {!d.scopeSuppressed && (
             <>
-              <Card title="الاتجاه الشهري" subtitle="الأشهر التي فيها أقل من 5 أشخاص تظهر فارغة (رمادية).">
+              <Card title="شهراً بشهر" subtitle="الأشهر الرمادية محجوبة (أقل من 5 أشخاص).">
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                  <TrendChart title="الدوران الشهري (%)" unit="%" points={d.turnover.series} color="fill-rose-500" />
+                  <TrendChart title="الدوران (%)" unit="%" points={d.turnover.series} color="fill-rose-500" />
                   <TrendChart title="كلفة الإضافي المصروفة (ريال)" unit="ريال" points={d.overtime.series.map((p) => ({ month: p.month, value: p.cost, suppressed: p.suppressed }))} color="fill-amber-500" />
-                  <TrendChart title="معدل الغياب (%)" unit="%" points={d.absence.series} color="fill-sky-500" />
-                  <TrendChart title="كلفة الموظف شهرياً (ريال)" unit="ريال" points={d.costPerEmployee.series as SeriesPoint[]} color="fill-indigo-500" />
+                  <TrendChart title="الغياب (%)" unit="%" points={d.absence.series} color="fill-sky-500" />
+                  <TrendChart title="كلفة الموظف (ريال)" unit="ريال" points={d.costPerEmployee.series as SeriesPoint[]} color="fill-indigo-500" />
                 </div>
               </Card>
 
-              <Card title="الدوران حسب المجموعة" subtitle="المعدل = حالات خروج المجموعة ÷ متوسط عددها × 100. المجموعات الأقل من 5 محجوبة.">
+              <Card title="الدوران حسب المجموعة" subtitle="المجموعات الأقل من 5 محجوبة.">
                 <div role="tablist" aria-label="تقسيم الدوران" className="mb-3 flex gap-2 border-b border-slate-200">
                   {([
                     ['dept', 'الإدارة'],
@@ -398,10 +419,11 @@ export default function BenchmarksPage() {
                   valueFmt={pctFmt}
                   extraCols={[{ key: 'exits', label: 'حالات الخروج', from: 'numerator', fmt: (v) => fmtNum(v, 0) }]}
                 />
+                <CardHow text="المعدل = حالات خروج المجموعة ÷ متوسط عددها × 100." />
               </Card>
 
               <div className="grid grid-cols-1 2xl:grid-cols-2 gap-6">
-                <Card title="الإضافي حسب الإدارة" subtitle="الكلفة من المسيرات، والساعات من طلبات الإضافي المعتمدة.">
+                <Card title="الإضافي حسب الإدارة">
                   <BreakdownTable
                     caption="الإضافي حسب الإدارة"
                     groupLabel="الإدارة"
@@ -414,23 +436,33 @@ export default function BenchmarksPage() {
                       { key: 'hoursPerEmployeePerMonth', label: 'لكل موظف' },
                     ]}
                   />
+                  <CardHow text="الكلفة من المسيرات، والساعات من طلبات الإضافي المعتمدة." />
                 </Card>
-                <Card title="كلفة الموظف شهرياً حسب الإدارة" subtitle="من المسيرات المعتمدة والمصروفة (الإجمالي + حصة التأمينات).">
+                <Card title="كلفة الموظف حسب الإدارة">
                   <BreakdownTable caption="كلفة الموظف حسب الإدارة" groupLabel="الإدارة" sizeLabel="الموظفون" valueLabel="لكل موظف شهرياً" rows={d.costPerEmployee.byDepartment} valueFmt={sarFmt} />
+                  <CardHow text="من المسيرات المعتمدة والمصروفة (الإجمالي + حصة التأمينات)." />
                 </Card>
-                <Card title="الغياب حسب الإدارة" subtitle="أيام الغياب ÷ أيام الحضور المسجّلة.">
+                <Card title="الغياب حسب الإدارة">
                   <BreakdownTable caption="الغياب حسب الإدارة" groupLabel="الإدارة" sizeLabel="الموظفون" valueLabel="معدل الغياب" rows={d.absence.byDepartment} valueFmt={pctFmt} extraCols={[{ key: 'absent', label: 'أيام الغياب', from: 'numerator', fmt: (v) => fmtNum(v, 0) }]} />
+                  <CardHow text="أيام الغياب ÷ أيام الحضور المسجّلة." />
                 </Card>
-                <Card title="الإجازة المرضية حسب الإدارة" subtitle="أيام الإجازة المرضية ÷ متوسط العدد.">
+                <Card title="الإجازة المرضية حسب الإدارة">
                   <BreakdownTable caption="الإجازة المرضية حسب الإدارة" groupLabel="الإدارة" sizeLabel="متوسط العدد" valueLabel="أيام لكل موظف" rows={d.absence.sickByDepartment} valueFmt={(v) => fmtNum(v)} />
+                  <CardHow text="أيام الإجازة المرضية ÷ متوسط العدد." />
                 </Card>
               </div>
             </>
           )}
 
-          <p className="flex items-start gap-2 text-[11.5px] font-bold text-slate-500">
-            <Info size={14} className="shrink-0 mt-0.5" aria-hidden="true" /> الإدارة والفرع حسب ملف الموظف الحالي. «تقريبي» حيث لا يوجد في رديف تاريخ مخصص (مدة التوظيف) أو المبالغ مقطوعة (الرسوم الحكومية).
-          </p>
+          {d.notes.length > 0 && (
+            <HelpNote title={`ملاحظات على البيانات (${d.notes.length})`}>
+              <ul className="list-disc pr-5 space-y-1">
+                {d.notes.map((n) => (
+                  <li key={n}>{n}</li>
+                ))}
+              </ul>
+            </HelpNote>
+          )}
         </div>
       )}
       <HowDialog metric={how} onClose={() => setHow(null)} />

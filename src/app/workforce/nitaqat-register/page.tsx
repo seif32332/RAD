@@ -1,9 +1,10 @@
 "use client";
 
-// «سجل نطاقات وقرارات التوطين»: the Nitaqat activities with their curve constants (m, c per year) and
-// evidence status (AMBIGUOUS rows marked «يحتاج مطابقة مع ملحق الدليل»), and the occupation localization
-// decisions with their phases. SUPER_ADMIN adds rows (history immutable: no edit / delete; a correction is
-// a new row). GET/POST /api/workforce/nitaqat and /api/workforce/localization-decisions.
+// «الأنشطة وقرارات التوطين» (section «السعودة ونطاقات»): reference data. The Nitaqat activities with their
+// curve constants (m, c per year) and evidence status (AMBIGUOUS rows marked «يحتاج مطابقة مع ملحق الدليل»),
+// and the occupation localization decisions with their phases. SUPER_ADMIN adds rows from the add buttons of
+// each view (history immutable: no edit / delete; a correction is a new row).
+// GET/POST /api/workforce/nitaqat and /api/workforce/localization-decisions.
 import React, { useMemo, useState } from 'react';
 import { ExternalLink, Landmark, Plus } from 'lucide-react';
 import Modal from '@/components/ui/Modal';
@@ -83,9 +84,9 @@ function CurveMatrix({ a, years }: { a: ActivityView; years: number[] }) {
         <thead>
           <tr className="border-b border-slate-200 text-slate-500">
             <th scope="col" className="py-1.5 text-right font-black">النطاق</th>
-            <th scope="col" className="py-1.5 text-right font-black">m</th>
+            <th scope="col" className="py-1.5 text-right font-black">الميل (m)</th>
             {years.map((y) => (
-              <th key={y} scope="col" className="py-1.5 text-right font-black">{`c ${y}`}</th>
+              <th key={y} scope="col" className="py-1.5 text-right font-black">{`الثابت (c) ${y}`}</th>
             ))}
           </tr>
         </thead>
@@ -286,17 +287,15 @@ export default function NitaqatRegisterPage() {
   return (
     <WfPage
       icon={<Landmark size={24} />}
-      title="سجل نطاقات وقرارات التوطين"
-      subtitle="ثوابت منحنيات نطاقات المطوّر لكل نشاط وسنة من ملحق الدليل بمرجع الصفحة، وقرارات توطين المهن بمراحلها. السجل لا يُعدَّل: يُضاف إصدار جديد."
+      title="الأنشطة وقرارات التوطين"
+      subtitle="هنا تُحفظ منحنيات نطاقات الرسمية لكل نشاط وقرارات توطين المهن، ولا تحتاجها عادةً إلا للتحقق من مصدر رقم."
       current="/workforce/nitaqat-register"
-      actions={
-        canAdd ? (
-          <>
-            <button type="button" className={buttonClass.secondary} onClick={() => setDialog('activity')}><Plus size={14} aria-hidden="true" /> نشاط</button>
-            <button type="button" className={buttonClass.secondary} onClick={() => setDialog('curve')}><Plus size={14} aria-hidden="true" /> ثوابت</button>
-            <button type="button" className={buttonClass.secondary} onClick={() => { setCorrecting(null); setDialog('decision'); }}><Plus size={14} aria-hidden="true" /> قرار توطين</button>
-          </>
-        ) : undefined
+      help={
+        <>
+          <p>أنشطة نطاقات: ثوابت منحنيات نطاقات المطوّر لكل نشاط وسنة، منقولة من ملحق الدليل بمرجع الصفحة. حد كل نطاق = الميل (m) × ln(عدد العاملين المحتسبين) + الثابت (c).</p>
+          <p>قرارات التوطين: مجموعات المهن ونسبها المطلوبة بمراحلها وتواريخ سريانها.</p>
+          <p>السجل لا يُعدَّل ولا يُحذف: التصحيح يُضاف إصداراً جديداً ويبقى السابق في السجل.</p>
+        </>
       }
     >
       <Card>
@@ -306,6 +305,18 @@ export default function NitaqatRegisterPage() {
             <div className="min-w-[220px] flex-1">
               <label htmlFor="reg-q" className="block text-[12px] font-extrabold text-slate-600 mb-1.5">بحث بالاسم أو الرمز</label>
               <input id="reg-q" className={inputClass} value={q} onChange={(e) => setQ(e.target.value)} />
+            </div>
+          )}
+          {canAdd && (
+            <div className="flex flex-wrap gap-2 sm:mr-auto">
+              {tab === 'activities' ? (
+                <>
+                  <button type="button" className={buttonClass.secondary} onClick={() => setDialog('activity')}><Plus size={14} aria-hidden="true" /> نشاط</button>
+                  <button type="button" className={buttonClass.secondary} onClick={() => setDialog('curve')}><Plus size={14} aria-hidden="true" /> ثوابت</button>
+                </>
+              ) : (
+                <button type="button" className={buttonClass.secondary} onClick={() => { setCorrecting(null); setDialog('decision'); }}><Plus size={14} aria-hidden="true" /> قرار توطين</button>
+              )}
             </div>
           )}
         </div>
