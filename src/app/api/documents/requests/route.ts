@@ -6,7 +6,7 @@ import { zId } from '@/lib/validation';
 import { concludedInvestigationsFor, offerCandidatesFor, paidSettlementsFor, portalTypesFor, myDocumentRequests, staffDocumentOverview } from '@/lib/documents/queries';
 import { createDocumentRequest, issueDueEvaluationReports, issueDuePayslips, processDueRenderJobs, suggestDueExitDocuments, syncDueLeaveLetters } from '@/lib/documents/service';
 import { applyDueChangeOrders } from '@/lib/documents/change-orders';
-import { nocParamsSchema, offerParamsSchema, promotionParamsSchema, terminationNoticeParamsSchema, warningParamsSchema } from '@/lib/documents/types';
+import { addendumParamsSchema, nocParamsSchema, offerParamsSchema, promotionParamsSchema, terminationNoticeParamsSchema, warningParamsSchema } from '@/lib/documents/types';
 import { rateLimit } from '@/lib/rate-limit';
 import { actorFrom } from '../_shared';
 
@@ -92,6 +92,7 @@ const createSchema = z.object({
   noc: nocParamsSchema.optional(),
   /** PROMOTION_DECISION: the change it orders. */
   promotion: promotionParamsSchema.optional(),
+  addendum: addendumParamsSchema.optional(),
   /** JOB_OFFER: the application (instead of employeeId) and the offer's terms. */
   jobApplicationId: zId.optional(),
   offer: offerParamsSchema.optional(),
@@ -123,7 +124,7 @@ export async function POST(req: Request) {
       {
         typeKey: body.typeKey,
         employeeId,
-        params: { language: body.language, addresseeAr: body.addresseeAr || undefined, addresseeEn: body.addresseeEn || undefined, warning: body.warning, settlementId: body.settlementId, terminationNotice: body.terminationNotice, noc: body.noc, promotion: body.promotion },
+        params: { language: body.language, addresseeAr: body.addresseeAr || undefined, addresseeEn: body.addresseeEn || undefined, warning: body.warning, settlementId: body.settlementId, terminationNotice: body.terminationNotice, noc: body.noc, promotion: body.promotion, addendum: body.addendum },
         source: forSelf ? 'PORTAL' : 'HR',
       },
       actorFrom(user, req),

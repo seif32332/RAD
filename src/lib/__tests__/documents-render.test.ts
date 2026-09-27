@@ -10,14 +10,19 @@ import { qrSvg, verifyUrl } from '@/lib/documents/qr';
 import { buildRenderModel } from '@/lib/documents/render-model';
 import { renderServiceConfig, typstServiceRenderer } from '@/lib/documents/renderer';
 import { bundleHash, loadTemplate } from '@/lib/documents/templates';
+import { createSealCertificate } from '@/lib/documents/seal/cert';
+import { sealPdf } from '@/lib/documents/seal/pades';
+import { hasOpenssl, opensslVerify } from './seal-fixtures';
 import {
-  buildCandidateContractData, buildContractData, CLEARANCE_CERTIFICATE, EMPLOYMENT_CERTIFICATE, EXPERIENCE_CERTIFICATE, EVALUATION_REPORT, EXIT_ACCEPTANCE, INVESTIGATION_MINUTES, JOB_OFFER, LEAVE_APPROVAL, NO_OBJECTION, paramsSchema, PAYSLIP, PROMOTION_DECISION, SALARY_CERTIFICATE, SALARY_TRANSFER, SETTLEMENT_STATEMENT, TERMINATION_NOTICE, WARNING_LETTER,
+  buildCandidateContractData, buildContractData, CLEARANCE_CERTIFICATE, CONTRACT_ADDENDUM, type AddendumFacts, EMPLOYMENT_CERTIFICATE, EXPERIENCE_CERTIFICATE, EVALUATION_REPORT, EXIT_ACCEPTANCE, INVESTIGATION_MINUTES, JOB_OFFER, LEAVE_APPROVAL, NO_OBJECTION, paramsSchema, PAYSLIP, PROMOTION_DECISION, SALARY_CERTIFICATE, SALARY_TRANSFER, SETTLEMENT_STATEMENT, TERMINATION_NOTICE, WARNING_LETTER,
   type CompanyRecord, type DocumentLanguage, type DocumentTypeDefinition, type EmployeeRecord, type ExitFacts, type PayrollFacts, type BankFacts, type EvaluationFacts, type InvestigationFacts, type LeaveFacts, type SettlementFacts, type TerminationFacts,
 } from '@/lib/documents/types';
 
 const config = renderServiceConfig();
 const fixtures = path.join(process.cwd(), 'services', 'render', 'test', 'fixtures', 'F2-ar-en');
 const asset = (name: string) => readFileSync(path.join(fixtures, name));
+// Every rendered template is also sealed (as the pipeline does) and the seal checked with OpenSSL.
+const sealCert = createSealCertificate({ nameAr: 'شركة أكمي للمقاولات العامة المحدودة', nameEn: 'ACME General Contracting Co. Ltd.', commercialRegNum: '1010123456' });
 
 const employee: EmployeeRecord = {
   id: 'e1', employeeId: 'E-00412', firstNameArabic: 'محمد', lastNameArabic: 'عبدالله الأحمد',
@@ -34,10 +39,10 @@ const company: CompanyRecord = { id: 'c1', nameArabic: 'شركة أكمي للم
 async function render(
   def: DocumentTypeDefinition,
   language: DocumentLanguage,
-  opts: { terminated?: boolean; signature?: boolean; logo?: boolean; params?: Record<string, unknown>; facts?: ExitFacts; settlement?: SettlementFacts; payroll?: PayrollFacts; termination?: TerminationFacts; investigation?: InvestigationFacts; bank?: BankFacts; leave?: LeaveFacts; evaluation?: EvaluationFacts } = {},
+  opts: { terminated?: boolean; signature?: boolean; logo?: boolean; params?: Record<string, unknown>; facts?: ExitFacts; settlement?: SettlementFacts; payroll?: PayrollFacts; termination?: TerminationFacts; investigation?: InvestigationFacts; bank?: BankFacts; leave?: LeaveFacts; evaluation?: EvaluationFacts; addendum?: AddendumFacts } = {},
 ) {
   const emp = opts.terminated ? { ...employee, isTerminated: true, terminationDate: new Date('2026-08-31T21:00:00Z') } : employee;
-  const data = buildContractData(def, { employee: emp, company, params: paramsSchema.parse({ language, ...opts.params }), facts: opts.facts, settlement: opts.settlement, payroll: opts.payroll, termination: opts.termination, investigation: opts.investigation, bank: opts.bank, leave: opts.leave, evaluation: opts.evaluation }) as never;
+  const data = buildContractData(def, { employee: emp, company, params: paramsSchema.parse({ language, ...opts.params }), facts: opts.facts, settlement: opts.settlement, payroll: opts.payroll, termination: opts.termination, investigation: opts.investigation, bank: opts.bank, leave: opts.leave, evaluation: opts.evaluation, addendum: opts.addendum }) as never;
   const token = newVerifyToken();
   const url = verifyUrl('https://acme.radeef.sa', token);
   const model = buildRenderModel(data, { primaryColor: '#0F4C81', numerals: 'latn', addressAr: 'الرياض، حي العليا', addressEn: null, phone: '+966 11 234 5678', email: null, logoSha256: null }, {
@@ -57,11 +62,13 @@ async function render(
   const out = await typstServiceRenderer().render({
     templateRef: bundle.templateRef, template: bundle.files, data: model, assets, creationTimestamp: 1790413200, pdfStandard: 'a-2b',
   });
+  const sealed = sealPdf(out.pdf, { certDer: sealCert.certDer, privateKeyPem: sealCert.privateKeyPem, signingTime: new Date(1790413200 * 1000), name: company.nameArabic, reason: `مستند رسمي رقم ACM-${def.code}-2026-000001` });
+  if (hasOpenssl) expect(opensslVerify(sealed, sealCert.certDer)).toBe(true);
   if (process.env.RENDER_IT_OUT) {
     mkdirSync(process.env.RENDER_IT_OUT, { recursive: true });
-    writeFileSync(path.join(process.env.RENDER_IT_OUT, `${def.code}-${language}${opts.settlement?.settlement?.type === 'LEAVE_SETTLEMENT' ? '-leave' : ''}${opts.terminated ? '-ended' : ''}${opts.signature === false ? '-nosig' : ''}.pdf`), out.pdf);
+    writeFileSync(path.join(process.env.RENDER_IT_OUT, `${def.code}-${language}${opts.settlement?.settlement?.type === 'LEAVE_SETTLEMENT' ? '-leave' : ''}${opts.terminated ? '-ended' : ''}${opts.signature === false ? '-nosig' : ''}.pdf`), sealed);
   }
-  return { out, token };
+  return { out, token, sealed };
 }
 
 describe.skipIf(!config)('templates through radeef-render', () => {
@@ -167,6 +174,14 @@ describe.skipIf(!config)('templates through radeef-render', () => {
 
   it('promotion decision (title + salary)', async () => {
     const { out } = await render(PROMOTION_DECISION, 'ar', { params: { promotion: { newJobTitleAr: 'مهندس مدني رئيسي', newBasicSalary: 11500, effectiveDate: '2026-10-01', reasonAr: 'تقديرا لأدائه المتميز' } } });
+    expect(out.pdf.subarray(0, 5).toString('latin1')).toBe('%PDF-');
+  });
+
+  it('contract addendum (every kind of term)', async () => {
+    const { out } = await render(CONTRACT_ADDENDUM, 'ar', {
+      params: { addendum: { effectiveDate: '2026-10-01', newBasicSalary: 10500, newHousingAllowance: 2625, newTransportAllowance: 1200, newJobTitleAr: 'مهندس مدني رئيسي', newBranchId: 'b2', newContractEndDate: '2028-09-30', reasonAr: 'بناء على إعادة تنظيم الإدارة' } },
+      addendum: { branch: { id: 'b1', nameAr: 'فرع الرياض' }, contractEndDate: null, newBranch: { id: 'b2', nameAr: 'فرع جدة' } },
+    });
     expect(out.pdf.subarray(0, 5).toString('latin1')).toBe('%PDF-');
   });
 

@@ -9,7 +9,7 @@ import { LOAN_DEDUCTIBLE_STATUSES } from '@/lib/constants';
 import { findStoredFile, storedNameFromUrl } from '@/lib/storage';
 import { decryptField } from '@/lib/crypto';
 import { normalizeIban } from '@/lib/iban';
-import type { BankFacts, EvaluationFacts, LeaveFacts, ExitFacts, InvestigationFacts, PayrollFacts, SettlementFacts, TerminationFacts } from './types';
+import type { AddendumFacts, BankFacts, EvaluationFacts, LeaveFacts, ExitFacts, InvestigationFacts, PayrollFacts, SettlementFacts, TerminationFacts } from './types';
 
 const label = (...parts: Array<string | null | undefined>) => parts.filter((p) => p && p.trim()).join(' - ') || 'غير موصوفة';
 
@@ -120,6 +120,17 @@ export async function loadBankFacts(db: Prisma.TransactionClient, employeeId: st
     iban = null; // unreadable ciphertext: reported as an invalid IBAN
   }
   return { bankName: e?.bankName ?? null, iban };
+}
+
+/** Work location and contract end of the file, and the branch a contract addendum moves to. */
+export async function loadAddendumFacts(db: Prisma.TransactionClient, employeeId: string, newBranchId: string | undefined): Promise<AddendumFacts> {
+  const e = await db.employee.findUnique({ where: { id: employeeId }, select: { contractEndDate: true, branch: { select: { id: true, nameArabic: true } } } });
+  const nb = newBranchId ? await db.branch.findUnique({ where: { id: newBranchId }, select: { id: true, nameArabic: true } }) : null;
+  return {
+    branch: e?.branch ? { id: e.branch.id, nameAr: e.branch.nameArabic } : null,
+    contractEndDate: e?.contractEndDate ?? null,
+    newBranch: nb ? { id: nb.id, nameAr: nb.nameArabic } : null,
+  };
 }
 
 /** The approved leave a leave letter states. */

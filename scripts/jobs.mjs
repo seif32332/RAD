@@ -734,7 +734,7 @@ async function applyEmployeeChanges(prisma, { dryRun, now = new Date() }) {
     orderBy: { effectiveDate: 'asc' },
     take: 500,
   });
-  const summary = { due: due.length, applied: 0 };
+  const summary = { due: due.length, applied: 0, failed: 0 };
   if (dryRun) return { ...summary, dryRun: true };
   for (const o of due) {
     const applied = await prisma.$transaction(async (tx) => {
@@ -744,18 +744,53 @@ async function applyEmployeeChanges(prisma, { dryRun, now = new Date() }) {
       if (o.basicSalary !== null) data.basicSalary = o.basicSalary;
       if (o.jobTitle !== null) data.jobTitle = o.jobTitle;
       if (o.jobTitleEnglish !== null) data.jobTitleEnglish = o.jobTitleEnglish;
+      if (o.branchId !== null) data.branchId = o.branchId;
+      if (o.contractEndDate !== null) data.contractEndDate = o.contractEndDate;
       if (Object.keys(data).length) await tx.employee.update({ where: { id: o.employeeId }, data });
+      const allowances = {};
+      for (const [kind, amount] of [['HOUSING', o.housingAllowance], ['TRANSPORT', o.transportAllowance]]) {
+        if (amount === null || amount === undefined) continue;
+        allowances[kind] = { from: await setMonthlyAllowance(tx, o.employeeId, kind, amount), to: amount };
+      }
       if (o.basicSalary !== null) {
         await tx.salaryChange.create({ data: { employeeId: o.employeeId, effectiveDate: o.effectiveDate, basicSalary: o.basicSalary, reason: `قرار ترقية/زيادة (${o.documentId})`, isPlanned: false } });
       }
       await tx.auditLog.create({
-        data: { userId: null, action: 'UPDATE', entityType: 'Employee', entityId: o.employeeId, details: JSON.stringify({ source: 'EmployeeChangeOrder', orderId: o.id, documentId: o.documentId, after: data, job: 'apply-employee-changes' }) },
+        data: { userId: null, action: 'UPDATE', entityType: 'Employee', entityId: o.employeeId, details: JSON.stringify({ source: 'EmployeeChangeOrder', orderId: o.id, documentId: o.documentId, after: data, allowances, job: 'apply-employee-changes' }) },
       });
       return 1;
+    }).catch((err) => {
+      // One order that cannot apply (the file changed since) does not block the others; it stays pending.
+      console.error('[jobs] change order not applied', o.id, err instanceof Error ? err.message : err);
+      summary.failed += 1;
+      return 0;
     });
     summary.applied += applied;
   }
   return summary;
+}
+
+/** Same classification as the payslip (src/lib/payroll-core.ts allowanceLine). */
+export function allowanceLine(a) {
+  const t = String(a.allowanceType ?? '').toUpperCase();
+  if (t === 'HOUSING' || t === 'TRANSPORT') return t;
+  if (t) return 'OTHER';
+  if (/سكن|housing/i.test(a.name ?? '')) return 'HOUSING';
+  if (/نقل|مواصلات|transport/i.test(a.name ?? '')) return 'TRANSPORT';
+  return 'OTHER';
+}
+
+/** Same rule as src/lib/documents/change-orders.ts setMonthlyAllowance: one row per kind, updated or added. */
+async function setMonthlyAllowance(tx, employeeId, kind, amount) {
+  const rows = (await tx.allowance.findMany({ where: { employeeId, isMonthly: true }, select: { id: true, name: true, allowanceType: true, amount: true } }))
+    .filter((a) => allowanceLine(a) === kind);
+  if (rows.length > 1) throw new Error(`more than one monthly ${kind} allowance in the employee file`);
+  if (rows.length === 1) {
+    await tx.allowance.update({ where: { id: rows[0].id }, data: { amount } });
+    return rows[0].amount;
+  }
+  await tx.allowance.create({ data: { employeeId, name: kind === 'HOUSING' ? 'بدل سكن' : 'بدل نقل', amount, isMonthly: true, allowanceType: kind, countsTowardGosi: kind === 'HOUSING' } });
+  return 0;
 }
 
 async function documentsIntegrity(prisma, { dryRun, now = new Date(), env = process.env }) {

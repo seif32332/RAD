@@ -21,6 +21,35 @@ interface RequestRow {
 }
 interface TypeOption { key: string; labelAr: string; labelEn: string; validityDays: number | null; languages?: string[]; noc?: boolean }
 
+type AckKind = 'RECEIPT' | 'RELEASE' | 'CONSENT';
+type AckDecision = 'RECEIVED' | 'ACCEPTED' | 'DISPUTED' | 'DECLINED';
+interface Ack { documentId: string; label: string; comment: string; kind: AckKind; decision: AckDecision }
+
+/** Dialog and result texts of each answer (the same decision means different things per kind). */
+const ACK_TEXT: Record<string, { title: string; submit: string; done: string; done2: string; describe: (label: string) => string; negative?: boolean; reasonRequired?: boolean }> = {
+  'RECEIPT:RECEIVED': {
+    title: 'إقرار بالاستلام', submit: 'أقر بالاستلام', done: 'سُجّل إقرارك بالاستلام.', done2: 'أقررت بالاستلام',
+    describe: (l) => `أقر باستلام ${l} واطلاعي عليه. الإقرار لا يعني الموافقة على ما ورد فيه.`,
+  },
+  'RELEASE:ACCEPTED': {
+    title: 'الموافقة على المخالصة', submit: 'أوافق وأبرئ الذمة', done: 'سُجّلت موافقتك على المخالصة.', done2: 'وافقت على المخالصة',
+    describe: (l) => `بالموافقة تقر باستلام صافي مستحقاتك المبينة في ${l} بموجب إثبات الصرف المذكور فيه، وتبرئ ذمة الشركة وفق نص المخالصة. نزّل البيان واقرأه قبل الموافقة.`,
+  },
+  'RELEASE:DISPUTED': {
+    title: 'الاعتراض على البيان', submit: 'إرسال الاعتراض', done: 'سُجّل اعتراضك، وسيتابعه قسم الموارد البشرية.', done2: 'اعترضت على البيان', negative: true, reasonRequired: true,
+    describe: (l) => `اكتب سبب اعتراضك على ${l}، وسيصل إلى قسم الموارد البشرية. الاعتراض لا يبرئ ذمة الشركة.`,
+  },
+  'CONSENT:ACCEPTED': {
+    title: 'الموافقة على ملحق العقد', submit: 'أوافق على الملحق', done: 'سُجّلت موافقتك، ويُطبَّق التغيير في تاريخ السريان.', done2: 'وافقت على الملحق',
+    describe: (l) => `بالموافقة تقبل تعديل بنود عقد عملك كما وردت في ${l} اعتباراً من تاريخ السريان، وتُسجَّل موافقتك إلكترونياً وتُعد قبولاً كتابياً منك. نزّل الملحق واقرأه قبل الموافقة.`,
+  },
+  'CONSENT:DECLINED': {
+    title: 'رفض ملحق العقد', submit: 'إرسال الرفض', done: 'سُجّل رفضك، ولن يتغير شيء في عقدك.', done2: 'رفضت الملحق', negative: true,
+    describe: (l) => `برفض ${l} يبقى عقد عملك دون تغيير، ويصل ردك إلى قسم الموارد البشرية.`,
+  },
+};
+const ackText = (kind: string, decision: string | null) => ACK_TEXT[`${kind}:${decision}`] ?? ACK_TEXT['RECEIPT:RECEIVED'];
+
 export interface DocumentsCardHandle {
   /** Opens the request form; returns false when the engine is not available (caller falls back). */
   openRequest(typeKey?: string): boolean;
@@ -39,7 +68,7 @@ const DocumentsCard = forwardRef<DocumentsCardHandle>(function DocumentsCard(_, 
   const [busy, setBusy] = useState(false);
   const [form, setForm] = useState({ typeKey: '', language: 'ar', addresseeAr: '', addresseeEn: '', nocPurpose: 'TRAVEL', nocTarget: '', nocDetails: '' });
   const selected = types.find((t) => t.key === form.typeKey) ?? null;
-  const [ack, setAck] = useState<{ documentId: string; label: string; comment: string; kind: 'RECEIPT' | 'RELEASE'; decision: 'RECEIVED' | 'ACCEPTED' | 'DISPUTED' } | null>(null);
+  const [ack, setAck] = useState<Ack | null>(null);
 
   const load = useCallback(async () => {
     try {
@@ -127,7 +156,7 @@ const DocumentsCard = forwardRef<DocumentsCardHandle>(function DocumentsCard(_, 
         body: JSON.stringify({ action: 'acknowledge', decision: ack.decision, comment: ack.comment.trim() || undefined }),
       });
       if (!res.ok) return toast.error(await readApiError(res, 'تعذر تسجيل ردك'));
-      toast.success(ack.decision === 'ACCEPTED' ? 'سُجّلت موافقتك على المخالصة.' : ack.decision === 'DISPUTED' ? 'سُجّل اعتراضك، وسيتابعه قسم الموارد البشرية.' : 'سُجّل إقرارك بالاستلام.');
+      toast.success(ackText(ack.kind, ack.decision).done);
       setAck(null);
       await load();
     } catch {
@@ -171,8 +200,8 @@ const DocumentsCard = forwardRef<DocumentsCardHandle>(function DocumentsCard(_, 
                   </p>
                   {r.rejectReason ? <p className="text-xs text-red-600 mt-1">سبب الرفض: {r.rejectReason}</p> : null}
                   {r.document?.acknowledgement?.at ? (
-                    <p className={`text-xs mt-1 ${r.document.acknowledgement.decision === 'DISPUTED' ? 'text-red-700' : 'text-emerald-700'}`}>
-                      {r.document.acknowledgement.decision === 'ACCEPTED' ? 'وافقت على المخالصة' : r.document.acknowledgement.decision === 'DISPUTED' ? 'اعترضت على البيان' : 'أقررت بالاستلام'} في {formatDateShort(r.document.acknowledgement.at)}
+                    <p className={`text-xs mt-1 ${ackText(r.document.acknowledgement.kind, r.document.acknowledgement.decision).negative ? 'text-red-700' : 'text-emerald-700'}`}>
+                      {ackText(r.document.acknowledgement.kind, r.document.acknowledgement.decision).done2} في {formatDateShort(r.document.acknowledgement.at)}
                     </p>
                   ) : null}
                   {proc ? <p className="text-xs text-blue-700 mt-1">{proc}</p> : null}
@@ -189,7 +218,18 @@ const DocumentsCard = forwardRef<DocumentsCardHandle>(function DocumentsCard(_, 
                     </a>
                   ) : null}
                   {r.document?.acknowledgement && !r.document.acknowledgement.at && r.document.status === 'ISSUED' ? (
-                    r.document.acknowledgement.kind === 'RELEASE' ? (
+                    r.document.acknowledgement.kind === 'CONSENT' ? (
+                      <>
+                        <button type="button" onClick={() => setAck({ documentId: r.document!.id, label: `${r.typeLabel} ${r.document!.number}`, comment: '', kind: 'CONSENT', decision: 'ACCEPTED' })}
+                          className="inline-flex items-center gap-1 bg-emerald-600 hover:bg-emerald-700 text-white px-3 py-1.5 rounded-lg text-[13px] font-bold">
+                          <CheckCircle2 size={16} aria-hidden="true" /> أوافق على الملحق
+                        </button>
+                        <button type="button" onClick={() => setAck({ documentId: r.document!.id, label: `${r.typeLabel} ${r.document!.number}`, comment: '', kind: 'CONSENT', decision: 'DECLINED' })}
+                          className="inline-flex items-center gap-1 border border-red-300 text-red-700 px-3 py-1.5 rounded-lg text-[13px] font-bold">
+                          <XCircle size={16} aria-hidden="true" /> أرفض
+                        </button>
+                      </>
+                    ) : r.document.acknowledgement.kind === 'RELEASE' ? (
                       <>
                         <button type="button" onClick={() => setAck({ documentId: r.document!.id, label: `${r.typeLabel} ${r.document!.number}`, comment: '', kind: 'RELEASE', decision: 'ACCEPTED' })}
                           className="inline-flex items-center gap-1 bg-emerald-600 hover:bg-emerald-700 text-white px-3 py-1.5 rounded-lg text-[13px] font-bold">
@@ -273,28 +313,24 @@ const DocumentsCard = forwardRef<DocumentsCardHandle>(function DocumentsCard(_, 
       </Modal>
 
       <Modal open={!!ack} onClose={() => setAck(null)} tone="indigo" size="md" busy={busy}
-        title={ack?.decision === 'ACCEPTED' ? 'الموافقة على المخالصة' : ack?.decision === 'DISPUTED' ? 'الاعتراض على البيان' : 'إقرار بالاستلام'}
-        description={!ack ? '' : ack.decision === 'ACCEPTED'
-          ? `بالموافقة تقر باستلام صافي مستحقاتك المبينة في ${ack.label} بموجب إثبات الصرف المذكور فيه، وتبرئ ذمة الشركة وفق نص المخالصة. نزّل البيان واقرأه قبل الموافقة.`
-          : ack.decision === 'DISPUTED'
-            ? `اكتب سبب اعتراضك على ${ack.label}، وسيصل إلى قسم الموارد البشرية. الاعتراض لا يبرئ ذمة الشركة.`
-            : `أقر باستلام ${ack.label} واطلاعي عليه. الإقرار لا يعني الموافقة على ما ورد فيه.`}>
+        title={ack ? ackText(ack.kind, ack.decision).title : ''}
+        description={ack ? ackText(ack.kind, ack.decision).describe(ack.label) : ''}>
         <form onSubmit={acknowledge} className="space-y-4">
-          {ack?.kind === 'RELEASE' ? (
-            <a href={pdfUrl(ack.documentId)} className="inline-flex items-center gap-1 text-indigo-700 font-bold text-[13px]"><Download size={16} aria-hidden="true" /> تنزيل البيان</a>
+          {ack?.kind === 'RELEASE' || ack?.kind === 'CONSENT' ? (
+            <a href={pdfUrl(ack.documentId)} className="inline-flex items-center gap-1 text-indigo-700 font-bold text-[13px]"><Download size={16} aria-hidden="true" /> {ack.kind === 'CONSENT' ? 'تنزيل الملحق' : 'تنزيل البيان'}</a>
           ) : null}
           <label className="block">
-            <span className="block text-[13px] font-bold text-slate-700 mb-1">{ack?.decision === 'DISPUTED' ? 'سبب الاعتراض' : 'ملاحظاتك (اختياري)'}</span>
-            <textarea value={ack?.comment ?? ''} maxLength={2000} rows={4} required={ack?.decision === 'DISPUTED'} minLength={ack?.decision === 'DISPUTED' ? 5 : undefined}
+            <span className="block text-[13px] font-bold text-slate-700 mb-1">{ack && ackText(ack.kind, ack.decision).reasonRequired ? 'سبب الاعتراض' : 'ملاحظاتك (اختياري)'}</span>
+            <textarea value={ack?.comment ?? ''} maxLength={2000} rows={4} required={!!ack && !!ackText(ack.kind, ack.decision).reasonRequired} minLength={ack && ackText(ack.kind, ack.decision).reasonRequired ? 5 : undefined}
               onChange={(e) => setAck((a) => (a ? { ...a, comment: e.target.value } : a))}
               className="w-full border border-slate-300 rounded-xl px-3 py-2.5 text-[14px]" placeholder="يطلع عليها قسم الموارد البشرية." />
           </label>
           <p className="text-xs text-slate-500">لا يمكن تعديل ردك أو ملاحظاتك بعد الإرسال.</p>
           <div className="flex justify-end gap-2">
             <button type="button" onClick={() => setAck(null)} disabled={busy} className="px-4 py-2 rounded-xl border text-[13px] font-bold">إلغاء</button>
-            <button type="submit" disabled={busy} className={`px-5 py-2 rounded-xl text-white text-[13px] font-bold inline-flex items-center gap-2 disabled:opacity-60 ${ack?.decision === 'DISPUTED' ? 'bg-red-600' : 'bg-indigo-600'}`}>
+            <button type="submit" disabled={busy} className={`px-5 py-2 rounded-xl text-white text-[13px] font-bold inline-flex items-center gap-2 disabled:opacity-60 ${ack && ackText(ack.kind, ack.decision).negative ? 'bg-red-600' : 'bg-indigo-600'}`}>
               {busy ? <Loader2 size={16} className="animate-spin" aria-hidden="true" /> : null}
-              {ack?.decision === 'ACCEPTED' ? 'أوافق وأبرئ الذمة' : ack?.decision === 'DISPUTED' ? 'إرسال الاعتراض' : 'أقر بالاستلام'}
+              {ack ? ackText(ack.kind, ack.decision).submit : ''}
             </button>
           </div>
         </form>

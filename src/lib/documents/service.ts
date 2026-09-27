@@ -19,16 +19,19 @@ import { appendEvent, truncateIp } from './events';
 import { cancelChangeOrder, createChangeOrder } from './change-orders';
 import { grantCandidateAccess } from './candidate';
 import { loadDocumentTexts } from './texts';
-import { loadEvaluationFacts, loadLeaveFacts, loadBankFacts, loadExitFacts, loadInvestigationFacts, loadPayrollFacts, loadSettlementFacts, loadTerminationFacts } from './facts';
+import { loadAddendumFacts, loadEvaluationFacts, loadLeaveFacts, loadBankFacts, loadExitFacts, loadInvestigationFacts, loadPayrollFacts, loadSettlementFacts, loadTerminationFacts } from './facts';
 import { employeeUserId, enqueueNotice } from './notify';
 import {
   computeValidUntil, decideSignature, effectivePolicy, needsApproval, validityStatus,
   type ApprovalRow, type AuthorizationRow, type SignatoryRow,
 } from './policy';
+import { formatGregorian } from './format';
 import { qrSvg, verifyUrl } from './qr';
 import { buildRenderModel, type BrandSnapshot, type SignatureBlock } from './render-model';
 import { RenderError, renderServiceConfig, typstServiceRenderer, type DocumentRenderer } from './renderer';
 import { readAsset, readIssuedPdf, storeIssuedPdf } from './storage';
+import { SealError } from './seal/pades';
+import { selfSealProvider } from './seal/provider';
 import { loadTemplate } from './templates';
 import {
   buildCandidateContractData, buildContractData, ContractValidationError, getDocumentType, LEAVE_LETTER_TYPES, paramsSchema,
@@ -167,9 +170,10 @@ async function buildMaterialSnapshot(db: Tx, def: DocumentTypeDefinition, subjec
   const bank = def.facts === 'BANK' ? await loadBankFacts(db, employeeId) : undefined;
   const leave = def.facts === 'LEAVE' ? await loadLeaveFacts(db, params.leaveId) : undefined;
   const evaluation = def.facts === 'EVALUATION' ? await loadEvaluationFacts(db, params.evaluationId) : undefined;
+  const addendum = def.facts === 'ADDENDUM' ? await loadAddendumFacts(db, employeeId, params.addendum?.newBranchId) : undefined;
   let data: Record<string, unknown>;
   try {
-    data = buildContractData(def, { employee, company, params, facts, settlement, payroll, termination, investigation, bank, leave, evaluation });
+    data = buildContractData(def, { employee, company, params, facts, settlement, payroll, termination, investigation, bank, leave, evaluation, addendum });
   } catch (e) {
     if (e instanceof ContractValidationError) throw new HttpError(422, e.message, { errors: e.errors });
     throw e;
@@ -416,6 +420,8 @@ export async function advanceRequest(requestId: string, actor: Actor, renderer: 
       data: {
         requestId, legalCompanyId: snap.legalCompanyId, typeCode: def.code, year, seq: Number(seq), number,
         issuedAt: new Date(Math.floor(now.getTime() / 1000) * 1000), // whole seconds = the PDF creation timestamp
+        // Due at once by the app clock (the claim compares with it; the database default could run ahead).
+        nextAttemptAt: now,
         verifyTokenHash: hashVerifyToken(token), verifyTokenEnc: encryptField(token),
         signatoryId: signatory?.id ?? null,
         authorizationId: decision.printImage ? decision.authorizationId : null,
@@ -524,7 +530,16 @@ export async function processRenderJob(jobId: string, actor: Actor = SYSTEM_ACTO
       templateRef: bundle.templateRef, template: bundle.files, data: model, assets,
       creationTimestamp: Math.floor(job.issuedAt.getTime() / 1000), pdfStandard: 'a-2b',
     });
-    const storedName = await storeIssuedPdf(out.pdf, job.issuedAt);
+    // PAdES seal with the company's key (SPEC §9 level 3): after rendering, before the fingerprint.
+    // Fails closed: a document is never issued unsealed once the seal exists.
+    let sealed: { pdf: Buffer; sealKeyId: string };
+    try {
+      sealed = await selfSealProvider.seal({ pdf: out.pdf, legalCompanyId: job.legalCompanyId, issuedAt: job.issuedAt, number: job.number, actorId: actor.userId });
+    } catch (err) {
+      throw new RenderError('تعذّر ختم المستند رقمياً', 'SEAL_FAILED', !(err instanceof SealError), err instanceof Error ? err.message : String(err));
+    }
+    const pdfSha256 = sha256Hex(sealed.pdf);
+    const storedName = await storeIssuedPdf(sealed.pdf, job.issuedAt);
 
     const documentId = await prisma.$transaction(async (tx) => {
       const doc = await tx.issuedDocument.create({
@@ -535,15 +550,16 @@ export async function processRenderJob(jobId: string, actor: Actor = SYSTEM_ACTO
           authorizationId: decision.printImage ? decision.authorizationId : null,
           templateRef: bundle.templateRef, templateSha256: bundle.sha256,
           rendererId: out.rendererId, rendererVersion: out.rendererVersion, typstSha256: out.typstSha256, fontsSha256: out.fontsSha256,
-          pdfStandard: 'a-2b', storedName, pdfSha256: out.pdfSha256, pdfSize: out.pdf.length,
+          pdfStandard: 'a-2b', storedName, pdfSha256, pdfSize: sealed.pdf.length, sealKeyId: sealed.sealKeyId,
           verifyTokenHash: job.verifyTokenHash, validUntil, issuedAt: job.issuedAt, issuedById: actor.userId ?? req.requestedById,
         },
       });
       await tx.documentRenderJob.update({ where: { id: job.id }, data: { status: 'DONE', verifyTokenEnc: null, lastError: null } });
       await tx.documentRequest.update({ where: { id: req.id }, data: { status: 'ISSUED', closedAt: new Date() } });
-      await appendEvent(tx, { type: 'ISSUED', requestId: req.id, documentId: doc.id, actorId: actor.userId, meta: { number: job.number, pdfSha256: out.pdfSha256, signaturePrinted: decision.printImage } });
+      await appendEvent(tx, { type: 'ISSUED', requestId: req.id, documentId: doc.id, actorId: actor.userId, meta: { number: job.number, pdfSha256, sealKeyId: sealed.sealKeyId, signaturePrinted: decision.printImage } });
       if (req.employeeId) {
-        await enqueueNotice(tx, [await employeeUserId(tx, req.employeeId)], `issued:${doc.id}`, { kind: 'ISSUED', number: job.number, typeLabel: def.labelAr, acknowledge: !!def.acknowledgement });
+        const consentBy = def.acknowledgement === 'CONSENT' ? formatGregorian((material.data as unknown as { addendum: { effectiveDate: string } }).addendum.effectiveDate, 'ar') : undefined;
+        await enqueueNotice(tx, [await employeeUserId(tx, req.employeeId)], `issued:${doc.id}`, { kind: 'ISSUED', number: job.number, typeLabel: def.labelAr, acknowledge: !!def.acknowledgement, consentBy });
       } else if (req.jobApplicationId) {
         // A candidate has no account: a private link, valid until the offer's deadline (candidate.ts).
         await grantCandidateAccess(tx, { documentId: doc.id, jobApplicationId: req.jobApplicationId, validUntil, issuedAt: job.issuedAt, number: job.number });
@@ -687,7 +703,7 @@ export async function revokeIssuedDocument(documentId: string, reason: string, a
   if (!def || !actor.userId || !(await staffCan(prisma, def, actor, doc.legalCompanyId))) throw forbidden();
   await prisma.$transaction(async (tx) => {
     // A decision already carried out on the employee file cannot be revoked by revoking its letter.
-    if (def.executesChange && (await cancelChangeOrder(tx, documentId)) === 'APPLIED') {
+    if ((def.executesChange || def.executesOnConsent) && (await cancelChangeOrder(tx, documentId)) === 'APPLIED') {
       throw conflict('القرار نُفّذ على ملف الموظف؛ صحّح الملف بقرار جديد بدلاً من إلغاء هذا');
     }
     const moved = await tx.issuedDocument.updateMany({
@@ -706,7 +722,7 @@ export async function revokeIssuedDocument(documentId: string, reason: string, a
 // Acknowledgement of receipt (warning letters)
 // ---------------------------------------------------------------------------
 
-export type AcknowledgementDecision = 'RECEIVED' | 'ACCEPTED' | 'DISPUTED';
+export type AcknowledgementDecision = 'RECEIVED' | 'ACCEPTED' | 'DISPUTED' | 'DECLINED';
 
 /**
  * The employee's answer to a document that asks for one, once, never edited (DocumentAcknowledgement
@@ -721,7 +737,10 @@ export async function acknowledgeDocument(
 ) {
   const doc = await prisma.issuedDocument.findUnique({
     where: { id: documentId },
-    select: { id: true, employeeId: true, typeKey: true, status: true, number: true, request: { select: { requestedById: true, approvals: { select: { approverId: true } } } } },
+    select: {
+      id: true, employeeId: true, typeKey: true, status: true, number: true, snapshot: { select: { data: true } },
+      request: { select: { requestedById: true, approvals: { select: { approverId: true } } } },
+    },
   });
   const def = doc ? getDocumentType(doc.typeKey) : null;
   if (!doc || !def || !actor.userId || !actor.employeeId || actor.employeeId !== doc.employeeId) throw notFound('المستند غير موجود');
@@ -729,9 +748,16 @@ export async function acknowledgeDocument(
   if (doc.status !== 'ISSUED') throw conflict('المستند ملغى أو مستبدل؛ لا يلزم الرد عليه');
   const comment = input.comment?.trim() || null;
   let decision: AcknowledgementDecision;
+  let consent: AddendumTerms | null = null;
   if (def.acknowledgement === 'RECEIPT') {
     if (input.decision && input.decision !== 'RECEIVED') throw badRequest('هذا المستند يُقر باستلامه فقط');
     decision = 'RECEIVED';
+  } else if (def.acknowledgement === 'CONSENT') {
+    if (input.decision !== 'ACCEPTED' && input.decision !== 'DECLINED') throw badRequest('اختر الموافقة على الملحق أو رفضه');
+    consent = addendumTermsOf(doc.snapshot.data);
+    // The answer is due by the effective date (Riyadh); later, HR issues a new addendum with a new date.
+    if (riyadhDate(new Date()) > consent.effectiveDate) throw conflict('انتهت مهلة الرد على هذا الملحق (تاريخ السريان)؛ راجع الموارد البشرية');
+    decision = input.decision;
   } else {
     if (input.decision !== 'ACCEPTED' && input.decision !== 'DISPUTED') throw badRequest('اختر الموافقة على المخالصة أو الاعتراض عليها');
     if (input.decision === 'DISPUTED' && (!comment || comment.length < 5)) throw badRequest('اكتب سبب الاعتراض');
@@ -741,10 +767,23 @@ export async function acknowledgeDocument(
     await prisma.$transaction(async (tx) => {
       await tx.documentAcknowledgement.create({ data: { documentId, employeeId: doc.employeeId, userId: actor.userId!, decision, comment } });
       await appendEvent(tx, { type: 'ACKNOWLEDGED', documentId, actorId: actor.userId, ip: actor.ip, meta: { decision, withComment: !!comment } });
+      const staff = [doc.request.requestedById, ...doc.request.approvals.map((a) => a.approverId)];
       if (decision === 'DISPUTED') {
         // Whoever issued and approved it follows the dispute up (the reason stays behind the login).
-        const staff = [doc.request.requestedById, ...doc.request.approvals.map((a) => a.approverId)];
         await enqueueNotice(tx, staff, `disputed:${documentId}`, { kind: 'DISPUTED', number: doc.number, typeLabel: def.labelAr });
+      }
+      if (consent) {
+        // Acceptance orders the change (applied now when due, else on the effective date); a decline changes nothing.
+        if (decision === 'ACCEPTED') {
+          const a = consent.apply;
+          const num = (v: string | null) => (v === null ? null : Number(v));
+          await createChangeOrder(tx, {
+            documentId, employeeId: doc.employeeId!, effectiveDate: consent.effectiveDate,
+            basicSalary: num(a.basicSalary), jobTitle: a.jobTitleAr, jobTitleEnglish: a.jobTitleEn,
+            housingAllowance: num(a.housingAllowance), transportAllowance: num(a.transportAllowance), branchId: a.branchId, contractEndDate: a.contractEndDate,
+          }, actor.userId);
+        }
+        await enqueueNotice(tx, staff, `consent:${documentId}`, { kind: 'CONSENT_ANSWERED', number: doc.number, typeLabel: def.labelAr, accepted: decision === 'ACCEPTED' });
       }
     });
   } catch (e) {
@@ -752,6 +791,18 @@ export async function acknowledgeDocument(
     throw e;
   }
   return { documentId, decision };
+}
+
+interface AddendumTerms {
+  effectiveDate: string;
+  apply: { basicSalary: string | null; housingAllowance: string | null; transportAllowance: string | null; jobTitleAr: string | null; jobTitleEn: string | null; branchId: string | null; contractEndDate: string | null };
+}
+
+/** The terms a contract addendum's approved snapshot orders (what the employee saw and accepts). */
+function addendumTermsOf(snapshotText: string | null): AddendumTerms {
+  const terms = snapshotText ? (JSON.parse(snapshotText) as { data?: { addendum?: AddendumTerms } }).data?.addendum : undefined;
+  if (!terms?.effectiveDate || !terms.apply) throw conflict('بيانات الملحق غير متاحة');
+  return terms;
 }
 
 // ---------------------------------------------------------------------------
@@ -1111,6 +1162,10 @@ export interface PublicVerification {
   pdfSha256: string | null; // for the in-browser file check; null once purged
   /** Settlement statement: whether the employee accepted the discharge (the document says it counts from then). */
   release: { status: 'PENDING' | 'ACCEPTED' | 'DISPUTED'; at: string | null } | null;
+  /** Contract addendum: whether the employee accepted it (it takes effect only then). */
+  consent: { status: 'PENDING' | 'ACCEPTED' | 'DECLINED'; at: string | null } | null;
+  /** PAdES seal: SHA-256 of the company certificate that sealed the PDF; null for documents issued before the seal. */
+  sealFingerprint: string | null;
 }
 
 /** Minimal, PII-free metadata (DOC-06). Nothing from the data contract is returned. */
@@ -1118,7 +1173,11 @@ export async function verifyDocumentToken(token: string, ip: string | null): Pro
   if (!TOKEN_RE.test(token)) return null;
   const doc = await prisma.issuedDocument.findUnique({
     where: { verifyTokenHash: hashVerifyToken(token) },
-    include: { legalCompany: { select: { nameArabic: true, nameEnglish: true } }, acknowledgement: { select: { decision: true, acknowledgedAt: true } } },
+    include: {
+      legalCompany: { select: { nameArabic: true, nameEnglish: true } },
+      acknowledgement: { select: { decision: true, acknowledgedAt: true } },
+      sealKey: { select: { fingerprint: true } },
+    },
   });
   if (!doc) return null;
   const def = getDocumentType(doc.typeKey);
@@ -1140,5 +1199,22 @@ export async function verifyDocumentToken(token: string, ip: string | null): Pro
           at: doc.acknowledgement ? riyadhDate(doc.acknowledgement.acknowledgedAt) : null,
         }
       : null,
+    consent: def?.acknowledgement === 'CONSENT'
+      ? {
+          status: doc.acknowledgement?.decision === 'ACCEPTED' ? 'ACCEPTED' : doc.acknowledgement?.decision === 'DECLINED' ? 'DECLINED' : 'PENDING',
+          at: doc.acknowledgement ? riyadhDate(doc.acknowledgement.acknowledgedAt) : null,
+        }
+      : null,
+    sealFingerprint: doc.sealKey?.fingerprint ?? null,
   };
+}
+
+/** Public certificate that sealed the document of a verification token (download from the verification page). */
+export async function sealCertificateForToken(token: string): Promise<{ certDer: Buffer; number: string } | null> {
+  if (!TOKEN_RE.test(token)) return null;
+  const doc = await prisma.issuedDocument.findUnique({
+    where: { verifyTokenHash: hashVerifyToken(token) },
+    select: { number: true, sealKey: { select: { certDer: true } } },
+  });
+  return doc?.sealKey ? { certDer: Buffer.from(doc.sealKey.certDer), number: doc.number } : null;
 }

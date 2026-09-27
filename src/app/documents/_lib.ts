@@ -9,15 +9,16 @@ export interface DocView {
   validity: 'VALID' | 'EXPIRED' | 'REVOKED' | 'SUPERSEDED' | 'PURGED';
   revokeReason: string | null;
   /** Warning: receipt; settlement statement: discharge accepted / disputed (null = not applicable). */
-  acknowledgement: { kind: 'RECEIPT' | 'RELEASE'; at: string | null; decision: 'RECEIVED' | 'ACCEPTED' | 'DISPUTED' | null; comment: string | null } | null;
+  acknowledgement: { kind: 'RECEIPT' | 'RELEASE' | 'OFFER' | 'CONSENT'; at: string | null; decision: 'RECEIVED' | 'ACCEPTED' | 'DISPUTED' | 'DECLINED' | null; comment: string | null } | null;
 }
 
 /** Short status of the employee's answer, for HR lists. */
 export function acknowledgementLabel(a: DocView['acknowledgement']): { text: string; tone: string } | null {
   if (!a) return null;
-  if (!a.at) return { text: a.kind === 'RELEASE' ? 'بانتظار موافقة الموظف' : 'لم يقر بعد', tone: 'text-amber-700' };
+  if (!a.at) return { text: a.kind === 'RELEASE' || a.kind === 'CONSENT' ? 'بانتظار موافقة الموظف' : 'لم يقر بعد', tone: 'text-amber-700' };
   if (a.decision === 'DISPUTED') return { text: 'اعترض الموظف', tone: 'text-red-700' };
-  if (a.decision === 'ACCEPTED') return { text: 'وافق على المخالصة', tone: 'text-emerald-700' };
+  if (a.decision === 'DECLINED') return { text: a.kind === 'CONSENT' ? 'رفض الموظف الملحق' : 'اعتذر', tone: 'text-red-700' };
+  if (a.decision === 'ACCEPTED') return { text: a.kind === 'CONSENT' ? 'وافق على الملحق' : a.kind === 'OFFER' ? 'قبِل العرض' : 'وافق على المخالصة', tone: 'text-emerald-700' };
   return { text: 'أقر بالاستلام', tone: 'text-emerald-700' };
 }
 

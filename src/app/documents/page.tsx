@@ -11,7 +11,7 @@ import { formatDateShort } from '@/lib/dates';
 import { SETTLEMENT_PAYMENT_METHODS, type SettlementPaymentMethod } from '@/lib/settlement-payment';
 import { NOC_PURPOSES, VALIDITY, acknowledgementLabel, pdfUrl, processingLabel, type DocView, type ProcessingView } from './_lib';
 
-interface TypeInfo { key: string; labelAr: string; languages: string[]; warningText: boolean; settlement: boolean; addressable: boolean; auto?: boolean; terminationNotice?: boolean; fromRecord?: boolean; noc?: boolean; promotion?: boolean; candidate?: boolean }
+interface TypeInfo { key: string; labelAr: string; languages: string[]; warningText: boolean; settlement: boolean; addressable: boolean; auto?: boolean; terminationNotice?: boolean; fromRecord?: boolean; noc?: boolean; promotion?: boolean; addendum?: boolean; candidate?: boolean }
 interface OfferOptions { candidates: { id: string; label: string; jobTitle: string; status: string }[]; companies: { id: string; label: string }[] }
 interface InvestigationOption { id: string; label: string; closedAt: string }
 const NOTICE_REASONS: Record<string, string> = {
@@ -175,6 +175,16 @@ export default function DocumentsPage() {
     })();
   }, [issueType?.candidate, offerOptions]);
   const [promo, setPromo] = useState({ newJobTitleAr: '', newJobTitleEn: '', newBasicSalary: '', effectiveDate: '', reasonAr: '' });
+  // Contract addendum: only the terms filled in change.
+  const [amd, setAmd] = useState({ effectiveDate: '', basicSalary: '', housing: '', transport: '', jobTitleAr: '', jobTitleEn: '', branchId: '', contractEndDate: '', reasonAr: '' });
+  const [branches, setBranches] = useState<Array<{ id: string; nameArabic: string }> | null>(null);
+  useEffect(() => {
+    if (!issueOpen || !issueType?.addendum || branches) return;
+    void fetch('/api/branches', { cache: 'no-store' }).then(async (res) => {
+      const list: unknown = res.ok ? await res.json() : [];
+      setBranches(Array.isArray(list) ? (list as Array<{ id: string; nameArabic: string }>) : []);
+    });
+  }, [issueOpen, issueType?.addendum, branches]);
   const [notice, setNotice] = useState({ reason: 'NOTICE', lastWorkingDate: '', noticeDays: '60', investigationId: '', detailsAr: '' });
   const [investigations, setInvestigations] = useState<InvestigationOption[] | null>(null);
   // Article 80: pick one of the employee's concluded investigations.
@@ -359,6 +369,19 @@ export default function DocumentsPage() {
             reasonAr: promo.reasonAr.trim() || undefined,
           }
         : undefined,
+      addendum: issueType?.addendum
+        ? {
+            effectiveDate: amd.effectiveDate,
+            newBasicSalary: amd.basicSalary ? Number(amd.basicSalary) : undefined,
+            newHousingAllowance: amd.housing ? Number(amd.housing) : undefined,
+            newTransportAllowance: amd.transport ? Number(amd.transport) : undefined,
+            newJobTitleAr: amd.jobTitleAr.trim() || undefined,
+            newJobTitleEn: amd.jobTitleAr.trim() ? amd.jobTitleEn.trim() || undefined : undefined,
+            newBranchId: amd.branchId || undefined,
+            newContractEndDate: amd.contractEndDate || undefined,
+            reasonAr: amd.reasonAr.trim() || undefined,
+          }
+        : undefined,
       noc: issueType?.noc ? { purpose: noc.purpose, targetAr: noc.targetAr, detailsAr: noc.detailsAr.trim() || undefined } : undefined,
       terminationNotice: issueType?.terminationNotice
         ? {
@@ -375,7 +398,7 @@ export default function DocumentsPage() {
       if (issueType?.warningText) setIssue((s) => ({ ...s, subjectAr: '', bodyAr: '', incidentDate: '' }));
       if (r.status === 'ISSUED') toast.success('صدر المستند.');
       else if (r.status === 'PENDING_APPROVAL') {
-        toast.info(issueType?.warningText || issueType?.terminationNotice || issueType?.promotion ? 'بانتظار اعتماد شخص آخر، ولن يراه الموظف قبل صدوره.' : 'الطلب بانتظار الاعتماد: لا يوجد تفويض مسبق ساري للموقّع.');
+        toast.info(issueType?.warningText || issueType?.terminationNotice || issueType?.promotion || issueType?.addendum ? 'بانتظار اعتماد شخص آخر، ولن يراه الموظف قبل صدوره.' : 'الطلب بانتظار الاعتماد: لا يوجد تفويض مسبق ساري للموقّع.');
       }
     }
   }
@@ -583,6 +606,31 @@ export default function DocumentsPage() {
                 <input type="date" required value={promo.effectiveDate} onChange={(e) => setPromo({ ...promo, effectiveDate: e.target.value })} className="border rounded-xl px-3 py-2 text-[14px]" />
               </label>
               <input value={promo.reasonAr} maxLength={200} onChange={(e) => setPromo({ ...promo, reasonAr: e.target.value })} placeholder="السبب (اختياري)، مثل: تقديراً لأدائه المتميز" className="w-full border rounded-xl px-3 py-2.5 text-[14px]" />
+            </>
+          ) : null}
+          {issueType?.addendum ? (
+            <>
+              <p className="text-[12px] text-slate-600">اترك ما لا يتغير فارغاً. بعد اعتماد شخص آخر يصدر الملحق للموظف، ولا يسري إلا بموافقته في البوابة حتى تاريخ السريان؛ عندها يُطبَّق على ملفه.</p>
+              <label className="block">
+                <span className="block text-[13px] font-bold text-slate-700 mb-1">تاريخ السريان (آخر موعد لموافقة الموظف)</span>
+                <input type="date" required value={amd.effectiveDate} onChange={(e) => setAmd({ ...amd, effectiveDate: e.target.value })} className="border rounded-xl px-3 py-2 text-[14px]" />
+              </label>
+              <div className="grid grid-cols-3 gap-2">
+                <input type="number" min={1} step="0.01" value={amd.basicSalary} onChange={(e) => setAmd({ ...amd, basicSalary: e.target.value })} placeholder="الراتب الأساسي الجديد" className="border rounded-xl px-3 py-2 text-[14px]" />
+                <input type="number" min={0} step="0.01" value={amd.housing} onChange={(e) => setAmd({ ...amd, housing: e.target.value })} placeholder="بدل السكن الجديد" className="border rounded-xl px-3 py-2 text-[14px]" />
+                <input type="number" min={0} step="0.01" value={amd.transport} onChange={(e) => setAmd({ ...amd, transport: e.target.value })} placeholder="بدل النقل الجديد" className="border rounded-xl px-3 py-2 text-[14px]" />
+              </div>
+              <input value={amd.jobTitleAr} maxLength={120} onChange={(e) => setAmd({ ...amd, jobTitleAr: e.target.value })} placeholder="المسمى الوظيفي الجديد" className="w-full border rounded-xl px-3 py-2.5 text-[14px]" />
+              {amd.jobTitleAr ? <input dir="ltr" value={amd.jobTitleEn} maxLength={120} onChange={(e) => setAmd({ ...amd, jobTitleEn: e.target.value })} placeholder="New job title (English, optional)" className="w-full border rounded-xl px-3 py-2.5 text-[14px]" /> : null}
+              <select value={amd.branchId} onChange={(e) => setAmd({ ...amd, branchId: e.target.value })} className="w-full border rounded-xl px-3 py-2.5 text-[14px]">
+                <option value="">مكان العمل: بلا تغيير</option>
+                {(branches ?? []).map((b) => <option key={b.id} value={b.id}>{b.nameArabic}</option>)}
+              </select>
+              <label className="block">
+                <span className="block text-[13px] font-bold text-slate-700 mb-1">تاريخ انتهاء العقد الجديد (اختياري)</span>
+                <input type="date" value={amd.contractEndDate} onChange={(e) => setAmd({ ...amd, contractEndDate: e.target.value })} className="border rounded-xl px-3 py-2 text-[14px]" />
+              </label>
+              <input value={amd.reasonAr} maxLength={200} onChange={(e) => setAmd({ ...amd, reasonAr: e.target.value })} placeholder="السبب (اختياري)، مثل: بناء على إعادة تنظيم الإدارة" className="w-full border rounded-xl px-3 py-2.5 text-[14px]" />
             </>
           ) : null}
           {issueType?.noc ? (

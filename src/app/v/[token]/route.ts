@@ -47,7 +47,8 @@ dl{background:#fff;border:1px solid #e2e8f0;border-radius:.75rem;padding:0 1.25r
 dt{color:#64748b;font-size:.85rem}dd{margin:0;font-size:.9rem;font-weight:600;text-align:left}dd small{display:block;color:#64748b;font-weight:400}
 .card{background:#fff;border:1px solid #e2e8f0;border-radius:.75rem;padding:1.1rem 1.25rem;margin-top:1rem}.card label{font-weight:700;cursor:pointer}
 .card p{color:#64748b;font-size:.85rem;margin:.35rem 0 0}.result{margin-top:.75rem;font-size:.9rem}.ok{color:#047857}.bad{color:#b91c1c}.warn{color:#b45309}
-.note{color:#64748b;font-size:.75rem;line-height:1.7;margin-top:1.5rem}input[type=file]{margin-top:.6rem;font-size:.85rem;max-width:100%}`;
+.note{color:#64748b;font-size:.75rem;line-height:1.7;margin-top:1.5rem}input[type=file]{margin-top:.6rem;font-size:.85rem;max-width:100%}
+.fp{font-family:ui-monospace,Consolas,monospace;font-size:.7rem;word-break:break-all}.card a{color:#1d4ed8;font-size:.85rem}`;
 
 const STATUS: Record<PublicVerification['status'], [string, string]> = {
   VALID: ['مستند ساري', 'Valid document'],
@@ -105,7 +106,17 @@ ${r.release ? row(
   r.release.status === 'ACCEPTED' ? `وافق عليها الموظف في ${formatGregorian(r.release.at!, 'ar')}` : r.release.status === 'DISPUTED' ? `اعترض عليها الموظف في ${formatGregorian(r.release.at!, 'ar')}` : 'لم يوافق عليها الموظف بعد',
   r.release.status === 'ACCEPTED' ? `Accepted by the employee on ${formatGregorian(r.release.at!, 'en')}` : r.release.status === 'DISPUTED' ? `Disputed by the employee on ${formatGregorian(r.release.at!, 'en')}` : 'Not yet accepted by the employee',
 ) : ''}
+${r.consent ? row(
+  'موافقة الموظف',
+  r.consent.status === 'ACCEPTED' ? `وافق عليه الموظف في ${formatGregorian(r.consent.at!, 'ar')}` : r.consent.status === 'DECLINED' ? `رفضه الموظف في ${formatGregorian(r.consent.at!, 'ar')}` : 'لم يوافق عليه الموظف بعد (لا يسري قبل موافقته)',
+  r.consent.status === 'ACCEPTED' ? `Accepted by the employee on ${formatGregorian(r.consent.at!, 'en')}` : r.consent.status === 'DECLINED' ? `Declined by the employee on ${formatGregorian(r.consent.at!, 'en')}` : 'Not yet accepted by the employee (not in force before)',
+) : ''}
+${r.sealFingerprint ? row('الختم الرقمي', 'مختوم رقمياً بشهادة الجهة المُصدرة', 'Digitally sealed with the issuer certificate') : ''}
 </dl>
+${r.sealFingerprint ? `<div class="card"><b>الختم الرقمي <small dir="ltr">Digital seal</small></b>
+<p>أي تعديل على ملف الـPDF بعد إصداره يُبطل الختم، ويظهر ذلك في Adobe Acrobat وغيره. الشهادة صادرة من نظام الجهة نفسها (لا من جهة تصديق خارجية)؛ لتظهر هوية الجهة موثوقة في Acrobat، نزّل الشهادة واستوردها مرة واحدة ضمن الشهادات الموثوقة.</p>
+<p dir="ltr" class="fp">SHA-256: ${esc(r.sealFingerprint.replace(/(.{4})/g, '$1 ').trim())}</p>
+<p><a href="${esc(token)}/certificate" download>تنزيل الشهادة <small dir="ltr">(.cer)</small></a></p></div>` : ''}
 ${r.pdfSha256 ? `<div class="card"><label for="pdf">مطابقة الملف <small dir="ltr">Check the PDF file</small></label>
 <p>اختر ملف الـPDF الذي استلمته للتحقق من أنه مطابق تماماً للمستند الصادر.</p>
 <input id="pdf" type="file" accept="application/pdf,.pdf" data-sha="${esc(r.pdfSha256)}"><div id="check-result" class="result" role="status"></div></div>` : ''}

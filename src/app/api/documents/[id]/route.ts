@@ -20,7 +20,7 @@ const actionSchema = z.discriminatedUnion('action', [
   // The employee confirms receipt of a warning letter, optionally with his comment.
   z.object({
     action: z.literal('acknowledge'),
-    decision: z.enum(['RECEIVED', 'ACCEPTED', 'DISPUTED']).optional(),
+    decision: z.enum(['RECEIVED', 'ACCEPTED', 'DISPUTED', 'DECLINED']).optional(),
     comment: z.string().trim().max(2000).optional(),
   }),
 ]);

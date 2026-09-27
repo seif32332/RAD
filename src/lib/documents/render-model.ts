@@ -61,6 +61,10 @@ type Contract = {
     effectiveDate: string; fromJobTitleAr: string; toJobTitleAr: string | null; toJobTitleEn: string | null;
     fromBasicSalary: string; toBasicSalary: string | null; reasonAr: string | null;
   };
+  addendum?: {
+    effectiveDate: string; reasonAr: string | null;
+    rows: { key: string; labelAr: string; fromAr: string; toAr: string; money: boolean }[];
+  };
   /** The company's own opening / closing paragraphs for this type (texts.ts). */
   texts?: { openingAr: string | null; openingEn: string | null; closingAr: string | null; closingEn: string | null };
   minutes?: {
@@ -274,6 +278,20 @@ export function buildRenderModel(data: Contract, brand: BrandSnapshot, meta: Ren
           toSalaryText: data.change.toBasicSalary ? formatAmount(data.change.toBasicSalary, n) : null,
           reasonAr: data.change.reasonAr,
           currencyAr: 'ريال سعودي',
+        }
+      : null,
+    addendum: data.addendum
+      ? {
+          effectiveAr: formatGregorian(data.addendum.effectiveDate, 'ar', n),
+          currencyAr: 'ريال سعودي',
+          reasonAr: data.addendum.reasonAr,
+          // Amounts in one LTR run; the contract end as an Arabic date; titles / branches as text.
+          rows: data.addendum.rows.map((r) => {
+            const date = (v: string) => (/^\d{4}-\d{2}-\d{2}$/.test(v) ? `${formatGregorian(v, 'ar', n)} م` : v);
+            return r.money
+              ? { labelAr: r.labelAr, money: true, ltr: true, fromText: formatAmount(r.fromAr, n), toText: formatAmount(r.toAr, n) }
+              : { labelAr: r.labelAr, money: false, ltr: false, fromText: r.key === 'CONTRACT_END' ? date(r.fromAr) : r.fromAr, toText: r.key === 'CONTRACT_END' ? date(r.toAr) : r.toAr };
+          }),
         }
       : null,
     notice: data.notice

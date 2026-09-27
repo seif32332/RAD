@@ -2385,6 +2385,7 @@ model IssuedDocument {
   supersededById  String?   @unique
   purgedAt        DateTime? // انتهاء مدة الاحتفاظ: حُذف الملف، وبقي هذا السجل (DOC-09)
   createdAt       DateTime  @default(now())
+  sealKeyId        String? // مفتاح الختم الرقمي PAdES (null: صدر قبل تفعيل الختم)
 
   employee        Employee?                @relation(fields: [employeeId], references: [id], onDelete: Restrict)
   jobApplication  JobApplication?          @relation(fields: [jobApplicationId], references: [id], onDelete: Restrict)
@@ -2393,11 +2394,33 @@ model IssuedDocument {
   snapshot     DocumentSnapshot @relation(fields: [snapshotId], references: [id], onDelete: Restrict)
   acknowledgement DocumentAcknowledgement?
   candidateAccess CandidateDocumentAccess?
+  sealKey         DocumentSealKey?         @relation(fields: [sealKeyId], references: [id], onDelete: Restrict)
 
   @@unique([legalCompanyId, number])
   @@index([employeeId, issuedAt])
   @@index([jobApplicationId])
   @@index([status])
+  @@index([sealKeyId])
+}
+
+/// مفتاح الختم الرقمي للشركة النظامية وشهادته الذاتية (قرار المالك 2026-09-27، الترحيل 9m). المفتاح الخاص
+/// مشفّر بـDATA_ENCRYPTION_KEY. لا يُحذف ولا يُعدَّل، ويُتقاعد مرة واحدة؛ مفتاح واحد ساري لكل شركة (فهرس جزئي في الترحيل)
+model DocumentSealKey {
+  id          String    @id @default(uuid())
+  companyId   String
+  certDer     Bytes // الشهادة X.509 بصيغة DER (عامة، تُنزَّل من صفحة التحقق)
+  keyEnc      String    @db.Text // المفتاح الخاص PKCS#8 PEM مشفراً (src/lib/crypto.ts)
+  fingerprint String    @unique // SHA-256 للشهادة
+  serialHex   String
+  notBefore   DateTime
+  notAfter    DateTime
+  createdById String?
+  createdAt   DateTime  @default(now())
+  retiredAt   DateTime?
+
+  documents IssuedDocument[]
+
+  @@index([companyId])
 }
 
 /// إقرار الموظف باستلام مستند (الإنذار): صف واحد لا يُعدَّل، والتعليق يُمسح فقط عند انتهاء مدة الاحتفاظ
@@ -2452,6 +2475,11 @@ model EmployeeChangeOrder {
   basicSalary     Float? // الراتب الأساسي الجديد (null = بلا تغيير)
   jobTitle        String? // المسمى الجديد (null = بلا تغيير)
   jobTitleEnglish String?
+  // ملحق العقد (الترحيل 9n): بدل السكن والنقل الشهريان، ومكان العمل (الفرع)، وتاريخ انتهاء العقد (null = بلا تغيير)
+  housingAllowance   Float?
+  transportAllowance Float?
+  branchId           String?
+  contractEndDate    DateTime?
   appliedAt       DateTime?
   cancelledAt     DateTime? // أُلغي القرار قبل سريانه
   createdAt       DateTime  @default(now())

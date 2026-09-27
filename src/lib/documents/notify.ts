@@ -9,11 +9,12 @@ import type { Prisma } from '@prisma/client';
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 export type DocumentNotice =
-  | { kind: 'ISSUED'; number: string; typeLabel: string; acknowledge?: boolean }
+  | { kind: 'ISSUED'; number: string; typeLabel: string; acknowledge?: boolean; consentBy?: string }
   | { kind: 'REJECTED'; typeLabel: string }
   | { kind: 'REVOKED'; number: string; typeLabel: string }
   | { kind: 'DISPUTED'; number: string; typeLabel: string }
   | { kind: 'OFFER_ANSWERED'; number: string; typeLabel: string; accepted: boolean }
+  | { kind: 'CONSENT_ANSWERED'; number: string; typeLabel: string; accepted: boolean }
   | { kind: 'APPROVAL_REQUESTED'; typeLabel: string }
   | { kind: 'AUTHORIZATION_PENDING'; typeLabel: string }
   | { kind: 'ASSET_CHANGED'; assetLabel: string };
@@ -31,6 +32,9 @@ export function noticeText(n: DocumentNotice): { subject: string; body: string }
   const tail = (link: string) => (link ? `\n\n${link}` : '');
   switch (n.kind) {
     case 'ISSUED':
+      if (n.consentBy) {
+        return { subject: `رديف: ${n.typeLabel} بانتظار موافقتك`, body: `صدر لك ${n.typeLabel} برقم ${n.number}. سجّل الدخول إلى بوابة الموظف للاطلاع عليه والموافقة عليه أو رفضه قبل ${n.consentBy}.${tail(portal)}` };
+      }
       if (n.acknowledge) {
         return { subject: `رديف: صدر لك ${n.typeLabel}`, body: `صدر لك ${n.typeLabel} برقم ${n.number}. سجّل الدخول إلى بوابة الموظف للاطلاع عليه والإقرار باستلامه.${tail(portal)}` };
       }
@@ -43,6 +47,11 @@ export function noticeText(n: DocumentNotice): { subject: string; body: string }
       return {
         subject: `رديف: ${n.accepted ? 'قبول' : 'اعتذار عن'} ${n.typeLabel} ${n.number}`,
         body: `${n.accepted ? 'قبِل المرشح' : 'اعتذر المرشح عن'} ${n.typeLabel} رقم ${n.number}. التفاصيل في صفحة المستندات الرسمية.${tail(documents)}`,
+      };
+    case 'CONSENT_ANSWERED':
+      return {
+        subject: `رديف: ${n.accepted ? 'موافقة الموظف على' : 'رفض الموظف'} ${n.typeLabel} ${n.number}`,
+        body: `${n.accepted ? 'وافق الموظف على' : 'رفض الموظف'} ${n.typeLabel} رقم ${n.number}.${n.accepted ? ' يُطبَّق التغيير على ملفه في تاريخ السريان.' : ' لا يتغير شيء في ملفه.'} التفاصيل في صفحة المستندات الرسمية.${tail(documents)}`,
       };
     case 'DISPUTED':
       return { subject: `رديف: اعتراض على ${n.typeLabel} ${n.number}`, body: `اعترض الموظف على ${n.typeLabel} رقم ${n.number}. سبب الاعتراض في صفحة المستندات الرسمية.${tail(documents)}` };

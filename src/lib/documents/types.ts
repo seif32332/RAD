@@ -121,6 +121,22 @@ export const promotionParamsSchema = z.object({
 
 const money = z.number().min(0).max(10_000_000).refine((v) => Math.round(v * 100) === v * 100, 'المبالغ بخانتين عشريتين على الأكثر');
 
+/** CONTRACT_ADDENDUM: the terms it changes (only those given), from the effective date. */
+export const addendumParamsSchema = z.object({
+  effectiveDate: isoDate,
+  newBasicSalary: money.refine((v) => v > 0, 'الراتب الأساسي يجب أن يكون أكبر من صفر').optional(),
+  newHousingAllowance: money.optional(),
+  newTransportAllowance: money.optional(),
+  newJobTitleAr: lineText(2, 120).optional(),
+  newJobTitleEn: lineText(2, 120).optional(),
+  newBranchId: z.string().trim().min(1).max(64).optional(),
+  newContractEndDate: isoDate.optional(),
+  reasonAr: lineText(3, 200).optional(),
+}).refine(
+  (p) => p.newBasicSalary !== undefined || p.newHousingAllowance !== undefined || p.newTransportAllowance !== undefined || p.newJobTitleAr || p.newBranchId || p.newContractEndDate,
+  'حدد بنداً واحداً على الأقل يتغير',
+);
+
 export const offerParamsSchema = z.object({
   /** The legal company making the offer (a candidate has no file yet: HR chooses, within its scope). */
   legalCompanyId: z.string().trim().min(1).max(64),
@@ -164,6 +180,8 @@ export const paramsSchema = z.object({
   noc: nocParamsSchema.optional(),
   /** PROMOTION_DECISION only: the change it orders. */
   promotion: promotionParamsSchema.optional(),
+  /** CONTRACT_ADDENDUM only: the terms it changes. */
+  addendum: addendumParamsSchema.optional(),
   /** JOB_OFFER only: the offer's terms. */
   offer: offerParamsSchema.optional(),
   /** LEAVE_APPROVAL only: the approved leave. */
@@ -409,6 +427,14 @@ export interface EvaluationFacts {
 }
 
 /** An approved leave as its letter needs it. */
+/** What a contract addendum changes from: the file's work location and contract end, and the new branch. */
+export interface AddendumFacts {
+  branch: { id: string; nameAr: string } | null;
+  contractEndDate: Date | null;
+  /** The branch named in the parameters (null when not found). */
+  newBranch: { id: string; nameAr: string } | null;
+}
+
 export interface LeaveFacts {
   leave: { id: string; employeeId: string; leaveType: string; status: string; startDate: Date; endDate: Date; totalDays: number; isOutsideKSA: boolean } | null;
 }
@@ -460,13 +486,14 @@ export interface DocumentTypeDefinition {
   approvalLocked?: boolean;
   /** What the subject does once it is issued (DocumentAcknowledgement):
    * RECEIPT = confirms receipt (warning); RELEASE = accepts the discharge or disputes it (statement);
-   * OFFER = the candidate accepts or declines through the offer link.
+   * OFFER = the candidate accepts or declines through the offer link;
+   * CONSENT = the employee accepts or declines in the portal (contract addendum).
    */
-  acknowledgement?: 'RECEIPT' | 'RELEASE' | 'OFFER';
+  acknowledgement?: 'RECEIPT' | 'RELEASE' | 'OFFER' | 'CONSENT';
   /** Addressed to the employee himself instead of "to whom it may concern". */
   addressedToEmployee?: boolean;
   /** Extra facts the builder needs (loaded by facts.ts). */
-  facts?: 'EXIT' | 'SETTLEMENT' | 'PAYROLL' | 'TERMINATION' | 'INVESTIGATION' | 'BANK' | 'LEAVE' | 'EVALUATION';
+  facts?: 'EXIT' | 'SETTLEMENT' | 'PAYROLL' | 'TERMINATION' | 'INVESTIGATION' | 'BANK' | 'LEAVE' | 'EVALUATION' | 'ADDENDUM';
   /**
    * Always approved by a human (a financial commitment): settings cannot switch approval off and a
    * pre-authorization does not replace it; unlike approvalLocked it may be requested from the portal.
@@ -474,6 +501,8 @@ export interface DocumentTypeDefinition {
   approvalMandatory?: boolean;
   /** Issuing it orders a change of the employee file (EmployeeChangeOrder, change-orders.ts). */
   executesChange?: boolean;
+  /** The employee's acceptance (CONSENT) orders the change of the file, not the issuance. */
+  executesOnConsent?: boolean;
   /**
    * CANDIDATE: the document belongs to a job applicant, not an employee (buildCandidate is used,
    * the legal company comes from the parameters, delivery is a private link).
@@ -512,6 +541,7 @@ export interface BuildInput {
   bank?: BankFacts;
   leave?: LeaveFacts;
   evaluation?: EvaluationFacts;
+  addendum?: AddendumFacts;
 }
 
 const baseBuild = (employee: EmployeeRecord, company: CompanyRecord, params: DocumentParams) => {
@@ -1175,6 +1205,122 @@ export const PROMOTION_DECISION: DocumentTypeDefinition = {
 };
 
 /**
+ * Contract addendum (owner decision 2026-09-27, SPEC §15 item 35): the terms HR changes (basic
+ * salary, housing / transport allowance, job title, work location, contract end), approved by a
+ * second person, then accepted or declined by the employee in the portal until the effective date.
+ * Acceptance orders the change (EmployeeChangeOrder), applied on the effective date; a decline or
+ * no answer changes nothing.
+ */
+export const CONTRACT_ADDENDUM: DocumentTypeDefinition = {
+  key: 'CONTRACT_ADDENDUM',
+  languages: ['ar'],
+  code: 'AMD',
+  contractVersion: 1,
+  labelAr: 'ملحق عقد عمل',
+  labelEn: 'Employment Contract Addendum',
+  template: 'contract-addendum',
+  templateVersion: 1,
+  staffRoles: ROLE_GROUPS.HR,
+  approvalLocked: true,
+  executesOnConsent: true,
+  acknowledgement: 'CONSENT',
+  addressedToEmployee: true,
+  facts: 'ADDENDUM',
+  defaults: { selfService: false, requiresApproval: true, validityDays: null },
+  requiresActiveEmployee: true,
+  contract: z.object({
+    employee: employeeContract,
+    company: companyContract,
+    addendum: z.object({
+      effectiveDate: isoDate,
+      rows: z.array(z.object({ key: z.string(), labelAr: z.string(), fromAr: z.string(), toAr: z.string(), money: z.boolean() })).min(1),
+      reasonAr: z.string().nullable(),
+      /** What acceptance applies (null = unchanged). */
+      apply: z.object({
+        basicSalary: amount.nullable(),
+        housingAllowance: amount.nullable(),
+        transportAllowance: amount.nullable(),
+        jobTitleAr: z.string().nullable(),
+        jobTitleEn: z.string().nullable(),
+        branchId: z.string().nullable(),
+        contractEndDate: isoDate.nullable(),
+      }),
+    }),
+  }),
+  build({ employee, company, params, addendum: facts }) {
+    const b = baseBuild(employee, company, params);
+    const errors = [...b.errors];
+    const p = params.addendum;
+    if (!p || !facts) {
+      errors.push({ code: 'MISSING_CHANGE', message: 'حدد البنود التي تتغير وتاريخ السريان' });
+      return { errors, data: null };
+    }
+    const rows: Array<{ key: string; labelAr: string; fromAr: string; toAr: string; money: boolean }> = [];
+    const apply = {
+      basicSalary: null as string | null, housingAllowance: null as string | null, transportAllowance: null as string | null,
+      jobTitleAr: null as string | null, jobTitleEn: null as string | null, branchId: null as string | null, contractEndDate: null as string | null,
+    };
+
+    if (p.newBasicSalary !== undefined) {
+      const from = toAmountString(employee.basicSalary);
+      const to = toAmountString(p.newBasicSalary);
+      if (to !== from) {
+        rows.push({ key: 'BASIC', labelAr: 'الراتب الأساسي الشهري', fromAr: from, toAr: to, money: true });
+        apply.basicSalary = to;
+      }
+    }
+    const allowances = [
+      { kind: 'HOUSING', value: p.newHousingAllowance, labelAr: 'بدل السكن', field: 'housingAllowance' },
+      { kind: 'TRANSPORT', value: p.newTransportAllowance, labelAr: 'بدل النقل', field: 'transportAllowance' },
+    ] as const;
+    for (const a of allowances) {
+      if (a.value === undefined) continue;
+      const current = employee.allowances.filter((x) => x.isMonthly && allowanceKind(x) === a.kind);
+      // One row per kind in the file, so acceptance knows which allowance it changes.
+      if (current.length > 1) {
+        errors.push({ code: `MULTIPLE_${a.kind}`, message: `في ملف الموظف أكثر من ${a.labelAr}؛ وحّدها في بند واحد أولاً` });
+        continue;
+      }
+      const from = toAmountString(current[0]?.amount ?? 0);
+      const to = toAmountString(a.value);
+      if (to !== from) {
+        rows.push({ key: a.kind, labelAr: `${a.labelAr} الشهري`, fromAr: from, toAr: to, money: true });
+        apply[a.field] = to;
+      }
+    }
+    if (p.newJobTitleAr) {
+      const from = clean(employee.jobTitle) ?? '';
+      if (p.newJobTitleAr !== from) {
+        rows.push({ key: 'JOB_TITLE', labelAr: 'المسمى الوظيفي', fromAr: from || '-', toAr: p.newJobTitleAr, money: false });
+        apply.jobTitleAr = p.newJobTitleAr;
+        apply.jobTitleEn = p.newJobTitleEn ?? null;
+      }
+    }
+    if (p.newBranchId) {
+      if (!facts.newBranch) errors.push({ code: 'UNKNOWN_BRANCH', message: 'الفرع المحدد غير موجود' });
+      else if (facts.newBranch.id !== facts.branch?.id) {
+        rows.push({ key: 'BRANCH', labelAr: 'مكان العمل', fromAr: facts.branch?.nameAr ?? '-', toAr: facts.newBranch.nameAr, money: false });
+        apply.branchId = facts.newBranch.id;
+      }
+    }
+    if (p.newContractEndDate) {
+      const from = facts.contractEndDate ? new Date(facts.contractEndDate.getTime() + 3 * 3600e3).toISOString().slice(0, 10) : null;
+      if (p.newContractEndDate <= p.effectiveDate) {
+        errors.push({ code: 'CONTRACT_END_BEFORE_EFFECTIVE', message: 'تاريخ انتهاء العقد الجديد يجب أن يكون بعد تاريخ السريان' });
+      } else if (p.newContractEndDate !== from) {
+        rows.push({ key: 'CONTRACT_END', labelAr: 'تاريخ انتهاء العقد', fromAr: from ?? 'غير محدد المدة', toAr: p.newContractEndDate, money: false });
+        apply.contractEndDate = p.newContractEndDate;
+      }
+    }
+    if (!rows.length && !errors.length) errors.push({ code: 'NO_CHANGE', message: 'القيم الجديدة مطابقة لملف الموظف الحالي' });
+    return {
+      errors,
+      data: { employee: b.employee, company: b.company, addendum: { effectiveDate: p.effectiveDate, rows, reasonAr: p.reasonAr ?? null, apply } },
+    };
+  },
+};
+
+/**
  * Job offer to a candidate (owner decision 2026-09-26): terms written by HR, approved by a second
  * person, delivered through a private link where the candidate downloads it and accepts or
  * declines. Valid 14 days by default (the offer's deadline).
@@ -1455,6 +1601,7 @@ export const DOCUMENT_TYPES: Readonly<Record<string, DocumentTypeDefinition>> = 
   [LEAVE_APPROVAL.key]: LEAVE_APPROVAL,
   [EVALUATION_REPORT.key]: EVALUATION_REPORT,
   [INVESTIGATION_MINUTES.key]: INVESTIGATION_MINUTES,
+  [CONTRACT_ADDENDUM.key]: CONTRACT_ADDENDUM,
 });
 
 export function getDocumentType(key: string): DocumentTypeDefinition | null {

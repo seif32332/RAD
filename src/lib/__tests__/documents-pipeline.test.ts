@@ -785,6 +785,118 @@ describe.skipIf(!RUN)('document issuance pipeline (Postgres + radeef-render)', {
     await applySettingsAction({ action: 'text', companyId, typeKey: 'EMPLOYMENT_CERTIFICATE', slot: 'CLOSING', textAr: '', textEn: '' }, owner); // cleared for later tests
   });
 
+  it('contract addendum: second-person approval; nothing changes until the employee accepts by the effective date; a decline or no answer changes nothing', async () => {
+    const { runJob } = await import('../../../scripts/jobs.mjs');
+    const checker = { userId: signatoryUserId, role: 'COMPANY_ADMIN', employeeId: null, ip: null };
+    const riyadh = (offsetDays: number) => new Date(Date.now() + 3 * 3600e3 + offsetDays * 86_400_000).toISOString().slice(0, 10);
+    const [b1, b2] = await Promise.all(['فرع الرياض', 'فرع جدة'].map((nameArabic) => prisma.branch.create({ data: { companyId, nameArabic } })));
+    const issue = async (employeeId: string, addendum: Record<string, unknown>) => {
+      const r = await svc.createDocumentRequest({ typeKey: 'CONTRACT_ADDENDUM', employeeId, params: { language: 'ar', addendum }, source: 'HR' }, hr(), renderer);
+      expect(r.status).toBe('PENDING_APPROVAL');
+      const req = await prisma.documentRequest.findUniqueOrThrow({ where: { id: r.requestId }, include: { currentSnapshot: true } });
+      await expect(svc.approveDocumentRequest(r.requestId, req.currentSnapshot!.dataSha256, null, hr(), renderer)).rejects.toThrow(/شخص آخر/);
+      const out = await svc.approveDocumentRequest(r.requestId, req.currentSnapshot!.dataSha256, null, checker, renderer);
+      expect(out.status).toBe('ISSUED');
+      return out.documentId!;
+    };
+
+    // Effective today, accepted: applied at once (salary + housing + branch + contract end), once.
+    const a = await newEmployee(2501, { branchId: b1.id });
+    const today = riyadh(0);
+    const docA = await issue(a.employeeId, { effectiveDate: today, newBasicSalary: 10500, newHousingAllowance: 2625, newTransportAllowance: 700, newBranchId: b2.id, newContractEndDate: '2029-12-31' });
+    expect(await prisma.employeeChangeOrder.count({ where: { documentId: docA } })).toBe(0); // issued, not yet accepted
+    expect((await prisma.employee.findUniqueOrThrow({ where: { id: a.employeeId } })).basicSalary).toBe(9500);
+    const token = tokenOfLastRender();
+    expect((await svc.verifyDocumentToken(token, null))?.consent).toMatchObject({ status: 'PENDING' });
+    await expect(svc.acknowledgeDocument(docA, { decision: 'DISPUTED', comment: 'x'.repeat(10) }, self(a.employeeId, a.userId))).rejects.toThrow(/الموافقة على الملحق أو رفضه/);
+    const other = await newEmployee(2502);
+    await expect(svc.acknowledgeDocument(docA, { decision: 'ACCEPTED', comment: null }, self(other.employeeId, other.userId))).rejects.toThrow(/غير موجود/);
+
+    await svc.acknowledgeDocument(docA, { decision: 'ACCEPTED', comment: null }, self(a.employeeId, a.userId));
+    const empA = await prisma.employee.findUniqueOrThrow({ where: { id: a.employeeId }, include: { allowances: true } });
+    expect([empA.basicSalary, empA.branchId, empA.contractEndDate?.toISOString()]).toEqual([10500, b2.id, '2029-12-30T21:00:00.000Z']);
+    expect(empA.allowances.filter((x) => x.isMonthly).map((x) => [x.allowanceType, x.amount]).sort()).toEqual([['HOUSING', 2625], ['TRANSPORT', 700]]);
+    expect(await prisma.salaryChange.count({ where: { employeeId: a.employeeId, isPlanned: false, basicSalary: 10500 } })).toBe(1);
+    expect((await prisma.employeeChangeOrder.findUniqueOrThrow({ where: { documentId: docA } })).appliedAt).not.toBeNull();
+    expect((await svc.verifyDocumentToken(token, null))?.consent).toMatchObject({ status: 'ACCEPTED' });
+    await expect(svc.acknowledgeDocument(docA, { decision: 'DECLINED', comment: null }, self(a.employeeId, a.userId))).rejects.toThrow(/مسبقاً/);
+    await expect(svc.revokeIssuedDocument(docA, 'خطأ', hr())).rejects.toThrow(/نُفّذ على ملف الموظف/);
+
+    // Future date, accepted: the order waits; the job applies it on the date.
+    const b = await newEmployee(2503);
+    const docB = await issue(b.employeeId, { effectiveDate: '2097-01-01', newJobTitleAr: 'مهندس مدني أول' });
+    await svc.acknowledgeDocument(docB, { decision: 'ACCEPTED', comment: 'موافق' }, self(b.employeeId, b.userId));
+    expect((await prisma.employee.findUniqueOrThrow({ where: { id: b.employeeId } })).jobTitle).toBe('مهندس مدني');
+    await runJob(prisma, 'apply-employee-changes', { now: new Date('2097-01-01T08:00:00Z') });
+    expect((await prisma.employee.findUniqueOrThrow({ where: { id: b.employeeId } })).jobTitle).toBe('مهندس مدني أول');
+
+    // Declined: no order, nothing changes; HR is told.
+    const c = await newEmployee(2504);
+    const docC = await issue(c.employeeId, { effectiveDate: riyadh(10), newBasicSalary: 8000 });
+    await svc.acknowledgeDocument(docC, { decision: 'DECLINED', comment: null }, self(c.employeeId, c.userId));
+    expect(await prisma.employeeChangeOrder.count({ where: { documentId: docC } })).toBe(0);
+    expect((await prisma.employee.findUniqueOrThrow({ where: { id: c.employeeId } })).basicSalary).toBe(9500);
+
+    // Past the effective date: the answer is refused (HR issues a new addendum).
+    const d = await newEmployee(2505);
+    const docD = await issue(d.employeeId, { effectiveDate: riyadh(-1), newBasicSalary: 9900 });
+    await expect(svc.acknowledgeDocument(docD, { decision: 'ACCEPTED', comment: null }, self(d.employeeId, d.userId))).rejects.toThrow(/انتهت مهلة الرد/);
+
+    // Revoked before an answer: the employee can no longer accept it.
+    const e = await newEmployee(2506);
+    const docE = await issue(e.employeeId, { effectiveDate: riyadh(5), newBasicSalary: 9900 });
+    await svc.revokeIssuedDocument(docE, 'خطأ في المبلغ', hr());
+    await expect(svc.acknowledgeDocument(docE, { decision: 'ACCEPTED', comment: null }, self(e.employeeId, e.userId))).rejects.toThrow(/ملغى أو مستبدل/);
+    expect(await prisma.employeeChangeOrder.count({ where: { documentId: docE } })).toBe(0);
+  });
+
+  it('PAdES seal: every issued PDF is sealed with the company key (one per company, stored encrypted), verifiable and tamper-evident', async () => {
+    const e = await newEmployee(1900);
+    // Issued whatever the earlier tests left in the policy: the signatory approves when approval is needed.
+    const issue = async (typeKey: string) => {
+      const r = await svc.createDocumentRequest({ typeKey, employeeId: e.employeeId, params: { language: 'ar' }, source: 'HR' }, hr(), renderer);
+      if (r.status === 'ISSUED') return r;
+      const req = await prisma.documentRequest.findUniqueOrThrow({ where: { id: r.requestId }, include: { currentSnapshot: true } });
+      return svc.approveDocumentRequest(r.requestId, req.currentSnapshot!.dataSha256, null, { userId: signatoryUserId, role: 'COMPANY_ADMIN', employeeId: null, ip: null }, renderer);
+    };
+    const r1 = await issue('EMPLOYMENT_CERTIFICATE');
+    const token = tokenOfLastRender();
+    const r2 = await issue('SALARY_CERTIFICATE');
+    const [d1, d2] = await Promise.all([r1, r2].map((r) => prisma.issuedDocument.findUniqueOrThrow({ where: { id: r.documentId! } })));
+    const keys = await prisma.documentSealKey.findMany({ where: { companyId } });
+    expect(keys).toHaveLength(1); // created by the first issuance of the company, then reused
+    expect(d1.sealKeyId).toBe(keys[0].id);
+    expect(d2.sealKeyId).toBe(keys[0].id);
+    expect(keys[0].keyEnc.startsWith('enc:')).toBe(true);
+    expect(keys[0].keyEnc).not.toContain('PRIVATE KEY');
+    expect(await prisma.documentEvent.count({ where: { type: 'SEAL_KEY_CREATED', metaJson: { contains: keys[0].id } } })).toBe(1);
+
+    // The stored file is the sealed one (its hash is the recorded one), and the seal verifies.
+    const { pdf } = await svc.readIssuedDocument(d1.id, hr());
+    expect(pdf.toString('latin1')).toContain('/SubFilter/ETSI.CAdES.detached');
+    const { hasOpenssl, opensslVerify } = await import('./seal-fixtures');
+    if (hasOpenssl) {
+      expect(opensslVerify(pdf, Buffer.from(keys[0].certDer))).toBe(true);
+      const tampered = Buffer.from(pdf);
+      tampered[2000] ^= 0x01;
+      expect(opensslVerify(tampered, Buffer.from(keys[0].certDer))).toBe(false);
+    }
+
+    // Verification page: the certificate fingerprint and its public download.
+    expect((await svc.verifyDocumentToken(token, null))?.sealFingerprint).toBe(keys[0].fingerprint);
+    const cert = await svc.sealCertificateForToken(token);
+    expect(cert?.certDer.equals(Buffer.from(keys[0].certDer))).toBe(true);
+    expect(await svc.sealCertificateForToken('A'.repeat(26))).toBeNull();
+
+    // Key guards: never changed or deleted, one active key per company, retired once.
+    await expect(prisma.documentSealKey.update({ where: { id: keys[0].id }, data: { keyEnc: 'x' } })).rejects.toThrow(/immutable/);
+    await expect(prisma.documentSealKey.delete({ where: { id: keys[0].id } })).rejects.toThrow(/never deleted/);
+    await expect(prisma.documentSealKey.create({
+      data: { companyId, certDer: Buffer.from('x'), keyEnc: 'x', fingerprint: randomUUID(), serialHex: '01', notBefore: new Date(), notAfter: new Date() },
+    })).rejects.toThrow();
+    await expect(prisma.issuedDocument.update({ where: { id: d1.id }, data: { sealKeyId: null } })).rejects.toThrow(/immutable/);
+  });
+
   it('database guards: issued documents, snapshots and events cannot be rewritten or deleted (DOC-07 / DOC-12)', async () => {
     const doc = await prisma.issuedDocument.findFirstOrThrow({ where: { legalCompanyId: companyId, status: 'ISSUED' } });
     await expect(prisma.issuedDocument.update({ where: { id: doc.id }, data: { pdfSha256: 'f'.repeat(64) } })).rejects.toThrow(/immutable/);
