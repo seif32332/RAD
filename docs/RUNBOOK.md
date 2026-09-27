@@ -566,11 +566,27 @@ JSON لكل مستأجر: الشركات، الفروع، الموظفون ال�
   ```
   التوكن في `/etc/radeef/services/face.env`، وليس في `/etc/radeef/face.env`، لأن كل ملف `*.env` في `/etc/radeef` يُعامل
   مستأجراً في `ecosystem.config.js` و`deploy.sh` و`backup.sh` و`run-jobs.sh`.
-- **نمط Docker:** ابنِ الصورة من `services/face/Dockerfile` وشغّلها منشورة على عنوان جسر Docker فقط
-  (`-p 172.17.0.1:8090:8090`) مثل Postgres. بعدها `ops/face-setup.sh --configure-tenants --mode docker`، ثم أعد إنشاء
-  الحاويات.
-- **بعد إصدار غيّر `services/face`:** `sudo ops/face-setup.sh --update --src /opt/radeef/src`. السكربت يرجع للملفات
-  السابقة إن لم تصبح الخدمة سليمة. `deploy.sh` لا يلمس هذه الخدمة.
+  `--configure-tenants` يشمل أيضاً ملفات المستأجرين المذكورة في `/etc/radeef/jobs-extra.list`، ويستبدل سطور
+  `FACE_SERVICE_*` الفارغة. القيم تُكتب بلا علامات تنصيص.
+- **العزل:** الخدمة تفك صوراً يرسلها الموظفون، لذلك تعمل بمستخدم مؤقت من systemd (`DynamicUser`)، وليس بمستخدم
+  المستأجرين `radeef`. ولا ترى `/etc/radeef` ولا الرفوعات ولا النسخ الاحتياطية ولا عمليات المستأجرين، وشبكتها محلية فقط.
+  إن رفض systemd قديم أحد خيارات العزل، فالسكربت يعيد الـunit السابق، والسبب في `journalctl -u radeef-face`.
+  الصور: الحد 3 ميجابايت و20 مليون بكسل (يُرفض "قنبلة فك الضغط" قبل أن تستهلك الذاكرة)، ولا تُكتب على القرص.
+- **نمط Docker:**
+  ```bash
+  sudo install -d -m 700 /etc/radeef/services
+  sudo sh -c 'umask 077; printf "FACE_SERVICE_TOKEN=%s\n" "$(openssl rand -hex 32)" > /etc/radeef/services/face.env'  # بلا تنصيص
+  docker build -t radeef-face services/face
+  docker run -d --name radeef-face --restart unless-stopped --read-only --cap-drop ALL \
+    --security-opt no-new-privileges --memory 1g --pids-limit 256 --tmpfs /tmp:size=16m \
+    --env-file /etc/radeef/services/face.env -p 172.17.0.1:8090:8090 radeef-face
+  sudo ufw allow in on docker0 from 172.17.0.0/16 to 172.17.0.1 port 8090 proto tcp   # مثل Postgres على 5432
+  sudo ops/face-setup.sh --configure-tenants --mode docker
+  ```
+  ثم أعد إنشاء حاويات المستأجرين. إن كانت شبكة المستأجرين غير `docker0` (شبكة compose)، اسمح بمداها بدل `172.17.0.0/16`.
+- **بعد إصدار غيّر `services/face`:** `sudo ops/face-setup.sh --update --src /opt/radeef/src`. السكربت يجهّز الملفات والحزم
+  والنماذج أولاً، ثم يبدّل، ويرجع للملفات والـunit السابقين إن لم تصبح الخدمة سليمة (الحزم مثبتة الإصدارات في
+  `services/face/constraints.txt`). `deploy.sh` لا يلمس هذه الخدمة.
 - **السجلات:** `journalctl -u radeef-face -f`. لا تُسجَّل الصور ولا القوالب.
 - **عند توقف الخدمة:** تُرفض حركات البوابة التي تحتاج الوجه (`FACE_SERVICE_UNAVAILABLE`، fail closed)، ويرفع
   الموظفون طلبات تصحيح. الخطوات: `systemctl status radeef-face`، ثم `curl` على `/health`، ثم التأكد من أن التوكن في

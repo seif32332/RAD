@@ -47,6 +47,6 @@ Before the first deployment, generate the liveness models once and commit them (
 ## Tests
 
 ```bash
-cd services/face && pip install -r requirements.txt pytest httpx
+cd services/face && pip install -r requirements.txt -c constraints.txt pytest httpx
 python scripts/download_models.py && python -m pytest -q
 ```

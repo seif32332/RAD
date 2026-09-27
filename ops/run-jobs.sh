@@ -97,9 +97,13 @@ for entry in "${TARGETS[@]}"; do
   log "[$name] $JOB"
   set +e
   if [[ "$MODE" == "docker" ]]; then
-    # The uploads volume is mounted like in docker-compose.yml (purge-attendance-biometrics deletes files there).
-    timeout "$JOB_TIMEOUT" docker run --rm --env-file "$envf" -e NODE_ENV=production \
-      -v "$DATA_DIR/$name/uploads:/app/uploads" \
+    # Same as deploy.sh (docker_env_args / tenant_upload_dir): the host uploads directory mounted at
+    # /app/uploads and UPLOAD_DIR pointing there, since the tenant env file holds the HOST path
+    # (purge-attendance-biometrics deletes files there).
+    updir="$(env_get "$envf" UPLOAD_DIR)"
+    if [[ -z "$updir" || "$updir" == /app/* ]]; then updir="$DATA_DIR/$name/uploads"; fi
+    timeout "$JOB_TIMEOUT" docker run --rm --env-file "$envf" -e NODE_ENV=production -e UPLOAD_DIR=/app/uploads \
+      -v "$updir:/app/uploads" \
       --add-host host.docker.internal:host-gateway "radeef:live-$name" node scripts/jobs.mjs "$JOB"
   else
     (cd "$workdir" && timeout "$JOB_TIMEOUT" env -i PATH="$PATH" HOME="${HOME:-/tmp}" NODE_ENV=production \

@@ -43,7 +43,9 @@ update the processor table above if the package sends data to a third party.
 Components that process tenant data **on the tenant's own server**: no third party receives
 anything. They still need the owner's written approval before the feature that uses them is
 switched on (DEC-011). CI checks that every Python package in `services/face/requirements.txt` is
-listed in the first column of this table.
+listed in the first column of this table. Their own dependencies (pydantic, starlette, protobuf...)
+are pinned to the tested versions in `services/face/constraints.txt`; a change there is reviewed
+like a change of the components.
 
 | Package(s) | Component | Purpose | Data processed | Leaves the server? | Status | Approved by / date |
 |---|---|---|---|---|---|---|
@@ -56,5 +58,6 @@ Biometric data handling (PDPL: sensitive data):
 - **Templates:** encrypted with `DATA_ENCRYPTION_KEY`.
 - **Evidence selfies:** kept only for rejected / flagged punches, for `attendance_selfie_retention_days` (default 90), and excluded from the uploads backups.
 - **Deletion:**
-  - Templates and reference photos are deleted when the employee withdraws consent, on an HR reset, and at termination (`scripts/jobs.mjs purge-attendance-biometrics`).
+  - Templates and reference photos are deleted when the employee withdraws consent, on an HR reset, and at termination (`scripts/jobs.mjs purge-attendance-biometrics`). After a withdrawal only a marker without biometric data remains, so enrolling again goes through HR.
+  - The same nightly job removes any biometric file that no record references any more (older than a day).
   - Pretrained models from InsightFace (buffalo_l / ArcFace) must not be used: non-commercial license.

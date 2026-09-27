@@ -52,6 +52,9 @@ class Pipeline:
     """Loads the models once; `analyze` is serialized per process (OpenCV DNN nets are not re-entrant)."""
 
     def __init__(self, models_dir: Path = MODELS_DIR) -> None:
+        # One thread per worker: OpenCV would otherwise use every core in each uvicorn worker and
+        # compete with Postgres / Node on the same host (OMP_NUM_THREADS does not limit it).
+        cv2.setNumThreads(1)
         yunet = models_dir / YUNET_FILE
         sface = models_dir / SFACE_FILE
         for f in (yunet, sface):
@@ -137,7 +140,11 @@ class Pipeline:
 def decode_image(data: bytes) -> np.ndarray:
     """Decodes JPEG / PNG / WebP bytes to BGR and downsizes the longest side to MAX_SIDE."""
     buf = np.frombuffer(data, dtype=np.uint8)
-    img = cv2.imdecode(buf, cv2.IMREAD_COLOR)
+    try:
+        img = cv2.imdecode(buf, cv2.IMREAD_COLOR)
+    except cv2.error:
+        # e.g. above OPENCV_IO_MAX_IMAGE_PIXELS (a decompression bomb)
+        raise ValueError("not a decodable image") from None
     if img is None:
         raise ValueError("not a decodable image")
     h, w = img.shape[:2]
