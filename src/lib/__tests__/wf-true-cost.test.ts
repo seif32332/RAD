@@ -457,7 +457,9 @@ describe('aggregation, explanations, determinism, sensitivity, performance', () 
     expect(r.series).toHaveLength(36);
     expect(ms).toBeLessThan(small.ms * 15 + 100); // ~10× for 10× the employees: linear
     expect(ms).toBeLessThan(3000);
-  });
+    // The whole test runs ~7 computations (about 3.5 s alone): the default 5 s test timeout fails it on a
+    // loaded machine although every measured run stays under the guards above.
+  }, 30_000);
 });
 
 describe('helpers', () => {
