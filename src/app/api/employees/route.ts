@@ -1,4 +1,5 @@
-import { setInitialAllowances } from '@/modules/compensation';
+import { requestFinancialChange, type FinancialChangeView } from '@/modules/compensation';
+import { setEmployeeGosiDeduction } from '@/modules/payroll';
 import { moneyActorOf } from '@/modules/platform';
 import { NextResponse } from 'next/server';
 import { z } from 'zod';
@@ -192,13 +193,11 @@ export async function POST(req: Request) {
       // Default: the worker's statutory notice (art. 75) of the company on the join date (P1-RULE).
       noticePeriodDays: b.noticePeriodDays ?? (await valueAt('NOTICE_DAYS_EMPLOYEE', b.legalCompanyId ?? null, b.joinDate, prisma)),
       leaveAccrualStartDate: b.leaveAccrualStartDate ?? b.joinDate,
-      basicSalary: roundMoney(b.basicSalary),
-      gosiDeduction: roundMoney(b.gosiDeduction ?? 0),
-      salaryPaymentMethod: b.salaryPaymentMethod,
+      // P1-PAY-B (BR-PAY-009, ARC-PAY-A4): no pay column here. The employee is created without pay
+      // (basicSalary 0, payrollReady false) and his salary, allowances and bank identity are a
+      // financial change request decided by a second person (below, same transaction).
       mobileNumber: b.mobileNumber ?? null,
       email: b.email ?? null,
-      ibanNumber: b.ibanNumber ?? null,
-      bankName: b.bankName ?? null,
       legalCompanyId: b.legalCompanyId ?? null,
       actualCompanyId: b.actualCompanyId ?? null,
       administrationId: b.administrationId ?? null,
@@ -223,17 +222,30 @@ export async function POST(req: Request) {
     };
 
     let created;
+    let financialChanges: FinancialChangeView[] = [];
     try {
       ({ result: created } = await createWithEmployeeCode(prisma, async (code, tx) => {
         const emp = await tx.employee.create({ data: { ...data, employeeId: code } });
-        // The recurring allowances through compensation (money.gateway), in the same transaction.
-        await setInitialAllowances(tx, {
-          actor: moneyActorOf(user),
+        const actor = moneyActorOf(user);
+        // The pay asked for: one request per field (COMPENSATION from the join date, BANK_IDENTITY), PENDING
+        // until a second person decides it (DEC-PO-003 / 007). Nothing is paid before.
+        const filed = await requestFinancialChange(tx, {
+          actor,
           employeeId: emp.id,
-          allowances: allowances.map((a) => ({ name: a.name, amount: a.amount, countsTowardGosi: a.countsTowardGosi, allowanceType: a.allowanceType })),
-          companyId: emp.legalCompanyId,
-          operationKey: `employee.create.allowances:${emp.id}`,
+          source: 'FORM',
+          effectiveDate: b.joinDate.toISOString().slice(0, 10),
+          compensation: {
+            basicSalary: roundMoney(b.basicSalary),
+            allowances: allowances.map((a) => ({ name: a.name, amount: a.amount, countsTowardGosi: a.countsTowardGosi, allowanceType: a.allowanceType })),
+          },
+          bank: b.salaryPaymentMethod === 'CASH' || b.ibanNumber ? { iban: b.ibanNumber ?? null, bankName: b.bankName ?? null, paymentMethod: b.salaryPaymentMethod } : null,
+          operationKey: `employee.create.pay:${emp.id}`,
+          ipAddress: getClientIp(req),
         });
+        financialChanges = filed.changes;
+        if (roundMoney(b.gosiDeduction ?? 0) > 0) {
+          await setEmployeeGosiDeduction(tx, { actor, employeeId: emp.id, gosiDeduction: roundMoney(b.gosiDeduction ?? 0), before: 0, companyId: emp.legalCompanyId, operationKey: `employee.create.gosi:${emp.id}` });
+        }
         // Documents uploaded before the employee existed: give them their category and owner.
         await classifyEmployeeDocuments(tx, emp.id, {
           workContractUrl: emp.workContractUrl,
@@ -282,7 +294,15 @@ export async function POST(req: Request) {
       ...dateIssues.warnings.map((message) => ({ field: 'dates', message })),
     ];
 
-    return NextResponse.json({ message: 'تم إضافة الموظف بنجاح', employee: created, warnings }, { status: 201 });
+    return NextResponse.json(
+      {
+        message: financialChanges.length ? 'تم إضافة الموظف. الراتب وبيانات الصرف بانتظار اعتماد شخص ثانٍ (طلبات التغيير المالي)' : 'تم إضافة الموظف بنجاح',
+        employee: created,
+        financialChanges,
+        warnings,
+      },
+      { status: 201 },
+    );
   } catch (err) {
     return handleApiError(err, 'employees:POST');
   }

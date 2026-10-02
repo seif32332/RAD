@@ -9,6 +9,7 @@ import { zBool, zId, zMonth, zYear } from '@/lib/validation';
 import { logAudit } from '@/lib/audit';
 import { generatePayrollMonth, type GeneratePayrollResult } from '@/lib/payroll';
 import { applyDueChangeOrders } from '@/lib/documents/change-orders';
+import { applyDueFinancialChanges } from '@/modules/compensation';
 import { ALL_COMPANIES, authz, resolveActor, scopedContext, scopedPrisma } from '@/modules/iam';
 import { moneyActorOf } from '@/modules/platform';
 
@@ -47,6 +48,8 @@ export async function POST(req: Request) {
 
     // Promotion / salary decisions due by today are applied first, so the payroll reads them.
     await applyDueChangeOrders();
+    // P1-PAY-B: so are the financial changes decided by a second person whose date has come (the job's key).
+    await applyDueFinancialChanges(prisma, companies);
     const idem = req.headers.get('idempotency-key')?.trim();
     const results: Array<{ companyId: string; result: GeneratePayrollResult }> = [];
     const refused: Array<{ companyId: string; message: string }> = [];

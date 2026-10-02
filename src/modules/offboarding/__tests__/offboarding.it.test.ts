@@ -4,6 +4,7 @@
 import { randomUUID } from 'crypto';
 import { beforeAll, describe, expect, it } from 'vitest';
 import { moneyFixture } from '@/test/money-fixtures';
+import { employeeFixture } from '@/test/money-fixtures';
 
 const RUN = process.env.LCY_IT === '1';
 
@@ -22,12 +23,10 @@ describe.skipIf(!RUN)('offboarding exit-reason projection (P1-LCY)', { timeout: 
   });
   let n = 0;
   const employee = () =>
-    prisma.employee.create({
-      data: {
+    employeeFixture({
         employeeId: `OFF-${t}-${++n}`, firstNameArabic: 'م', lastNameArabic: 'ع', nationality: 'SA', iqamaOrIdNumber: `OFF${t}${n}`,
         iqamaOrIdExp: new Date('2030-01-01'), dateOfBirth: new Date('1990-01-01'), gender: 'M', joinDate: new Date('2024-01-01'), basicSalary: 5000, legalCompanyId: co,
-      },
-    });
+      });
   const exit = (employeeId: string) =>
     runEmploymentTransition(prisma, {
       employeeId, command: 'EXIT', date: '2026-09-01', exitReason: 'RESIGNATION', exitVoluntary: true,

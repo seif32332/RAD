@@ -26,6 +26,10 @@ The current code does not conform yet. Gaps are recorded in `AUDIT/`, and the pl
 - Every new state-changing operation is idempotent and has a double-call test.
 - Every new or changed API route enforces the company scope and has a real (unmocked auth) allow, deny and other-company test.
 
+## Agent routing
+
+Split implementation work by kind and give each kind the cheapest safe agent: `.claude/agent-routing.md` (architect/Opus for design and correctness-critical code; mechanic and test-writer on Sonnet for decided changes and tests; scout and scribe on Haiku). Money, scope, auth, legal values and data-moving migrations always stay on Opus.
+
 ## Working in this repository
 
 - Several sessions edit this tree at the same time without committing. Commit only your own hunks. Expect citation drift.

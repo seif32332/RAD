@@ -42,6 +42,7 @@ export type HarnessUser = Scoped | 'owner' | 'empA' | 'empB';
 export async function createRouteHarness(state: HarnessState) {
   const { prisma } = await import('@/lib/prisma');
   const { signSession } = await import('@/lib/session');
+  const { employeeFixture } = await import('@/test/money-fixtures');
 
   const tag = randomUUID().replace(/-/g, '').slice(0, 8);
   let seq = 0;
@@ -56,15 +57,14 @@ export async function createRouteHarness(state: HarnessState) {
     department[k] = (await prisma.department.create({ data: { nameArabic: `قسم ${k} ${tag}`, branchId: branch[k] } })).id;
   }
 
+  // An employee with pay (P1-PAY-B: created inside the money fixture, with the legacy openings of a migrated employee).
   async function employee(company: 'A' | 'B', over: Record<string, unknown> = {}) {
     const n = next();
-    return prisma.employee.create({
-      data: {
-        employeeId: `RH-${tag}-${n}`, firstNameArabic: 'موظف', lastNameArabic: `${n}`, nationality: 'SA', iqamaOrIdNumber: `RH${tag}${n}`,
-        iqamaOrIdExp: new Date('2030-01-01'), dateOfBirth: new Date('1990-01-01'), gender: 'MALE', joinDate: new Date('2024-01-01'),
-        basicSalary: 6000, legalCompanyId: co[company], actualCompanyId: co[company], branchId: branch[company], departmentId: department[company],
-        ...over,
-      },
+    return employeeFixture({
+      employeeId: `RH-${tag}-${n}`, firstNameArabic: 'موظف', lastNameArabic: `${n}`, nationality: 'SA', iqamaOrIdNumber: `RH${tag}${n}`,
+      iqamaOrIdExp: new Date('2030-01-01'), dateOfBirth: new Date('1990-01-01'), gender: 'MALE', joinDate: new Date('2024-01-01'),
+      basicSalary: 6000, legalCompanyId: co[company], actualCompanyId: co[company], branchId: branch[company], departmentId: department[company],
+      ...over,
     });
   }
 

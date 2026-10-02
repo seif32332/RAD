@@ -8,6 +8,7 @@
 // notice is captured, not run).
 import { randomUUID } from 'crypto';
 import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { employeeFixture } from '@/test/money-fixtures';
 
 const RUN = process.env.ONBOARDING_IT === '1';
 
@@ -101,8 +102,7 @@ describe.skipIf(!RUN)('onboarding / recruitment company keys and scope (P0-05)',
       ],
     });
     requesterId = (
-      await prisma.employee.create({
-        data: {
+      await employeeFixture({
           employeeId: `R-${tag}`,
           firstNameArabic: 'مدير',
           lastNameArabic: 'الفرع',
@@ -116,8 +116,7 @@ describe.skipIf(!RUN)('onboarding / recruitment company keys and scope (P0-05)',
           legalCompanyId: co.A,
           actualCompanyId: co.A,
           branchId: branch.A,
-        },
-      })
+        })
     ).id;
   });
 

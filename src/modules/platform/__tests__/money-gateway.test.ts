@@ -129,9 +129,10 @@ describe('writesOf: every write shape, recursively over the relations (BR-PAY-01
 });
 
 describe('protectedPart and assertWriteAllowed (fail closed outside a gateway context)', () => {
-  it('money tables always; Employee money columns on update only; OvertimeRequest links always; Employee delete', () => {
+  it('money tables always; Employee money columns on create (P1-PAY-B) and update; OvertimeRequest links always; Employee delete', () => {
     expect(protectedPart({ model: 'Payroll', columns: ['status'], kind: 'update' })).not.toBeNull();
-    expect(protectedPart({ model: 'Employee', columns: ['basicSalary'], kind: 'create' })).toBeNull();
+    expect(protectedPart({ model: 'Employee', columns: ['basicSalary', 'firstNameArabic'], kind: 'create' })?.columns).toEqual(['basicSalary']);
+    expect(protectedPart({ model: 'Employee', columns: ['firstNameArabic'], kind: 'create' })).toBeNull();
     expect(protectedPart({ model: 'Employee', columns: ['basicSalary', 'jobTitle'], kind: 'update' })?.columns).toEqual(['basicSalary']);
     expect(protectedPart({ model: 'Employee', columns: ['jobTitle'], kind: 'update' })).toBeNull();
     expect(protectedPart({ model: 'Employee', columns: '*', kind: 'delete' })).not.toBeNull();

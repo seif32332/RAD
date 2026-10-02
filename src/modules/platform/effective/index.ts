@@ -7,6 +7,7 @@ export type {
   CompensationAllowance,
   CompensationAttrs,
   AssignmentAttrs,
+  BankIdentityAttrs,
   PeriodAttrsByKind,
   PeriodReader,
 } from './kinds';
@@ -41,4 +42,4 @@ export { openLegacyPeriod, backfillLegacyOpenings } from './legacy';
 export type { OpenLegacyInput, OpenLegacyResult, BackfillRow } from './legacy';
 
 export { effectiveContext, summarizeCompensation, EffectiveScopeError } from './context';
-export type { EffectiveContext, EffectiveContextOptions, EmploymentOnDay, CompensationOnDay, AssignmentOnDay } from './context';
+export type { EffectiveContext, EffectiveContextOptions, EmploymentOnDay, CompensationOnDay, AssignmentOnDay, BankOnDay } from './context';

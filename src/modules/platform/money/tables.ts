@@ -7,18 +7,19 @@
 // MONEY_COLUMNS: columns of other tables that carry money and are protected the same way:
 //   - OvertimeRequest.paidInPayrollId / paidInSettlementId: the reservation links of payroll and of
 //     the settlement (the overtime row itself belongs to time; its approval is BL-PAY-007);
-//   - the Employee money projection columns of ARCH-004 (config EMPLOYEE_MONEY_FIELDS), on UPDATE
-//     writes. The CREATE of an employee is checked from P1-PAY-B on: a new employee then starts
-//     without pay and gets it through EmployeeFinancialChange (BR-PAY-009, ARC-PAY-A4); until then a
-//     new employee's first values are the creation form's (listed in the package report).
+//   - the Employee money projection columns of ARCH-004 (config EMPLOYEE_MONEY_FIELDS), on every
+//     write: UPDATE and, from P1-PAY-B on, CREATE too. A new employee starts without pay (the columns'
+//     defaults) and gets it through EmployeeFinancialChange (BR-PAY-009, ARC-PAY-A4): the key is refused
+//     whatever its value (fail closed, BR-PAY-018).
 // Deleting an Employee is refused outside the gateway (its money rows would go with it, §2).
 //
 // The list is a runtime fact, not a company setting (ARC-PAY-A1). The conformance tests keep it equal
 // to the constitution's config (src/test/architecture/config.ts MONEY_MODELS / EMPLOYEE_MONEY_FIELDS).
 
 /**
- * Tables of ARCH-004 that exist in the schema today (MONEY_MODELS minus the planned ones). CompensationPeriod
- * is written by platform/effective only (ARCH-012); it joins with compensation.applyDecision (P1-PAY-B).
+ * Tables of ARCH-004 that exist in the schema today (MONEY_MODELS minus the planned ones). The period
+ * tables CompensationPeriod and BankIdentityPeriod are written by platform/effective only (ARCH-012),
+ * inside compensation's gateway operations (P1-PAY-B: applyDecision / applyBankIdentity).
  */
 export const MONEY_TABLES = [
   'Payroll',
@@ -30,6 +31,9 @@ export const MONEY_TABLES = [
   'SalaryChange',
   'Settlement',
   'PaymentRequest',
+  'CompensationPeriod',
+  'BankIdentityPeriod',
+  'EmployeeFinancialChange',
 ] as const;
 export type MoneyTable = (typeof MONEY_TABLES)[number];
 
@@ -43,6 +47,7 @@ export const EMPLOYEE_MONEY_COLUMNS = [
   'ibanNumber',
   'bankName',
   'salaryPaymentMethod',
+  'payrollReady',
 ] as const;
 
 export interface ProtectedColumns {
@@ -52,7 +57,7 @@ export interface ProtectedColumns {
 }
 
 export const MONEY_COLUMNS: Readonly<Record<string, ProtectedColumns>> = Object.freeze({
-  Employee: { columns: EMPLOYEE_MONEY_COLUMNS, on: 'update' },
+  Employee: { columns: EMPLOYEE_MONEY_COLUMNS, on: 'all' },
   OvertimeRequest: { columns: ['paidInPayrollId', 'paidInSettlementId'], on: 'all' },
 });
 

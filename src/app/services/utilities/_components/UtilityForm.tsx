@@ -75,7 +75,11 @@ export default function UtilityForm({ mode, initialValues, submitUrl, submitMeth
         fetchList<Branch>('/api/branches'),
       ]);
       if (cancelled) return;
-      if (comps.status === 'fulfilled') setCompanies(comps.value);
+      if (comps.status === 'fulfilled') {
+        setCompanies(comps.value);
+        // One selectable company: it owns the meter (the server needs the owner for scoped users).
+        if (comps.value.length === 1) setFormData(prev => (prev.legalCompanyId ? prev : { ...prev, legalCompanyId: comps.value[0].id }));
+      }
       if (brs.status === 'fulfilled') setBranches(brs.value);
       if (comps.status === 'rejected' || brs.status === 'rejected') {
         toast.error('تعذر تحميل قائمة الشركات أو الفروع. حدّث الصفحة للمحاولة مرة أخرى.');
@@ -172,7 +176,7 @@ export default function UtilityForm({ mode, initialValues, submitUrl, submitMeth
                 options={branches.map(b => ({ label: `${b.nameArabic}${b.branchCode ? ' - #' + b.branchCode : b.city ? ' - ' + b.city : ' - بدون كود'}`, value: b.id }))} />
 
               <div className="grid grid-cols-1 md:grid-cols-2 gap-6 pt-4 border-t border-slate-100 mt-2">
-                <SearchableSelect name="legalCompanyId" value={formData.legalCompanyId} onChange={handleChange} label="مالك العداد القانوني" accentColor="amber"
+                <SearchableSelect name="legalCompanyId" value={formData.legalCompanyId} onChange={handleChange} label="مالك العداد القانوني" accentColor="amber" required={companies.length > 1}
                   options={companies.map(c => ({ label: `👑 ${c.nameArabic}`, value: c.id }))} />
                 <SearchableSelect name="actualCompanyId" value={formData.actualCompanyId} onChange={handleChange} label="المستفيد الفعلي من العداد" accentColor="amber"
                   options={companies.map(c => ({ label: `⚡ ${c.nameArabic}`, value: c.id }))} />

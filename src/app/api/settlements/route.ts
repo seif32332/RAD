@@ -3,6 +3,7 @@ import { after, NextResponse } from 'next/server';
 import { z } from 'zod';
 import type { LeaveStatus, LeaveType } from '@prisma/client';
 import { prisma } from '@/lib/prisma';
+import { assertPayrollReady } from '@/modules/compensation';
 import { suggestExitDocumentsQuietly } from '@/lib/documents/service';
 import { settlementPaymentProofSchema } from '@/lib/settlement-payment';
 import { getClientIp, requireUser } from '@/lib/auth';
@@ -562,6 +563,8 @@ export async function POST(req: Request) {
     if (!(await scopedPrisma(scope).employee.findUnique({ where: { id: body.employeeId }, select: { id: true } }))) {
       throw notFound('الموظف غير موجود');
     }
+    // BR-PAY-009 (P1-PAY-B): no settlement for an employee whose pay is not applied yet.
+    await assertPayrollReady(prisma, body.employeeId);
 
     const { employee, existingSettlement, existingEndOfService, calc, overtimeIds, serverOvertime, reasonProblem, forfeitedAward, investigationId } =
       await computeForRequest(body);

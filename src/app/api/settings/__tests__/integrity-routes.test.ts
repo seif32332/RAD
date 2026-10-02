@@ -8,6 +8,7 @@
 // wrong role, second person, beneficiary) and the other company.
 import { randomUUID } from 'crypto';
 import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { employeeFixture } from '@/test/money-fixtures';
 
 const RUN = process.env.INV_IT === '1';
 
@@ -74,13 +75,11 @@ describe.skipIf(!RUN)('integrity dashboard routes: allow, deny, other company (P
     // One INV-ORG-01 finding per company: the employee's branch belongs to the other company.
     for (const [k, other] of [['A', 'B'], ['B', 'A']] as const) {
       bad[k] = (
-        await prisma.employee.create({
-          data: {
+        await employeeFixture({
             employeeId: `IR-${tag}-${k}`, firstNameArabic: 'موظف', lastNameArabic: 'لوحة', nationality: 'سعودي', iqamaOrIdNumber: iqama(),
             iqamaOrIdExp: new Date('2030-01-01'), dateOfBirth: new Date('1990-01-01'), gender: 'MALE', joinDate: new Date('2020-01-01'),
             basicSalary: 7000, legalCompanyId: co[k], actualCompanyId: co[k], branchId: branch[other],
-          },
-        })
+          })
       ).id;
     }
     for (const [key, u] of Object.entries(users)) {

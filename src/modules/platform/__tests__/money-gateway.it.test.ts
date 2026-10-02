@@ -6,6 +6,7 @@
 // Opt-in: PAY_IT=1 with DATABASE_URL on a THROWAWAY migrated database (rows are not cleaned up).
 import { randomUUID } from 'crypto';
 import { describe, expect, it } from 'vitest';
+import { employeeFixture } from '@/test/money-fixtures';
 
 describe.skipIf(process.env.PAY_IT !== '1')('money.gateway extension on Postgres (BL-PAY-024 spike, BL-PAY-002)', async () => {
   if (process.env.PAY_IT !== '1') return;
@@ -36,13 +37,11 @@ describe.skipIf(process.env.PAY_IT !== '1')('money.gateway extension on Postgres
   const company = await prisma.company.create({ data: { nameArabic: `شركة المال ${tag}`, commercialRegNum: `MG${tag}`, commercialRegExp: new Date('2030-01-01') } });
   let n = 0;
   const employee = (over: Record<string, unknown> = {}) =>
-    prisma.employee.create({
-      data: {
+    employeeFixture({
         employeeId: `MG-${tag}-${++n}`, firstNameArabic: 'موظف', lastNameArabic: `${n}`, nationality: 'SA', iqamaOrIdNumber: `MG${tag}${n}`,
         iqamaOrIdExp: new Date('2030-01-01'), dateOfBirth: new Date('1990-01-01'), gender: 'MALE', joinDate: new Date('2024-01-01'),
         basicSalary: 5000, legalCompanyId: company.id, actualCompanyId: company.id, ...over,
-      },
-    });
+      });
   const e = await employee();
   const loanData = () => ({ employeeId: e.id, amount: 1000, monthlyInstallment: 100, remainingAmount: 1000, status: 'PENDING' });
   const refused = async (p: Promise<unknown>, model: string) => {
@@ -67,10 +66,11 @@ describe.skipIf(process.env.PAY_IT !== '1')('money.gateway extension on Postgres
 
   it('walks nested writes from any model over the relations (DMMF), including connect from the one side', async () => {
     await refused(
+      // P1-PAY-B: no pay column on the employee itself (that alone is refused on Employee, see compensation's IT).
       prisma.employee.create({
         data: {
           employeeId: `MG-${tag}-n${++n}`, firstNameArabic: 'م', lastNameArabic: 'ن', nationality: 'SA', iqamaOrIdNumber: `MGN${tag}${n}`,
-          iqamaOrIdExp: new Date('2030-01-01'), dateOfBirth: new Date('1990-01-01'), gender: 'MALE', joinDate: new Date('2024-01-01'), basicSalary: 1,
+          iqamaOrIdExp: new Date('2030-01-01'), dateOfBirth: new Date('1990-01-01'), gender: 'MALE', joinDate: new Date('2024-01-01'),
           allowances: { create: [{ name: 'سكن', amount: 100 }] },
         },
       }),

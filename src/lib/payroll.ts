@@ -54,11 +54,13 @@ import {
   type OvertimeHolders,
   type PayrollBreakdownColumns,
   type PayrollReviewFilterKey,
+  type AllowanceLike,
   type PayrollSettings,
   type SalaryLike,
 } from '@/lib/payroll-core';
 import { DEFAULT_GOSI_RATES, pickGosiRate, type GosiRateLike } from '@/lib/gosi';
 import { createRulesReader } from '@/modules/rules';
+import { compensationOnDay, compensationSegments, type CompensationSegment } from '@/modules/compensation';
 import { currentPeriodStart, employedDuringWhere, employmentGapsWithin, employmentSpansOf } from '@/modules/lifecycle';
 import {
   approvePayrollMonth,
@@ -164,6 +166,14 @@ export async function payrollMonthCompanies(db: Tx, year: number, month: number)
   return months.map((m) => ({ companyId: m.companyId, companyName: m.company.nameArabic, status: m.status, drafts: byCompany.get(m.companyId) ?? 0 }));
 }
 
+/** The salary of a compensation segment in the shape of the payroll rules (recurring allowances, isMonthly). */
+function salaryOf(seg: CompensationSegment | undefined): SalaryLike {
+  return {
+    basicSalary: seg?.basicSalary ?? 0,
+    allowances: (seg?.allowances ?? []).map((a) => ({ name: a.name, amount: a.amount, isMonthly: true, allowanceType: a.allowanceType ?? null, countsTowardGosi: a.countsTowardGosi })),
+  };
+}
+
 // ---------------------------------------------------------------------------
 // Approval and payment of a company's month (writers: src/modules/payroll, behind money.gateway)
 // ---------------------------------------------------------------------------
@@ -181,8 +191,6 @@ function settlementCoveragePrecheck(year: number, month: number) {
         id: true,
         firstNameArabic: true,
         lastNameArabic: true,
-        basicSalary: true,
-        allowances: { where: { isMonthly: true }, select: { name: true, amount: true, isMonthly: true } },
         // BL-LCY-012 site 2: void settlements (rejected / reversed) never count; period-scoped below.
         settlements: {
           where: { status: { notIn: [...SETTLEMENT_VOID_STATUSES] } },
@@ -192,11 +200,13 @@ function settlementCoveragePrecheck(year: number, month: number) {
     });
     const byId = new Map(employees.map((e) => [e.id, e]));
     const spans = await employmentSpansOf(tx, employees.map((e) => e.id));
+    // The rate of a settled leave day: the compensation in force at the month's end (ARCH-011: the facts).
+    const pay = await compensationOnDay(tx, employees.map((e) => e.id), dateKey(monthRange(year, month).end) as string);
     const stale = drafts.filter((d) => {
       const e = byId.get(d.employeeId);
       if (!e) return false;
       const newer = e.settlements.filter((s) => s.createdAt > d.createdAt);
-      return settlementCoversMonth(newer, { basicSalary: e.basicSalary, allowances: e.allowances }, year, month, { periodStart: currentPeriodStart(spans.get(e.id)) });
+      return settlementCoversMonth(newer, salaryOf(pay.get(e.id)), year, month, { periodStart: currentPeriodStart(spans.get(e.id)) });
     });
     if (stale.length) {
       const names = stale
@@ -331,7 +341,6 @@ export async function computeGenerationPlan(db: Tx, input: PlanInput): Promise<P
     },
     select: {
       id: true,
-      basicSalary: true,
       nationality: true,
       gosiDeduction: true,
       gosiRegime: true,
@@ -345,8 +354,9 @@ export async function computeGenerationPlan(db: Tx, input: PlanInput): Promise<P
       salaryPaymentMethod: true,
       // Company cost setting «طريقة حساب أجر العمل الإضافي» (legal company, else actual company).
       ...OVERTIME_BASIS_SELECT,
+      // One-off bonuses only: the recurring allowances are part of the compensation (CompensationPeriod).
       allowances: {
-        where: { OR: [{ isMonthly: true }, { isMonthly: false, isPaid: false }] },
+        where: { isMonthly: false, isPaid: false },
         select: {
           id: true,
           name: true,
@@ -438,6 +448,10 @@ export async function computeGenerationPlan(db: Tx, input: PlanInput): Promise<P
   // Employment periods (lifecycle): the current period scopes the settlements, the gaps between periods
   // (a termination then a rehire in the month) are not paid.
   const spans = await employmentSpansOf(db, employees.map((e) => e.id));
+  // The pay of each day of the month (P1-PAY-B, ARCH-011): the CompensationPeriods in force, never the
+  // Employee projection. A mid-month change is prorated by segment; the per-day rates and the approved
+  // snapshot are BL-PAY-008b.
+  const pay = await compensationSegments(db, employees.map((e) => e.id), dateKey(monthStart) as string, dateKey(monthEnd) as string);
 
   const rows: GeneratedPayrollRow[] = [];
   const installments: Array<{ id: string; loanId: string; payrollId: string; month: number; year: number; amount: number }> = [];
@@ -451,8 +465,12 @@ export async function computeGenerationPlan(db: Tx, input: PlanInput): Promise<P
   for (const emp of employees) {
     if (skip.has(emp.id) || elsewhere.has(emp.id)) continue;
 
-    const recurring = emp.allowances.filter((a) => a.isMonthly);
-    const salary: SalaryLike = { basicSalary: emp.basicSalary, allowances: recurring };
+    const segments = pay.get(emp.id) ?? [];
+    // No compensation in force on any day of the month (a new hire whose pay is not decided yet, a legacy
+    // file without salary: INV-EFF-02 / INV-SAL-01 LEGACY_READY): nothing is paid, items wait.
+    if (!segments.length) continue;
+    const salary = salaryOf(segments[segments.length - 1]);
+    const recurring = salary.allowances as AllowanceLike[];
     const empSpans = spans.get(emp.id);
     const coverage = settlementCoverage(emp.settlements, salary, { periodStart: currentPeriodStart(empSpans) });
     // payrollEligible (BL-LCY-012): the one condition, from lifecycle's employmentEnd (NOTICE included)
@@ -467,7 +485,6 @@ export async function computeGenerationPlan(db: Tx, input: PlanInput): Promise<P
 
     // One-off bonuses due up to this month and not reserved by another month's draft.
     const bonuses = emp.allowances.filter((a) => {
-      if (a.isMonthly) return false;
       if (a.paidInPayrollId && !draftIdSet.has(a.paidInPayrollId)) return false;
       if (a.payrollYear == null || a.payrollMonth == null) return true; // legacy: first generation after creation
       return monthIndex(a.payrollYear, a.payrollMonth) <= thisIdx;
@@ -503,7 +520,7 @@ export async function computeGenerationPlan(db: Tx, input: PlanInput): Promise<P
       month,
       sickLeaveLaw: law.sickLeave,
       employee: {
-        basicSalary: emp.basicSalary,
+        basicSalary: salary.basicSalary,
         nationality: emp.nationality,
         gosiDeduction: emp.gosiDeduction,
         joinDate: emp.joinDate,
@@ -513,6 +530,7 @@ export async function computeGenerationPlan(db: Tx, input: PlanInput): Promise<P
       gosiRates,
       employmentEnd,
       excluded,
+      compensationSegments: segments.map((s) => ({ from: s.from, to: s.to, basicSalary: s.basicSalary, allowances: salaryOf(s).allowances as AllowanceLike[] })),
       bonuses: bonuses.map((b) => ({ id: b.id, amount: b.amount })),
       overtimes,
       deductions: deductions.map((d) => ({ id: d.id, amount: d.amount })),

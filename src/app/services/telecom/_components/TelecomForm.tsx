@@ -99,7 +99,11 @@ export default function TelecomForm({ mode, initialValues, submitUrl, submitMeth
       if (cancelled) return;
       const [emps, comps, brs, sims] = results;
       if (emps.status === 'fulfilled') setEmployees(emps.value);
-      if (comps.status === 'fulfilled') setCompanies(comps.value);
+      if (comps.status === 'fulfilled') {
+        setCompanies(comps.value);
+        // One selectable company: it owns the SIM (the server needs the owner for scoped users).
+        if (comps.value.length === 1) setFormData((prev) => (prev.companyId ? prev : { ...prev, companyId: comps.value[0].id }));
+      }
       if (brs.status === 'fulfilled') setBranches(brs.value);
       if (sims.status === 'fulfilled') {
         const names = sims.value.map((s) => (s.provider || '').trim()).filter(Boolean);
@@ -267,7 +271,7 @@ export default function TelecomForm({ mode, initialValues, submitUrl, submitMeth
                 options={employees.map(e => ({ label: `${e.firstNameArabic} ${e.lastNameArabic} - #${e.employeeId}`, value: e.id }))} />
 
               <div className="grid grid-cols-1 md:grid-cols-2 gap-6 pt-4 border-t border-slate-100">
-                <SearchableSelect name="companyId" value={formData.companyId} onChange={handleChange} label="الشركة التابعة لها" accentColor="blue"
+                <SearchableSelect name="companyId" value={formData.companyId} onChange={handleChange} label="الشركة التابعة لها" accentColor="blue" required={companies.length > 1}
                   options={companies.map(c => ({ label: c.nameArabic, value: c.id }))} />
                 <SearchableSelect name="branchId" value={formData.branchId} onChange={handleChange} label="الفرع المخصص للاستخدام" accentColor="blue"
                   options={branches.map(b => ({ label: b.nameArabic, value: b.id }))} />

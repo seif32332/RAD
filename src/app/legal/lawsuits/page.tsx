@@ -5,6 +5,7 @@ import { Gavel, CheckCircle, Scale, ShieldAlert, Phone, Building, AlertCircle, X
 import DashboardLayout from '@/components/DashboardLayout';
 import { toast, readApiError } from '@/components/ui/feedback';
 import { formatDate } from '@/lib/dates';
+import { CompanyField, companyBody, useSelectableCompanies } from '@/components/CompanyField';
 
 interface Lawsuit {
   id: string;
@@ -40,6 +41,8 @@ export default function LawsuitsPage() {
   const [uploading, setUploading] = useState(false);
 
   const [form, setForm] = useState(EMPTY_FORM);
+  const companies = useSelectableCompanies();
+  const [companyId, setCompanyId] = useState('');
 
   const fetchLawsuits = useCallback(async () => {
     setIsLoading(true);
@@ -72,7 +75,7 @@ export default function LawsuitsPage() {
       const res = await fetch('/api/legal/lawsuits', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(form)
+        body: JSON.stringify({ ...form, ...companyBody(companies, companyId) })
       });
       if (res.status === 401) { window.location.href = '/login'; return; }
       if (!res.ok) { toast.error(await readApiError(res, 'تعذر تسجيل الدعوى')); return; }
@@ -187,6 +190,10 @@ export default function LawsuitsPage() {
             {/* TAB: CREATE NEW CASE */}
             {activeTab === 'CREATE' && (
                <form onSubmit={handleSubmit} className="bg-white border border-amber-100 rounded-[2rem] p-8 shadow-xl shadow-amber-900/5">
+
+                 {companies.length > 1 && (
+                   <div className="mb-10 max-w-sm"><CompanyField companies={companies} value={companyId} onChange={setCompanyId} /></div>
+                 )}
 
                  {/* Section: Case Type */}
                  <div className="mb-10">

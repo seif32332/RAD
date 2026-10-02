@@ -33,8 +33,8 @@ import { resolveTeamContext } from '@/lib/employee-scope';
 import { lifecycleCompanies, transitionEmploymentState } from '@/modules/lifecycle';
 import { projectExitReason } from '@/modules/offboarding';
 import { resolveWorkPatternId } from '@/modules/calendar';
-import { editEmployeePay, type EmployeePayChange, type RecurringAllowance } from '@/modules/compensation';
-import { setEmployeeGosiDeduction } from '@/modules/payroll';
+import { requestFinancialChange, type FinancialChangeView, type RequestedAllowance } from '@/modules/compensation';
+import { assertNoFinalizedPayrollFrom, setEmployeeGosiDeduction } from '@/modules/payroll';
 import { moneyActorOf } from '@/modules/platform';
 import {
   defaultExitVoluntary,
@@ -129,6 +129,8 @@ const updateEmployeeSchema = z.object({
   noticePeriodDays: zOptInt.refine((v) => v === undefined || (v >= 0 && v <= 3650), 'فترة الإشعار غير صالحة'),
   leaveAccrualStartDate: zOptDate,
   basicSalary: zOptMoney,
+  /** P1-PAY-B: first day a changed salary / allowances is in force (default: today). */
+  payEffectiveDate: zOptDate,
   gosiDeduction: zOptMoney,
   salaryPaymentMethod: keepIfEmpty(z.nativeEnum(PaymentMethod)),
   ibanNumber: optIban,
@@ -205,8 +207,8 @@ async function assertEmployeeWrite(
 }
 
 /** The same recurring allowances (as a multiset of name, amount, GOSI flag, type): an echo, not a change. */
-function sameAllowances(a: readonly RecurringAllowance[], b: readonly RecurringAllowance[]): boolean {
-  const key = (x: RecurringAllowance) => JSON.stringify([x.name, roundMoney(x.amount), !!x.countsTowardGosi, x.allowanceType ?? null]);
+function sameAllowances(a: readonly RequestedAllowance[], b: readonly RequestedAllowance[]): boolean {
+  const key = (x: RequestedAllowance) => JSON.stringify([x.name, roundMoney(x.amount), !!x.countsTowardGosi, x.allowanceType ?? null]);
   const left = a.map(key).sort();
   const right = b.map(key).sort();
   return left.length === right.length && left.every((k, i) => k === right[i]);
@@ -329,19 +331,22 @@ export async function PUT(req: Request, { params }: Ctx) {
       ...workforce.data,
     });
 
-    // Pay (money.gateway, ARCH-004): the form echoes every value back; only the CHANGED ones are written,
-    // through compensation.editEmployeePay (and payroll's gosiDeduction), never on one's own file
-    // (BR-PAY-001; SINGLE_OPERATOR recorded). P1-PAY-B turns these edits into EmployeeFinancialChange requests.
-    const pay: EmployeePayChange = {};
-    if (b.basicSalary !== undefined && roundMoney(b.basicSalary) !== existing.basicSalary) pay.basicSalary = roundMoney(b.basicSalary);
-    if (b.salaryPaymentMethod !== undefined && b.salaryPaymentMethod !== existing.salaryPaymentMethod) pay.salaryPaymentMethod = b.salaryPaymentMethod;
-    if (b.ibanNumber !== undefined && (b.ibanNumber ?? null) !== existing.ibanNumber) pay.ibanNumber = b.ibanNumber ?? null;
-    if (b.bankName !== undefined && (b.bankName ?? null) !== existing.bankName) pay.bankName = b.bankName ?? null;
+    // Pay (P1-PAY-B, BR-PAY-009): the form echoes every value back; a CHANGED salary / allowances or bank
+    // identity becomes an EmployeeFinancialChange REQUEST (nothing changes until a second person decides;
+    // the requester may be the employee himself, DEC-PO-006). An IBAN that replaces the one on file is the
+    // employee's own portal request (IbanSelfServiceOnlyError). gosiDeduction stays payroll's operation.
+    const basicChanged = b.basicSalary !== undefined && roundMoney(b.basicSalary) !== existing.basicSalary;
+    const bankChanged =
+      (b.salaryPaymentMethod !== undefined && b.salaryPaymentMethod !== existing.salaryPaymentMethod) ||
+      (b.ibanNumber !== undefined && (b.ibanNumber ?? null) !== existing.ibanNumber) ||
+      (b.bankName !== undefined && (b.bankName ?? null) !== existing.bankName);
+    const payEffective = (b.payEffectiveDate ?? todayDate).toISOString().slice(0, 10);
     const gosiDeduction = b.gosiDeduction !== undefined && roundMoney(b.gosiDeduction) !== existing.gosiDeduction ? roundMoney(b.gosiDeduction) : undefined;
     const idem = req.headers.get('idempotency-key')?.trim();
     const payKey = `employee.pay:${id}:${user.id}:${idem ? `k:${idem.slice(0, 100)}` : Date.now()}`;
 
     let updated;
+    let financialChanges: FinancialChangeView[] = [];
     try {
       updated = await prisma.$transaction(async (tx) => {
         await tx.employee.update({ where: { id }, data });
@@ -352,7 +357,7 @@ export async function PUT(req: Request, { params }: Ctx) {
           passportCopyUrl: data.passportCopyUrl as string | null | undefined,
         });
 
-        let allowances: RecurringAllowance[] | undefined;
+        let allowances: RequestedAllowance[] | undefined;
         if (b.allowances) {
           // Only recurring allowances are replaced; one-off bonuses (isMonthly=false) are kept,
           // including when the form echoes them back.
@@ -362,20 +367,33 @@ export async function PUT(req: Request, { params }: Ctx) {
           const toCreate = b.allowances.flatMap((a) =>
             monthlyAllowanceRows([a], oneOffIds).map((row) => ({ ...row, allowanceType: a.allowanceType ?? null })),
           );
-          const next: RecurringAllowance[] = toCreate.map((a) => ({ name: a.name, amount: roundMoney(a.amount), countsTowardGosi: a.countsTowardGosi, allowanceType: a.allowanceType }));
+          const next: RequestedAllowance[] = toCreate.map((a) => ({ name: a.name, amount: roundMoney(a.amount), countsTowardGosi: a.countsTowardGosi, allowanceType: a.allowanceType }));
           allowances = sameAllowances(existing.allowances, next) ? undefined : next;
         }
         const actor = moneyActorOf(user);
-        await editEmployeePay(tx, {
-          actor,
-          employeeId: id,
-          companyId: existing.legalCompanyId,
-          pay,
-          allowances,
-          before: { basicSalary: existing.basicSalary, salaryPaymentMethod: existing.salaryPaymentMethod, bankName: existing.bankName, allowances: existing.allowances },
-          operationKey: payKey,
-          ipAddress: getClientIp(req),
-        });
+        if (basicChanged || allowances || bankChanged) {
+          if (basicChanged || allowances) await assertNoFinalizedPayrollFrom(tx, id, payEffective);
+          const filed = await requestFinancialChange(tx, {
+            actor,
+            employeeId: id,
+            source: 'EDIT',
+            effectiveDate: payEffective,
+            compensation:
+              basicChanged || allowances
+                ? { basicSalary: roundMoney(b.basicSalary ?? existing.basicSalary), allowances: allowances ?? existing.allowances }
+                : null,
+            bank: bankChanged
+              ? {
+                  iban: b.ibanNumber !== undefined ? (b.ibanNumber ?? null) : existing.ibanNumber,
+                  bankName: b.bankName !== undefined ? (b.bankName ?? null) : existing.bankName,
+                  paymentMethod: b.salaryPaymentMethod ?? existing.salaryPaymentMethod,
+                }
+              : null,
+            operationKey: payKey,
+            ipAddress: getClientIp(req),
+          });
+          financialChanges = filed.changes;
+        }
         if (gosiDeduction !== undefined) {
           await setEmployeeGosiDeduction(tx, { actor, employeeId: id, gosiDeduction, before: existing.gosiDeduction, companyId: existing.legalCompanyId, operationKey: `${payKey}:gosi`, ipAddress: getClientIp(req) });
         }
@@ -414,7 +432,12 @@ export async function PUT(req: Request, { params }: Ctx) {
     const commitment = await salaryTransferConflict(updated.id, updated.ibanNumber, updated.bankName ?? null);
     if (commitment) warnings.push({ field: 'ibanNumber', message: commitment });
 
-    return NextResponse.json({ message: 'تم تحديث بيانات الموظف بنجاح', employee: updated, warnings });
+    return NextResponse.json({
+      message: financialChanges.length ? 'تم تحديث بيانات الموظف. تغيير الراتب أو بيانات الصرف بانتظار اعتماد شخص ثانٍ' : 'تم تحديث بيانات الموظف بنجاح',
+      employee: updated,
+      financialChanges,
+      warnings,
+    });
   } catch (err) {
     return handleApiError(err, 'employees/[id]:PUT');
   }

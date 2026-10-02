@@ -8,6 +8,7 @@
 // Opt-in: PAY_IT=1 with DATABASE_URL on a THROWAWAY migrated database (rows are not cleaned up).
 import { randomUUID } from 'crypto';
 import { beforeAll, describe, expect, it } from 'vitest';
+import { employeeFixture } from '@/test/money-fixtures';
 
 const RUN = process.env.PAY_IT === '1';
 
@@ -28,13 +29,11 @@ describe.skipIf(!RUN)('payroll ↔ lifecycle interface on PostgreSQL (BL-LCY-012
 
   async function employee(over: Record<string, unknown> = {}) {
     n += 1;
-    return prisma.employee.create({
-      data: {
+    return employeeFixture({
         employeeId: `PLC-${tag}-${n}`, firstNameArabic: 'موظف', lastNameArabic: `${n}`, nationality: 'SA', iqamaOrIdNumber: `PLC${tag}${n}`,
         iqamaOrIdExp: new Date('2090-01-01'), dateOfBirth: new Date('1990-01-01'), gender: 'MALE', joinDate: new Date('2024-01-01'),
         basicSalary: 6200, legalCompanyId: co, actualCompanyId: co, ...over,
-      },
-    });
+      });
   }
 
   beforeAll(async () => {

@@ -33,6 +33,7 @@ import PortalTabBar, { type PortalTab } from './_components/PortalTabBar';
 import ClockCard, { type PunchRejection } from './_components/ClockCard';
 import DocumentsCard, { type DocumentsCardHandle } from './_components/DocumentsCard';
 import TotalRewardsCard from './_components/TotalRewardsCard';
+import FinancialChangesCard from './_components/FinancialChangesCard';
 import { cancellableLeaveId, formatLeaveDays, isUnlinkedAccount, leavePreviewQuery, parseLeavePreview, type LeavePreview } from './_lib';
 
 // ---------------------------------------------------------------------------
@@ -115,8 +116,9 @@ const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/;
 
 /**
  * Serializes the structured data-update form into tagged lines. HR approval (src/lib/hr-workflows.ts
- * parseDataUpdateRequest) applies ONLY the tagged mobile / email lines; the IBAN is changed by HR
- * by hand after checking the certificate. Notes stay on one untagged line so they are never applied.
+ * parseDataUpdateRequest) applies ONLY the tagged mobile / email lines; the IBAN line becomes the
+ * employee's own financial change request on the server (P1-PAY-B, /api/portal/correction), decided by a
+ * second person. Notes stay on one untagged line so they are never applied.
  */
 function buildDataUpdateReason(d: typeof EMPTY_GENERAL): string {
   const lines = ['[طلب: تحديث بيانات]'];
@@ -915,6 +917,7 @@ ${row('إجمالي الاستقطاعات', `${formatMoney(p.totalDeductions)} 
 
         {/* Total rewards statement (hidden unless the owner enabled it, SPEC §9) */}
         <TotalRewardsCard />
+        <FinancialChangesCard />
 
         {/* Pending Evaluations */}
         {pendingEvals.length > 0 && (
@@ -1762,7 +1765,7 @@ ${row('إجمالي الاستقطاعات', `${formatMoney(p.totalDeductions)} 
                 />
               )}
               <p id="portal-update-iban-hint" className="text-[12px] font-bold text-slate-600 leading-relaxed">
-                يُحدَّث الجوال والبريد في ملفك بعد اعتماد الموارد البشرية. أما الآيبان فتعدّله الموارد البشرية يدوياً بعد التحقق من شهادة الآيبان.
+                يُحدَّث الجوال والبريد في ملفك بعد اعتماد الموارد البشرية. أما الآيبان فيصبح طلب تغيير مالي باسمك، يعتمده شخص ثانٍ بعد التحقق من شهادة الآيبان، ويُطبَّق من يوم اعتماده.
               </p>
             </div>
           )}

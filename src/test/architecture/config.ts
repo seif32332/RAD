@@ -127,6 +127,7 @@ export const LEGACY_PATH_MODULES: Record<string, string | null> = {
   'src/app/api/evaluations/': 'performance',
   'src/app/api/face-profiles/': 'time',
   'src/app/api/files/': 'platform',
+  'src/app/api/financial-changes/': 'compensation', // P1-PAY-B: EmployeeFinancialChange (BR-PAY-009)
   'src/app/api/gov-platforms/': 'gov',
   'src/app/api/health/': 'platform',
   'src/app/api/hr/': 'reporting',
@@ -147,6 +148,7 @@ export const LEGACY_PATH_MODULES: Record<string, string | null> = {
   'src/app/api/portal/attendance/': 'time',
   'src/app/api/portal/correction/': 'time',
   'src/app/api/portal/face/': 'time',
+  'src/app/api/portal/financial-changes/': 'compensation', // P1-PAY-B: the employee's own IBAN requests
   'src/app/api/portal/termination/': 'offboarding',
   'src/app/api/portal/total-rewards/': 'workforce',
   'src/app/api/profile/': 'iam',
@@ -250,6 +252,8 @@ export const EMPLOYEE_MONEY_FIELDS = [
   'ibanNumber',
   'bankName',
   'salaryPaymentMethod',
+  // P1-PAY-B: the projection of compensation that gates pay (pay-to-be §2 control fields, ARC-PAY-A4)
+  'payrollReady',
 ];
 
 /** ARCH-011: modules whose calculations have a financial effect. */
@@ -335,6 +339,7 @@ export const PERIOD_KIND_OWNERS: Record<string, string> = {
   EMPLOYMENT: 'lifecycle',
   COMPENSATION: 'compensation',
   ASSIGNMENT: 'org',
+  BANK_IDENTITY: 'compensation', // P1-PAY-B (9zg, ARC-PAY-A3)
 };
 /** ARCH-021: the platform/effective writers that take a kind (openLegacyPeriod / backfillLegacyOpenings are exempt). */
 export const PERIOD_WRITERS = ['openPeriod', 'closePeriod', 'supersedePeriod'];

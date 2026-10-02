@@ -117,6 +117,27 @@ export function attrsToData<K extends PeriodKind>(kind: K, employeeId: string, a
     };
   }
 
+  if (kind === 'BANK_IDENTITY') {
+    const method = input.paymentMethod;
+    if (method !== 'CASH' && method !== 'BANK_TRANSFER' && method !== 'WPS') throw new EffectivePeriodInputError('paymentMethod must be CASH, BANK_TRANSFER or WPS');
+    const text = (v: unknown, what: string): string | null => {
+      if (v === undefined || v === null || v === '') return null;
+      if (typeof v !== 'string') throw new EffectivePeriodInputError(`${what} must be a string or null`);
+      return v;
+    };
+    const ibanEncrypted = text(input.ibanEncrypted, 'ibanEncrypted');
+    const ibanFingerprint = text(input.ibanFingerprint, 'ibanFingerprint');
+    const ibanLast4 = text(input.ibanLast4, 'ibanLast4');
+    if (method === 'CASH') {
+      if (ibanEncrypted || ibanFingerprint || ibanLast4) throw new EffectivePeriodInputError('a CASH bank identity has no IBAN');
+    } else {
+      if (!ibanEncrypted) throw new EffectivePeriodInputError(`a ${method} bank identity needs its IBAN`);
+      if (!ibanFingerprint || !/^[0-9a-f]{64}$/.test(ibanFingerprint)) throw new EffectivePeriodInputError('ibanFingerprint must be the sha256 (hex) of the normalized IBAN');
+      if (!ibanLast4 || !/^[0-9A-Z]{4}$/.test(ibanLast4)) throw new EffectivePeriodInputError('ibanLast4 must be the last 4 characters of the IBAN');
+    }
+    return { paymentMethod: method, ibanEncrypted, ibanFingerprint, ibanLast4, bankName: text(input.bankName, 'bankName') };
+  }
+
   return {};
 }
 

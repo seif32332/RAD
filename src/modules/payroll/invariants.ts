@@ -9,6 +9,8 @@
 //   - outcome HELD: a line approved before the change, not paid → one finding per such line;
 //   - outcome RETRO_ROUTED: a line paid before the change → one finding per such line: the HR task of
 //     ARC-PAY-A9 until BL-PAY-008b routes the difference automatically.
+// P1-PAY-B: the same findings for a pay change (the CompensationPeriod events, consumer payroll.compensation)
+// that reached an approved or paid line, or that the consumer could not apply.
 // Read only (the reconcile snapshot runs it inside a READ ONLY transaction). Registered by the
 // composition roots (src/jobs/consumers.ts) through platform.registerInvariantCheck.
 import type { Prisma, PrismaClient } from '@prisma/client';
@@ -18,7 +20,8 @@ import { consumptionsOf, type InvariantCheck } from '@/modules/platform';
 import { PAYROLL_STATUS } from '@/lib/constants';
 import { payrollMonthKey } from '@/lib/payroll-core';
 import { effectiveMonthOf } from './consumers';
-import { PAYROLL_EMPLOYMENT_CONSUMER } from './gate';
+import { COMPENSATION_EVENT_TYPES } from './consumers';
+import { PAYROLL_COMPENSATION_CONSUMER, PAYROLL_EMPLOYMENT_CONSUMER } from './gate';
 
 export const INV_PAY_04_ID = 'INV-PAY-04';
 export const EMPLOYMENT_CHANGE_CHECK = 'employmentChangeNotApplied';
@@ -29,12 +32,17 @@ const NO_COMPANY = '(none)';
 type Db = PrismaClient | Prisma.TransactionClient;
 
 export async function employmentChangeResults(db: Db): Promise<ReconciliationResult[]> {
-  const rows = await consumptionsOf(db, { consumer: PAYROLL_EMPLOYMENT_CONSUMER, types: EMPLOYMENT_EVENT_TYPES, statuses: ['DEAD'], outcomes: ['HELD', 'RETRO_ROUTED'] });
+  const rows = [
+    ...(await consumptionsOf(db, { consumer: PAYROLL_EMPLOYMENT_CONSUMER, types: EMPLOYMENT_EVENT_TYPES, statuses: ['DEAD'], outcomes: ['HELD', 'RETRO_ROUTED'] })),
+    ...(await consumptionsOf(db, { consumer: PAYROLL_COMPENSATION_CONSUMER, types: COMPENSATION_EVENT_TYPES, statuses: ['DEAD'], outcomes: ['HELD', 'RETRO_ROUTED'] })),
+  ];
   const entities: ReconciliationEntity[] = [];
   const dead: ReconciliationEntity[] = [];
   const detail: Record<string, number> = {};
   const seen = new Set<string>();
-  for (const r of rows) {
+  for (const row of rows) {
+    // The employee of the event: the aggregate of employment.*, the payload of the period events (lineage aggregate).
+    const r = { ...row, aggregateId: (row.payload as { employeeId?: string } | null)?.employeeId ?? row.aggregateId };
     const { year, month } = effectiveMonthOf({ payload: r.payload, effectiveDate: r.effectiveDate, occurredAt: r.recordedAt });
     if (r.status === 'DEAD') {
       dead.push({ id: r.eventId, companyId: r.companyId, tag: `DEAD:${r.type}`, employeeId: r.aggregateId, period: payrollMonthKey(year, month) });

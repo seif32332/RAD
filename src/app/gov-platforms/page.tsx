@@ -8,6 +8,7 @@ import {
 } from 'lucide-react';
 import { toast, confirmDialog, readApiError } from '@/components/ui/feedback';
 import { formatDate } from '@/lib/dates';
+import { CompanyField, companyBody, useSelectableCompanies } from '@/components/CompanyField';
 
 // قائمة المنصات الحكومية المعروفة
 const KNOWN_PLATFORMS = [
@@ -56,6 +57,8 @@ export default function GovPlatformsPage() {
   const [copiedField, setCopiedField] = useState<string | null>(null);
 
   const [formData, setFormData] = useState(EMPTY_FORM);
+  const companies = useSelectableCompanies();
+  const [companyId, setCompanyId] = useState('');
 
   const fetchPlatforms = useCallback(async () => {
     setIsLoading(true);
@@ -119,7 +122,7 @@ export default function GovPlatformsPage() {
         authorizedPerson: formData.authorizedPerson,
         notes: formData.notes,
       };
-      const payload = editingId ? { id: editingId, ...body } : body;
+      const payload = editingId ? { id: editingId, ...body } : { ...body, ...companyBody(companies, companyId) };
 
       const res = await fetch('/api/gov-platforms', {
         method,
@@ -418,6 +421,10 @@ export default function GovPlatformsPage() {
             </div>
 
             <form onSubmit={handleSubmit} className="p-8 space-y-5">
+              {!editingId && (
+                <CompanyField companies={companies} value={companyId} onChange={setCompanyId} id="gov-platform-company"
+                  className="w-full px-5 py-3.5 bg-slate-50 border-2 border-slate-100 focus:border-blue-400 focus:bg-white rounded-2xl font-bold text-slate-800 transition-all focus:outline-none text-[14px]" />
+              )}
               {/* Platform Name */}
               <div>
                 <label htmlFor="gov-platform-name" className="text-[13px] font-extrabold text-slate-700 mb-2 flex items-center gap-2">

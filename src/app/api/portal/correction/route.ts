@@ -7,9 +7,25 @@ import { badRequest, conflict, forbidden, handleApiError, parseBody } from '@/li
 import { zDate, zId, zOptText, zText } from '@/lib/validation';
 import { dateKey } from '@/lib/dates';
 import { logAudit } from '@/lib/audit';
-import { CORRECTION_STATUS, CORRECTION_TYPES, isHrDirectRequest } from '@/lib/hr-workflows';
+import { CORRECTION_STATUS, CORRECTION_TYPES, DATA_UPDATE_PREFIX, DATA_UPDATE_TAGS, isHrDirectRequest } from '@/lib/hr-workflows';
 import { resolveSelfContext } from '@/lib/employee-scope';
 import { authz, resolveActor, scopedPrisma } from '@/modules/iam';
+import { maskedIban, requestFinancialChange, runCompensationTransaction, type FinancialChangeView } from '@/modules/compensation';
+import { normalizeIban } from '@/lib/iban';
+
+/** The value of a tagged line ("الآيبان: SA…") of a data-update request, or null. */
+function taggedLine(reason: string, tag: string): { index: number; value: string } | null {
+  const lines = reason.split(/\r?\n/);
+  for (let i = 0; i < lines.length; i++) {
+    const t = lines[i].trim();
+    if (!t.startsWith(tag)) continue;
+    const rest = t.slice(tag.length).trimStart();
+    if (!rest.startsWith(':')) continue;
+    const value = rest.slice(1).trim();
+    if (value && value !== '-') return { index: i, value };
+  }
+  return null;
+}
 
 export const dynamic = 'force-dynamic';
 
@@ -71,16 +87,42 @@ export async function POST(req: Request) {
       punchId = body.punchId;
     }
 
-    const request = await db.attendanceCorrection.create({
-      data: {
-        employeeId,
-        date: body.date,
-        reason: body.reason,
-        attachmentUrl: body.attachmentUrl ?? null,
-        correctionType,
-        status: CORRECTION_STATUS.PENDING,
-        punchId,
-      },
+    // P1-PAY-B (BR-PAY-009, AUTO-PAY-004): an IBAN in a data-update request is the employee's own financial
+    // change request (requested by him, decided by a second person). The request text keeps the IBAN
+    // masked only, with the reference of the change.
+    const ibanLine = body.reason.trimStart().startsWith(DATA_UPDATE_PREFIX) ? taggedLine(body.reason, DATA_UPDATE_TAGS.IBAN) : null;
+    let financialChange: FinancialChangeView | null = null;
+    const request = await runCompensationTransaction(db, async (tx) => {
+      let reason = body.reason;
+      if (ibanLine) {
+        const iban = normalizeIban(ibanLine.value);
+        const bankName = taggedLine(body.reason, DATA_UPDATE_TAGS.BANK)?.value ?? null;
+        const current = await tx.employee.findUniqueOrThrow({ where: { id: employeeId }, select: { salaryPaymentMethod: true } });
+        const filed = await requestFinancialChange(tx, {
+          actor: { id: user.id, role: user.role, employeeId },
+          employeeId,
+          source: 'PORTAL',
+          bank: { iban, bankName, paymentMethod: current.salaryPaymentMethod === 'WPS' ? 'WPS' : 'BANK_TRANSFER' },
+          note: 'طلب تحديث بيانات من البوابة الذاتية',
+          operationKey: `portal.iban:${employeeId}:${req.headers.get('idempotency-key')?.trim().slice(0, 100) || Date.now()}`,
+          ipAddress: getClientIp(req),
+        });
+        financialChange = filed.changes[0] ?? null;
+        const lines = body.reason.split(/\r?\n/);
+        lines[ibanLine.index] = `${DATA_UPDATE_TAGS.IBAN}: ${maskedIban(iban.slice(-4))}${financialChange ? ` (طلب تغيير مالي ${financialChange.id})` : ''}`;
+        reason = lines.join('\n');
+      }
+      return tx.attendanceCorrection.create({
+        data: {
+          employeeId,
+          date: body.date,
+          reason,
+          attachmentUrl: body.attachmentUrl ?? null,
+          correctionType,
+          status: CORRECTION_STATUS.PENDING,
+          punchId,
+        },
+      });
     });
 
     await logAudit({
@@ -93,7 +135,7 @@ export async function POST(req: Request) {
     });
 
     const message = hrDirect ? 'تم رفع الطلب إلى الموارد البشرية' : 'تم رفع طلب تصحيح البصمة';
-    return NextResponse.json({ message, request }, { status: 201 });
+    return NextResponse.json({ message, request, financialChange }, { status: 201 });
   } catch (err) {
     return handleApiError(err, 'portal/correction:POST');
   }

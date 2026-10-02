@@ -1,0 +1,11 @@
+# /etc/systemd/system/radeef-jobs@apply-financial-changes.timer: daily 00:20 + up to 10 min (financial changes decided by a second person take effect on their date, P1-PAY-B)
+[Unit]
+Description=Radeef background job apply-financial-changes (schedule)
+
+[Timer]
+OnCalendar=*-*-* 00:20:00 Asia/Riyadh
+RandomizedDelaySec=10min
+Persistent=true
+
+[Install]
+WantedBy=timers.target

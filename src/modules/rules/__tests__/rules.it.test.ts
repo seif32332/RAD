@@ -2,6 +2,7 @@
 // Opt-in: RULE_IT=1 with DATABASE_URL pointing at a THROWAWAY database (rows are not cleaned up).
 import { randomUUID } from 'crypto';
 import { describe, expect, it } from 'vitest';
+import { employeeFixture } from '@/test/money-fixtures';
 
 const RUN = process.env.RULE_IT === '1';
 
@@ -297,13 +298,11 @@ describe.skipIf(!RUN)('rules on PostgreSQL', { timeout: 60_000 }, async () => {
   it('call site: the leave balance uses the company override (getEmployeeLeaveBalance), the legal value without one', async () => {
     const t = tag();
     const c = await company(t);
-    const emp = await prisma.employee.create({
-      data: {
+    const emp = await employeeFixture({
         employeeId: `RULE-${t}`, firstNameArabic: 'موظف', lastNameArabic: t, nationality: 'SA', iqamaOrIdNumber: `RULE${t}`,
         iqamaOrIdExp: new Date('2030-01-01'), dateOfBirth: new Date('1990-01-01'), gender: 'M', joinDate: new Date('2025-01-01'),
         basicSalary: 5000, legalCompanyId: c.id,
-      },
-    });
+      });
     const asOf = new Date('2026-01-01');
     expect((await getEmployeeLeaveBalance(prisma, emp.id, { asOf })).accrued).toBe(21);
     await setCompanyRuleOverride(

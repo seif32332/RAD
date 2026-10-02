@@ -6,6 +6,7 @@ import { randomUUID } from 'crypto';
 import { describe, expect, it } from 'vitest';
 import { allowanceLine } from '@/lib/payroll-core';
 import { moneyFixture } from '@/test/money-fixtures';
+import { employeeFixture } from '@/test/money-fixtures';
 
 const RUN = process.env.EFF_IT === '1';
 
@@ -26,8 +27,7 @@ describe.skipIf(!RUN)('effective periods on PostgreSQL', { timeout: 60_000 }, as
     return prisma.company.create({ data: { nameArabic: `شركة ${t}`, commercialRegNum: `IT-${t}`, commercialRegExp: new Date('2030-01-01') } });
   }
   async function employee(t: string, data: Record<string, unknown> = {}) {
-    return prisma.employee.create({
-      data: {
+    return employeeFixture({
         employeeId: `IT-${t}`,
         firstNameArabic: 'موظف',
         lastNameArabic: t,
@@ -39,10 +39,11 @@ describe.skipIf(!RUN)('effective periods on PostgreSQL', { timeout: 60_000 }, as
         joinDate: new Date('2024-01-01'),
         basicSalary: 5000,
         ...data,
-      },
-    });
+      }, { openings: false });
   }
-  const tx = <T>(fn: (t: Parameters<Parameters<typeof prisma.$transaction>[0]>[0]) => Promise<T>) => prisma.$transaction(fn);
+  // P1-PAY-B: CompensationPeriod / BankIdentityPeriod are money tables; the primitive's writes run here
+  // inside the test fixture operation (in the application, inside compensation's gateway operations).
+  const tx = <T>(fn: (t: import('@/modules/platform').TxClient) => Promise<T>) => moneyFixture(fn);
   const comp = (basicSalary: number) => ({ basicSalary, allowances: [{ name: 'بدل سكن', line: 'HOUSING' as const, amount: 1000, countsTowardGosi: true }] });
 
   it('the database refuses two overlapping active periods (EXCLUDE, INV-EFF-01), not only the application', async () => {
@@ -79,9 +80,11 @@ describe.skipIf(!RUN)('effective periods on PostgreSQL', { timeout: 60_000 }, as
     const t = tag();
     const e = await employee(t);
     const { period } = await tx((t1) => openPeriod(t1, 'COMPENSATION', { employeeId: e.id, validFrom: '2024-01-01', source: src(t), attrs: comp(5000) }, { key: `${t}:o`, actor: SYS }));
-    await expect(prisma.compensationPeriod.update({ where: { id: period.id }, data: { basicSalary: 9999 } })).rejects.toThrow(/append-only/);
-    await expect(prisma.compensationPeriod.update({ where: { id: period.id }, data: { validTo: new Date('2025-01-01') } })).rejects.toThrow(/append-only/);
-    await expect(prisma.compensationPeriod.delete({ where: { id: period.id } })).rejects.toThrow(/never deleted/);
+    // P1-PAY-B: money.gateway refuses the write first; inside a gateway operation the trigger still refuses it.
+    await expect(prisma.compensationPeriod.update({ where: { id: period.id }, data: { basicSalary: 9999 } })).rejects.toMatchObject({ details: { code: 'MONEY_GATEWAY_DIRECT_WRITE' } });
+    await expect(tx((t1) => t1.compensationPeriod.update({ where: { id: period.id }, data: { basicSalary: 9999 } }))).rejects.toThrow(/append-only/);
+    await expect(tx((t1) => t1.compensationPeriod.update({ where: { id: period.id }, data: { validTo: new Date('2025-01-01') } }))).rejects.toThrow(/append-only/);
+    await expect(tx((t1) => t1.compensationPeriod.delete({ where: { id: period.id } }))).rejects.toThrow(/never deleted/);
   });
 
   it('supersede keeps the lineage: the successor inherits lineageId and points at the row it replaces', async () => {

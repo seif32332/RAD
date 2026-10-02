@@ -5,7 +5,7 @@ import { prisma } from '@/lib/prisma';
 import { requireUser, getClientIp } from '@/lib/auth';
 import { ROLE_GROUPS } from '@/lib/constants';
 import { handleApiError, badRequest, HttpError } from '@/lib/http';
-import { addDays } from '@/lib/dates';
+import { addDays, todayKey } from '@/lib/dates';
 import { roundMoney, toNumber } from '@/lib/money';
 import { logAudit } from '@/lib/audit';
 import { authz, companiesAllowed, resolveActor, scopedContext, scopedPrisma } from '@/modules/iam';
@@ -50,8 +50,9 @@ import {
 import { normalizeIban } from '@/lib/iban';
 import { resolveWorkPatternId } from '@/modules/calendar';
 import { valueAt } from '@/modules/rules';
-import { editEmployeePay, setInitialAllowances, type EmployeePayChange } from '@/modules/compensation';
-import { setEmployeeGosiDeduction } from '@/modules/payroll';
+import { requestFinancialChange, type FinancialChangeView } from '@/modules/compensation';
+import { assertNoFinalizedPayrollFrom, setEmployeeGosiDeduction } from '@/modules/payroll';
+import type { PaymentMethod } from '@prisma/client';
 import { moneyActorOf } from '@/modules/platform';
 
 export const dynamic = 'force-dynamic';
@@ -203,6 +204,10 @@ export async function POST(req: Request) {
       throw badRequest('صيغة الطلب غير صحيحة');
     }
     const validateOnly = isTruthyFlag(new URL(req.url).searchParams.get('validateOnly')) || isTruthyFlag(formData.get('validateOnly'));
+    // P1-PAY-B (BR-PAY-009 IMPORT): every pay change of the file is a request of this run (one row = one
+    // request per field), approved together by another person (POST /api/financial-changes, batchKey).
+    const batchKey = `import:${user.id}:${Date.now()}`;
+    let financialChangeCount = 0;
     const file = formData.get('file');
     if (!file || typeof file === 'string') throw badRequest('لم يتم رفع أي ملف');
     if (file.size === 0) throw badRequest('الملف فارغ');
@@ -540,9 +545,9 @@ export async function POST(req: Request) {
           if (txt(raw.maritalStatus)) updateData.maritalStatus = cellText(raw.maritalStatus);
           if (txt(raw.mobileNumber)) updateData.mobileNumber = cellText(raw.mobileNumber);
           if (txt(raw.email)) updateData.email = cellText(raw.email).toLowerCase();
-          // Pay columns (money.gateway): collected here, written only when CHANGED, through compensation
-          // (and payroll's gosiDeduction) below — never on one's own row (BR-PAY-001).
-          const payIn: EmployeePayChange = {};
+          // Pay columns: collected here; a CHANGED salary / allowances / bank identity becomes a financial
+          // change request below (P1-PAY-B), payroll's gosiDeduction its own operation.
+          const payIn: { basicSalary?: number; salaryPaymentMethod?: PaymentMethod; ibanNumber?: string | null; bankName?: string | null } = {};
           if (iban) payIn.ibanNumber = iban;
           if (bankName) payIn.bankName = bankName;
           if (txt(raw.jobTitle)) updateData.jobTitle = cellText(raw.jobTitle);
@@ -582,7 +587,7 @@ export async function POST(req: Request) {
                 await tx.employee.update({ where: { id: existingEmp.id }, data: updateData });
               }
               // Replace recurring allowances only when the row carries allowance amounts (one-off bonuses
-              // are never touched), and only what CHANGED is written (compensation.editEmployeePay).
+              // are never touched), and only what CHANGED is written (as a financial change request of this run, P1-PAY-B).
               const cur = await tx.employee.findUniqueOrThrow({
                 where: { id: existingEmp.id },
                 select: {
@@ -590,24 +595,32 @@ export async function POST(req: Request) {
                   allowances: { where: { isMonthly: true }, select: { name: true, amount: true, countsTowardGosi: true, allowanceType: true } },
                 },
               });
-              const pay: EmployeePayChange = {};
-              if (payIn.basicSalary !== undefined && payIn.basicSalary !== cur.basicSalary) pay.basicSalary = payIn.basicSalary;
-              if (payIn.salaryPaymentMethod !== undefined && payIn.salaryPaymentMethod !== cur.salaryPaymentMethod) pay.salaryPaymentMethod = payIn.salaryPaymentMethod;
-              if (payIn.ibanNumber !== undefined && payIn.ibanNumber !== cur.ibanNumber) pay.ibanNumber = payIn.ibanNumber;
-              if (payIn.bankName !== undefined && payIn.bankName !== cur.bankName) pay.bankName = payIn.bankName;
+              const basicChanged = payIn.basicSalary !== undefined && payIn.basicSalary !== cur.basicSalary;
+              const bankChanged =
+                (payIn.salaryPaymentMethod !== undefined && payIn.salaryPaymentMethod !== cur.salaryPaymentMethod) ||
+                (payIn.ibanNumber !== undefined && payIn.ibanNumber !== cur.ibanNumber) ||
+                (payIn.bankName !== undefined && payIn.bankName !== cur.bankName);
               const key = (x: { name: string; amount: number; countsTowardGosi: boolean; allowanceType: string | null }) => JSON.stringify([x.name, roundMoney(x.amount), !!x.countsTowardGosi, x.allowanceType ?? null]);
               const sameAllowances = cur.allowances.map(key).sort().join('|') === allowances.map(key).sort().join('|');
+              const allowancesChanged = allowances.length > 0 && !sameAllowances;
               const actor = moneyActorOf(user);
               const opKey = `employee.import.pay:${existingEmp.id}:${user.id}:${Date.now()}`;
-              await editEmployeePay(tx, {
-                actor,
-                employeeId: existingEmp.id,
-                companyId: cur.legalCompanyId,
-                pay,
-                allowances: allowances.length > 0 && !sameAllowances ? allowances : undefined,
-                before: { basicSalary: cur.basicSalary, salaryPaymentMethod: cur.salaryPaymentMethod, bankName: cur.bankName, allowances: cur.allowances },
-                operationKey: opKey,
-              });
+              if (basicChanged || allowancesChanged || bankChanged) {
+                const todayDay = todayKey();
+                if (basicChanged || allowancesChanged) await assertNoFinalizedPayrollFrom(tx, existingEmp.id, todayDay);
+                const filed = await requestFinancialChange(tx, {
+                  actor,
+                  employeeId: existingEmp.id,
+                  source: 'IMPORT',
+                  compensation: basicChanged || allowancesChanged ? { basicSalary: payIn.basicSalary ?? cur.basicSalary, allowances: allowancesChanged ? allowances : cur.allowances } : null,
+                  bank: bankChanged
+                    ? { iban: payIn.ibanNumber !== undefined ? payIn.ibanNumber : cur.ibanNumber, bankName: payIn.bankName !== undefined ? payIn.bankName : cur.bankName, paymentMethod: payIn.salaryPaymentMethod ?? cur.salaryPaymentMethod }
+                    : null,
+                  batchKey,
+                  operationKey: opKey,
+                });
+                financialChangeCount += filed.changes.length;
+              }
               if (gosiIn !== undefined && gosiIn !== cur.gosiDeduction) {
                 await setEmployeeGosiDeduction(tx, { actor, employeeId: existingEmp.id, gosiDeduction: gosiIn, before: cur.gosiDeduction, companyId: cur.legalCompanyId, operationKey: `${opKey}:gosi` });
               }
@@ -684,8 +697,7 @@ export async function POST(req: Request) {
             // Default: the worker's statutory notice (art. 75) of the company on the join date (P1-RULE).
             noticePeriodDays: noticeDays !== null ? Math.max(0, Math.round(noticeDays)) : await valueAt('NOTICE_DAYS_EMPLOYEE', legalCompanyId, joinDate, prisma),
             leaveAccrualStartDate: leaveAccrualStartDate ?? joinDate,
-            basicSalary: roundMoney(basicSalary ?? 0),
-            gosiDeduction: roundMoney(gosiDeduction ?? 0),
+            // P1-PAY-B: no pay column on the new row; the pay is a request of this run (below).
             directManagerId,
           };
 
@@ -717,8 +729,28 @@ export async function POST(req: Request) {
                   data: { ...createData, employeeId: code },
                   select: KNOWN_EMPLOYEE_SELECT,
                 });
-                // The new employee's recurring allowances through compensation (money.gateway).
-                await setInitialAllowances(tx, { actor: moneyActorOf(user), employeeId: emp.id, allowances, companyId: legalCompanyId, operationKey: `employee.import.allowances:${emp.id}` });
+                // The new employee's pay: a request of this run (salary + allowances from the join date, and the
+                // bank identity), decided by another person (P1-PAY-B, BR-PAY-009).
+                const actor = moneyActorOf(user);
+                let filed: FinancialChangeView[] = [];
+                if (basicSalary !== null && roundMoney(basicSalary) > 0) {
+                  filed = (
+                    await requestFinancialChange(tx, {
+                      actor,
+                      employeeId: emp.id,
+                      source: 'IMPORT',
+                      effectiveDate: joinDate.toISOString().slice(0, 10),
+                      compensation: { basicSalary: roundMoney(basicSalary), allowances },
+                      bank: salaryPaymentMethod === 'CASH' || iban ? { iban: iban ?? null, bankName: bankName ?? null, paymentMethod: salaryPaymentMethod } : null,
+                      batchKey,
+                      operationKey: `employee.import.pay:${emp.id}`,
+                    })
+                  ).changes;
+                }
+                if (roundMoney(gosiDeduction ?? 0) > 0) {
+                  await setEmployeeGosiDeduction(tx, { actor, employeeId: emp.id, gosiDeduction: roundMoney(gosiDeduction ?? 0), before: 0, companyId: legalCompanyId, operationKey: `employee.import.gosi:${emp.id}` });
+                }
+                financialChangeCount += filed.length;
                 return emp;
               },
               { start: nextCodeNumber },
@@ -771,8 +803,10 @@ export async function POST(req: Request) {
       : `تم استيراد ${success.length} موظف بنجاح${errors.length > 0 ? ` مع ${errors.length} خطأ` : ''}${warnPart}`;
 
     return NextResponse.json({
-      message,
+      message: financialChangeCount ? `${message}. ${financialChangeCount} طلب تغيير مالي بانتظار اعتماد شخص ثانٍ` : message,
       validateOnly,
+      financialChanges: financialChangeCount,
+      batchKey: financialChangeCount ? batchKey : null,
       totalRows: rows.length,
       successCount: success.length,
       createdCount,

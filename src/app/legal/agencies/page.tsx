@@ -5,6 +5,7 @@ import { FileSignature, UploadCloud, CheckCircle, FileText, UserCircle, Calendar
 import DashboardLayout from '@/components/DashboardLayout';
 import { toast, readApiError } from '@/components/ui/feedback';
 import { formatDate, daysUntil } from '@/lib/dates';
+import { CompanyField, companyBody, useSelectableCompanies } from '@/components/CompanyField';
 
 interface Agency {
   id: string;
@@ -37,6 +38,8 @@ export default function LegalAgenciesPage() {
   const [isSubmitting, setIsSubmitting] = useState(false);
 
   const [form, setForm] = useState(EMPTY_FORM);
+  const companies = useSelectableCompanies();
+  const [companyId, setCompanyId] = useState('');
 
   const [uploading, setUploading] = useState(false);
 
@@ -95,7 +98,7 @@ export default function LegalAgenciesPage() {
       const res = await fetch('/api/legal/agencies', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(form)
+        body: JSON.stringify({ ...form, ...companyBody(companies, companyId) })
       });
       if (res.status === 401) { window.location.href = '/login'; return; }
       if (!res.ok) { toast.error(await readApiError(res, 'تعذر حفظ الوكالة')); return; }
@@ -153,7 +156,8 @@ export default function LegalAgenciesPage() {
 
                  <div className="mb-10">
                    <h3 className="font-extrabold text-lg text-teal-900 flex items-center gap-2 mb-6"><KeyRound size={20}/> بيانات الوكالة والمحكمة</h3>
-                   <div className="bg-slate-50 p-6 border border-slate-100 rounded-[1.5rem]">
+                   <div className="bg-slate-50 p-6 border border-slate-100 rounded-[1.5rem] space-y-4">
+                      <CompanyField companies={companies} value={companyId} onChange={setCompanyId} />
                       <div>
                          <label className="text-[12px] font-extrabold text-slate-700 mb-2 block">رقم الوكالة المرجعي (الموثق)</label>
                          <input type="text" required placeholder="رقم الصك أو رقم التوثيق..." value={form.agencyNumber} onChange={(e) => setForm({...form, agencyNumber: e.target.value})} className="w-full px-5 py-3.5 bg-white border border-slate-200 focus:border-teal-500 rounded-2xl font-black text-[15px] text-teal-900 focus:outline-none focus:ring-4 focus:ring-teal-50 transition-all shadow-sm" />

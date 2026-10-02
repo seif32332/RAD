@@ -5,6 +5,7 @@
 // double click / double request can never apply side effects twice. Callers must run these
 // inside `prisma.$transaction(async (tx) => ...)` and pass `tx`.
 import 'server-only';
+import { assertPayrollReady } from '@/modules/compensation';
 import type { LeaveStatus, LeaveType, Prisma } from '@prisma/client';
 import type { AuthUser } from '@/lib/auth';
 import {
@@ -178,7 +179,7 @@ const DATA_UPDATE_FIELD_LABELS: Record<'mobileNumber' | 'email', string> = {
   email: DATA_UPDATE_TAGS.EMAIL,
 };
 
-export const IBAN_MANUAL_UPDATE_MESSAGE = 'تغيير الآيبان يتطلب تعديلاً يدوياً في ملف الموظف بعد التحقق من شهادة الآيبان.';
+export const IBAN_MANUAL_UPDATE_MESSAGE = 'تغيير الآيبان طلب تغيير مالي مستقل قدّمه الموظف، يعتمده شخص ثانٍ من قائمة طلبات التغيير المالي بعد التحقق من شهادة الآيبان.';
 
 /** HR approval message naming exactly the fields that were applied. */
 export function describeDataUpdateOutcome(
@@ -585,6 +586,8 @@ export async function approveLeave(tx: Db, leaveId: string, stage: 'MANAGER' | '
     if (r.count === 0) throw conflict('تمت موافقة المدير على هذا الطلب مسبقاً');
   } else {
     if (!roleIn(user.role, ROLE_GROUPS.HR)) throw forbidden();
+    // BR-PAY-009 (P1-PAY-B): a leave with a deduction is a money act: refused before the pay is applied.
+    if ((leave.totalDeduction ?? 0) > 0 || (leave.unpaidDays ?? 0) > 0) await assertPayrollReady(tx, leave.employeeId);
     const canSkipManager = !leave.employee.directManagerId || roleIn(user.role, ROLE_GROUPS.OWNER);
     if (!leave.isManagerApproved && !canSkipManager) throw conflict('الطلب بانتظار موافقة المدير المباشر أولاً');
     const r = await tx.leave.updateMany({

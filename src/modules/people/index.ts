@@ -70,3 +70,31 @@ export async function listEmployeeIds(db: Db, where: Prisma.EmployeeWhereInput, 
   const rows = await db.employee.findMany({ where: { AND: [where, scope] }, select: { id: true }, orderBy: { id: 'asc' } });
   return rows.map((r) => r.id);
 }
+
+/**
+ * The employee columns compensation reads (P1-PAY-B): the identity dates and company it needs to file and
+ * apply a financial change, and its own projection columns (basicSalary, the bank columns, payrollReady),
+ * which only compensation's projector writes (ARC-PAY-A4).
+ */
+export const EMPLOYEE_COMPENSATION_SELECT = {
+  id: true,
+  legalCompanyId: true,
+  joinDate: true,
+  isTerminated: true,
+  basicSalary: true,
+  payrollReady: true,
+  ibanNumber: true,
+  bankName: true,
+  salaryPaymentMethod: true,
+} as const satisfies Prisma.EmployeeSelect;
+
+export type EmployeeCompensationRow = Prisma.EmployeeGetPayload<{ select: typeof EMPLOYEE_COMPENSATION_SELECT }>;
+
+export async function employeeForCompensation(db: Db, employeeId: string): Promise<EmployeeCompensationRow | null> {
+  return db.employee.findUnique({ where: { id: employeeId }, select: EMPLOYEE_COMPENSATION_SELECT });
+}
+
+/** Every employee in service (not terminated), with the compensation columns (INV-SAL-01 compares them with the facts). */
+export async function employeesInServiceForCompensation(db: Db): Promise<EmployeeCompensationRow[]> {
+  return db.employee.findMany({ where: { isTerminated: false }, select: EMPLOYEE_COMPENSATION_SELECT, orderBy: { id: 'asc' } });
+}

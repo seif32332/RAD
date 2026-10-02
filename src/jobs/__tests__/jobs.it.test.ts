@@ -12,6 +12,7 @@ import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
 import type { DomainEventRecord, EventConsumer } from '@/modules/platform';
+import { employeeFixture } from '@/test/money-fixtures';
 
 const RUN = process.env.JOBS_IT === '1';
 
@@ -30,14 +31,12 @@ describe.skipIf(!RUN)('background jobs on PostgreSQL (P1-FND-JOBS)', { timeout: 
     return prisma.company.create({ data: { nameArabic: `شركة ${tag} ${i}`, commercialRegNum: `9${tag}${i}`.slice(0, 20), commercialRegExp: new Date('2030-01-01') } });
   }
   async function newEmployee(tag: string, i: number, over: Record<string, unknown> = {}) {
-    return prisma.employee.create({
-      data: {
+    return employeeFixture({
         employeeId: `J-${tag}-${i}`, firstNameArabic: 'سالم', lastNameArabic: 'الاختبار', nationality: 'سعودي',
         iqamaOrIdNumber: `1${String(Date.now()).slice(-6)}${i}${Math.floor(Math.random() * 1000)}`, iqamaOrIdExp: new Date('2030-01-01'),
         dateOfBirth: new Date('1990-01-01'), gender: 'MALE', joinDate: new Date('2020-01-01'), basicSalary: 8000,
         ...over,
-      },
-    });
+      });
   }
 
   it('JobRun: a real run is recorded RUNNING -> SUCCEEDED with its summary', async () => {
@@ -194,7 +193,10 @@ describe.skipIf(!RUN)('background jobs on PostgreSQL (P1-FND-JOBS)', { timeout: 
     expect(ra.applied + rb.applied).toBe(1);
     expect(await prisma.salaryChange.count({ where: { employeeId: { in: [ea.id, eb.id] }, isPlanned: false } })).toBe(2);
     const after = await prisma.employee.findMany({ where: { id: { in: [ea.id, eb.id] } }, orderBy: { employeeId: 'asc' }, select: { basicSalary: true, jobTitle: true } });
-    expect(after).toEqual([{ basicSalary: 9100, jobTitle: 'مشرف' }, { basicSalary: 9200, jobTitle: null }]);
+    // P1-PAY-B: the pay is a CompensationPeriod from the order's date (the Employee column shows the pay in force today).
+    expect(after).toEqual([{ basicSalary: 8000, jobTitle: 'مشرف' }, { basicSalary: 8000, jobTitle: null }]);
+    const periods = await prisma.compensationPeriod.findMany({ where: { employeeId: { in: [ea.id, eb.id] }, supersededAt: null, validFrom: new Date('2150-01-01') }, select: { employeeId: true, basicSalary: true, sourceType: true } });
+    expect(periods.map((p) => [p.employeeId, Number(p.basicSalary), p.sourceType]).sort()).toEqual([[ea.id, 9100, 'CHANGE_ORDER'], [eb.id, 9200, 'CHANGE_ORDER']].sort());
   });
 
   it('documents-retention, company by company: purges the company\'s due documents once; a second run changes nothing', async () => {

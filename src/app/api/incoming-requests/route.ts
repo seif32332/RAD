@@ -4,6 +4,8 @@
 // Every approval/rejection goes through the shared workflow helpers (src/lib/hr-workflows.ts,
 // src/lib/finance.ts) or an atomic status guard inside prisma.$transaction, so a double click
 // can never apply side effects twice.
+import { requestFinancialChange, type FinancialChangeView } from '@/modules/compensation';
+import { moneyActorOf } from '@/modules/platform';
 import { after, NextResponse } from 'next/server';
 import { z } from 'zod';
 import type { LeaveType, Prisma } from '@prisma/client';
@@ -1125,6 +1127,8 @@ interface OnboardingResult {
   dataReviewNote: string | null;
   /** The request gave no specific nationality (legacy "NON_SAUDI"): HR must set it. */
   nationalityNeedsReview: boolean;
+  /** P1-PAY-B: the pay requests of the hire, waiting for a second person. */
+  financialChanges: FinancialChangeView[];
 }
 
 /**
@@ -1246,9 +1250,8 @@ async function approveOnboarding(ctx: ActionCtx, edits: OnboardingEdits): Promis
             jobTitle: m.jobTitle,
             joinDate: m.joinDate ?? today(),
             contractType,
-            bankName: m.bankName,
-            ibanNumber: m.ibanNumber,
-            basicSalary: roundMoney(m.basicSalary ?? 0),
+            // P1-PAY-B: no pay column on the new employee (money.gateway refuses it); the salary and the
+            // bank identity are a financial change request of the approver, decided by another person.
             iqamaCopyUrl: m.iqamaCopyUrl,
             passportCopyUrl: m.passportCopyUrl,
             ibanCertificateUrl: m.ibanCertificateUrl,
@@ -1258,8 +1261,27 @@ async function approveOnboarding(ctx: ActionCtx, edits: OnboardingEdits): Promis
             // Required dates filled with today() above: flagged on the employee file for HR.
             dataReviewNote,
           },
-          select: { id: true, employeeId: true },
+          select: { id: true, employeeId: true, joinDate: true },
         });
+
+        // The pay of the hire (BR-PAY-009 ONBOARDING): requested by the approver of the onboarding, decided
+        // by a second person (the approver's own changes to the offered pay included, pay-to-be §12).
+        let financialChanges: FinancialChangeView[] = [];
+        if (m.basicSalary !== null && roundMoney(m.basicSalary) > 0) {
+          financialChanges = (
+            await requestFinancialChange(tx, {
+              actor: moneyActorOf(ctx.user),
+              employeeId: employee.id,
+              source: 'ONBOARDING',
+              effectiveDate: employee.joinDate.toISOString().slice(0, 10),
+              compensation: { basicSalary: roundMoney(m.basicSalary), allowances: [] },
+              bank: m.ibanNumber ? { iban: m.ibanNumber, bankName: m.bankName ?? null, paymentMethod: 'BANK_TRANSFER' } : null,
+              note: `طلب مباشرة عمل ${ctx.id}`,
+              operationKey: `onboarding.pay:${ctx.id}`,
+              ipAddress: ctx.ip,
+            })
+          ).changes;
+        }
 
         await Promise.all([
           logAudit(
@@ -1299,7 +1321,7 @@ async function approveOnboarding(ctx: ActionCtx, edits: OnboardingEdits): Promis
             tx,
           ),
         ]);
-        return { employeeId: employee.id, employeeCode: employee.employeeId, placeholderFields, dataReviewNote, nationalityNeedsReview: nationality.needsReview };
+        return { employeeId: employee.id, employeeCode: employee.employeeId, placeholderFields, dataReviewNote, nationalityNeedsReview: nationality.needsReview, financialChanges };
       });
     } catch (err) {
       if (attempt < EMPLOYEE_CODE_ATTEMPTS && isUniqueViolationOn(err, 'employeeId')) continue;

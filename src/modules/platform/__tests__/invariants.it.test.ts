@@ -10,6 +10,7 @@
 // rejectDiscrepancyAction, resolveDiscrepancy, confirmSingleOperatorAct.
 import { randomUUID } from 'crypto';
 import { beforeAll, describe, expect, it } from 'vitest';
+import { employeeFixture } from '@/test/money-fixtures';
 
 const RUN = process.env.INV_IT === '1';
 
@@ -43,8 +44,7 @@ describe.skipIf(!RUN)('invariant engine on PostgreSQL (P1-FND-INV)', { timeout: 
 
   async function employee(k: 'A' | 'B', over: Record<string, unknown>) {
     return (
-      await prisma.employee.create({
-        data: {
+      await employeeFixture({
           employeeId: `INV-${tag}-${++seq}`,
           firstNameArabic: 'موظف',
           lastNameArabic: 'اختبار',
@@ -59,8 +59,7 @@ describe.skipIf(!RUN)('invariant engine on PostgreSQL (P1-FND-INV)', { timeout: 
           actualCompanyId: co[k],
           branchId: branch[k],
           ...over,
-        },
-      })
+        })
     ).id;
   }
 

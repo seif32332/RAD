@@ -4,6 +4,7 @@ import React, { useState, useEffect, useCallback } from 'react';
 import { Briefcase, AlertCircle, Plus, Trash2, CheckCircle, Package, Clock, Search, MoreVertical, Settings2, PackageMinus, ArrowRightLeft, Ban, X, UserCheck, RefreshCw } from 'lucide-react';
 import DashboardLayout from '@/components/DashboardLayout';
 import SearchableSelect from '@/components/SearchableSelect';
+import { CompanyField, companyBody, useSelectableCompanies } from '@/components/CompanyField';
 import { toast, readApiError } from '@/components/ui/feedback';
 import { formatDate, todayKey } from '@/lib/dates';
 import { useRole } from '@/context/RoleContext';
@@ -51,6 +52,8 @@ export default function AssetsPage() {
   const [loadError, setLoadError] = useState<string | null>(null);
 
   const [employeeId, setEmployeeId] = useState('');
+  const companies = useSelectableCompanies();
+  const [companyId, setCompanyId] = useState('');
   const [searchQuery, setSearchQuery] = useState('');
   const [activeTab, setActiveTab] = useState('ALL'); // ALL, ACTIVE, VACANT, DAMAGED, TERMINATED
   const [damageReason, setDamageReason] = useState('');
@@ -202,7 +205,9 @@ export default function AssetsPage() {
         employeeId: employeeId || null,
         assetType: item.assetType,
         description: item.description,
-        receiveDate: employeeId ? item.receiveDate : null
+        receiveDate: employeeId ? item.receiveDate : null,
+        // A vacant asset belongs to the chosen company; a held one follows its holder.
+        ...(employeeId ? {} : companyBody(companies, companyId)),
       }));
 
       const res = await fetch('/api/assets', {
@@ -297,6 +302,12 @@ export default function AssetsPage() {
                   ...employees.map(e => ({ label: `${e.firstNameArabic} ${e.lastNameArabic} - #${e.employeeId}`, value: e.id }))
                 ]}
               />
+              {!employeeId && (
+                <div className="mt-4">
+                  <CompanyField companies={companies} value={companyId} onChange={setCompanyId} id="asset-company"
+                    className="w-full px-5 py-3.5 bg-white border border-slate-200 focus:border-indigo-400 rounded-2xl font-bold text-[14px] focus:outline-none focus:ring-4 focus:ring-indigo-50 transition-all" />
+                </div>
+              )}
             </div>
 
             <div className="space-y-4">

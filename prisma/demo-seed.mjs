@@ -98,7 +98,6 @@ const PREV_YEAR = CUR_MONTH === 1 ? CUR_YEAR - 1 : CUR_YEAR;
 const PREV2_MONTH = PREV_MONTH === 1 ? 12 : PREV_MONTH - 1;
 const PREV2_YEAR = PREV_MONTH === 1 ? PREV_YEAR - 1 : PREV_YEAR;
 const GOSI_NEW_REGIME_START = new Date(Date.UTC(2024, 6, 3));
-const daysBetween = (a, b) => Math.round((b.getTime() - a.getTime()) / DAY_MS) + 1; // inclusive
 const round2 = (n) => Math.round(n * 100) / 100;
 
 // ---------------------------------------------------------------------------------------------

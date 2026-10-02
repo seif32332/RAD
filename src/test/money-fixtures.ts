@@ -48,3 +48,54 @@ export async function payrollLineFixture<T extends { employeeId: string; year: n
   });
   return tx.payroll.create({ data: { ...(data as Record<string, unknown>), companyId, payrollMonthId: month.id } as never });
 }
+
+/**
+ * An employee WITH PAY as a fixture (P1-PAY-B: money.gateway refuses the pay columns on an employee
+ * CREATE outside compensation). The row is created inside the fixture operation, then given the legacy
+ * openings a migrated employee has (9u / 9zg, through the single writer effective_open_legacy_period):
+ * a CompensationPeriod (basic salary + the recurring allowances created with it) from the join date,
+ * and a BankIdentityPeriod (IBAN or cash). payrollReady defaults to true, like an existing employee.
+ * So payroll reads the fixture's pay from the facts, as it does for a real tenant.
+ */
+export async function employeeFixture<T extends Record<string, unknown>>(data: T, opts: { openings?: boolean } = {}) {
+  const { openLegacyPeriod } = await import('@/modules/platform');
+  const { ibanFingerprint, ibanLast4 } = await import('@/modules/compensation');
+  const { normalizeIban } = await import('@/lib/iban');
+  return moneyFixture(async (tx) => {
+    const emp = await tx.employee.create({ data: { payrollReady: true, ...(data as Record<string, unknown>) } as never });
+    if (opts.openings === false) return emp; // a test of the period primitive opens its own periods
+    const actor = { type: 'SYSTEM' as const, id: 'test.employeeFixture' };
+    const from = emp.joinDate.toISOString().slice(0, 10);
+    const to = emp.isTerminated && emp.terminationDate ? new Date(emp.terminationDate.getTime() + 86_400_000).toISOString().slice(0, 10) : null;
+    if (emp.basicSalary > 0 && (!to || to > from)) {
+      const recurring = await tx.allowance.findMany({ where: { employeeId: emp.id, isMonthly: true }, orderBy: [{ createdAt: 'asc' }, { id: 'asc' }] });
+      const { allowanceLineOf } = await import('@/modules/compensation');
+      await openLegacyPeriod(
+        tx,
+        'COMPENSATION',
+        {
+          employeeId: emp.id,
+          validFrom: from,
+          validTo: to,
+          attrs: {
+            basicSalary: Math.round(emp.basicSalary * 100) / 100,
+            allowances: recurring.map((a) => ({ allowanceId: a.id, name: a.name, allowanceType: a.allowanceType, line: allowanceLineOf(a.allowanceType, a.name), amount: Math.round(a.amount * 100) / 100, countsTowardGosi: a.countsTowardGosi })),
+          },
+        },
+        actor,
+      );
+    }
+    const iban = normalizeIban(emp.ibanNumber ?? '');
+    if (emp.salaryPaymentMethod === 'CASH') {
+      await openLegacyPeriod(tx, 'BANK_IDENTITY', { employeeId: emp.id, validFrom: from, attrs: { paymentMethod: 'CASH', bankName: emp.bankName } }, actor);
+    } else if (iban) {
+      await openLegacyPeriod(
+        tx,
+        'BANK_IDENTITY',
+        { employeeId: emp.id, validFrom: from, attrs: { paymentMethod: emp.salaryPaymentMethod, bankName: emp.bankName, ibanEncrypted: iban, ibanFingerprint: ibanFingerprint(iban), ibanLast4: ibanLast4(iban) } },
+        actor,
+      );
+    }
+    return emp;
+  });
+}

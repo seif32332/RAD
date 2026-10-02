@@ -3,12 +3,12 @@
 // platform/effective is the ONLY physical writer of the period tables (ARCH-012); the owning module
 // (`owner`) is the only caller that may open, close or supersede periods of its kind. The table is
 // reached through `delegate` so that one generic primitive serves every kind; later kinds
-// (ContractPeriod, BankIdentityPeriod, GosiRegistrationPeriod) are added here and in the SQL
-// function effective_open_legacy_period (migration 9u, extended by their own migration).
+// (ContractPeriod, GosiRegistrationPeriod) are added here and in the SQL function
+// effective_open_legacy_period (migration 9u, extended by their own migration; BankIdentityPeriod by 9zg).
 import type { TxClient } from '../tx';
 
-export type PeriodKind = 'EMPLOYMENT' | 'COMPENSATION' | 'ASSIGNMENT';
-export const PERIOD_KINDS: readonly PeriodKind[] = ['EMPLOYMENT', 'COMPENSATION', 'ASSIGNMENT'];
+export type PeriodKind = 'EMPLOYMENT' | 'COMPENSATION' | 'ASSIGNMENT' | 'BANK_IDENTITY';
+export const PERIOD_KINDS: readonly PeriodKind[] = ['EMPLOYMENT', 'COMPENSATION', 'ASSIGNMENT', 'BANK_IDENTITY'];
 
 /** Why a row stopped being active (supersedeReason). Void = superseded without a successor (ADR-0002 #3). */
 export type SupersedeReason = 'CORRECTION' | 'CLOSE' | 'VOID';
@@ -46,11 +46,25 @@ export interface AssignmentAttrs {
   workPatternId?: string | null;
 }
 
+/**
+ * The bank identity of an employee (P1-PAY-B, ARC-PAY-A3; 9zg). The IBAN travels encrypted
+ * (src/lib/crypto.ts) with its fingerprint (sha256 of the normalized IBAN) and last 4; a CASH identity
+ * has none. Never back-dated: compensation opens it on the day it is applied (ADR-0001 #8).
+ */
+export interface BankIdentityAttrs {
+  paymentMethod: 'CASH' | 'BANK_TRANSFER' | 'WPS';
+  ibanEncrypted?: string | null;
+  ibanFingerprint?: string | null;
+  ibanLast4?: string | null;
+  bankName?: string | null;
+}
+
 /** The kind's own columns (besides the uniform shape). */
 export interface PeriodAttrsByKind {
   EMPLOYMENT: Record<string, never>;
   COMPENSATION: CompensationAttrs;
   ASSIGNMENT: AssignmentAttrs;
+  BANK_IDENTITY: BankIdentityAttrs;
 }
 
 /** A period row as read from its table (Decimal columns come back as Prisma.Decimal). */
@@ -71,7 +85,7 @@ export interface PeriodRow {
 }
 
 type Where = Record<string, unknown>;
-/** The part of a Prisma model delegate the primitive uses (identical on the three period tables). */
+/** The part of a Prisma model delegate the primitive uses (identical on every period table). */
 export interface PeriodDelegate {
   findUnique(args: { where: { id: string } }): Promise<PeriodRow | null>;
   findFirst(args: { where: Where; orderBy?: Where | Where[] }): Promise<PeriodRow | null>;
@@ -81,15 +95,15 @@ export interface PeriodDelegate {
 }
 
 /** Any client that can read the period tables (root client or transaction). */
-export type PeriodReader = Pick<TxClient, 'employmentPeriod' | 'compensationPeriod' | 'assignmentPeriod'>;
+export type PeriodReader = Pick<TxClient, 'employmentPeriod' | 'compensationPeriod' | 'assignmentPeriod' | 'bankIdentityPeriod'>;
 
 export interface PeriodKindSpec {
   kind: PeriodKind;
-  model: 'EmploymentPeriod' | 'CompensationPeriod' | 'AssignmentPeriod';
+  model: 'EmploymentPeriod' | 'CompensationPeriod' | 'AssignmentPeriod' | 'BankIdentityPeriod';
   /** The module that owns the table and alone calls the primitive for it (DOMAIN_BOUNDARIES §5.2). */
   owner: 'lifecycle' | 'compensation' | 'org';
   /** Event domain: `<domain>.periodOpened | periodSuperseded | periodClosed` (DOMAIN_BOUNDARIES §5.5). */
-  eventDomain: 'employment' | 'compensation' | 'assignment';
+  eventDomain: 'employment' | 'compensation' | 'assignment' | 'bankIdentity';
   /** The kind's own columns, copied to a successor unless replaced. */
   attrColumns: readonly string[];
   /**
@@ -128,6 +142,15 @@ export const KIND_SPECS: Record<PeriodKind, PeriodKindSpec> = {
     attrColumns: ['legalCompanyId', 'actualCompanyId', 'branchId', 'departmentId', 'managerId', 'workPatternId'],
     endInPlace: false,
     delegate: (c) => c.assignmentPeriod as unknown as PeriodDelegate,
+  },
+  BANK_IDENTITY: {
+    kind: 'BANK_IDENTITY',
+    model: 'BankIdentityPeriod',
+    owner: 'compensation',
+    eventDomain: 'bankIdentity',
+    attrColumns: ['paymentMethod', 'ibanEncrypted', 'ibanFingerprint', 'ibanLast4', 'bankName'],
+    endInPlace: false,
+    delegate: (c) => c.bankIdentityPeriod as unknown as PeriodDelegate,
   },
 };
 

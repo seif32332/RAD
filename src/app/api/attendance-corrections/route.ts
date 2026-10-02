@@ -7,7 +7,7 @@ import { ROLE_GROUPS, roleIn } from '@/lib/constants';
 import { conflict, forbidden, handleApiError, notFound, parseBody } from '@/lib/http';
 import { zDate, zId, zOptText, zText } from '@/lib/validation';
 import { logAudit } from '@/lib/audit';
-import { CORRECTION_STATUS, CORRECTION_TYPES, GENERAL_REQUEST_PREFIX, assertCanManageEmployee, managedEmployeesWhere } from '@/lib/hr-workflows';
+import { CORRECTION_STATUS, CORRECTION_TYPES, DATA_UPDATE_PREFIX, GENERAL_REQUEST_PREFIX, assertCanManageEmployee, managedEmployeesWhere, parseDataUpdateRequest } from '@/lib/hr-workflows';
 import { resolveSelfContext, resolveTeamContext } from '@/lib/employee-scope';
 import { authz, resolveActor, scopedContext, scopedPrisma } from '@/modules/iam';
 
@@ -74,6 +74,11 @@ export async function POST(req: Request) {
   try {
     const user = await requireUser(ROLE_GROUPS.ALL);
     const body = await parseBody(req, createSchema);
+    // BR-PAY-009 (RT-PAY-301): an IBAN change is the employee's own request from his portal
+    // (/api/portal/correction), never a data-update line filed here (for oneself or for someone else).
+    if (body.reason.trimStart().startsWith(DATA_UPDATE_PREFIX) && parseDataUpdateRequest(body.reason).ibanRequested) {
+      throw forbidden('تغيير الآيبان يقدّمه الموظف بنفسه من بوابته الذاتية (طلب تغيير مالي)');
+    }
 
     // Reviewers (HR / managers) may file a correction for an employee; others only for themselves.
     let employeeId: string;

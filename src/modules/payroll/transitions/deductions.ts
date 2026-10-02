@@ -12,6 +12,7 @@
 // (BR-PAY-001: WAIVE / SUSPEND / APPROVE); filing a violation, an objection or a waiver request is a
 // request. Once linked to an approved payroll line a deduction no longer moves (isLinkedToPayroll).
 import { conflict, notFound } from '@/lib/http';
+import { assertPayrollReady } from '@/modules/compensation';
 import { roundMoney } from '@/lib/money';
 import { DEDUCTION_STATUS } from '@/lib/constants';
 import { assertTransactionClient, audit, emitEvent, idempotent, runMoneyOperation, type MoneyActor, type MoneyOperation, type MoneyRunInfo, type TxClient } from '@/modules/platform';
@@ -103,6 +104,7 @@ export async function createDeduction(tx: TxClient, input: CreateDeductionInput)
   assertTransactionClient(tx, 'createDeduction');
   const d = input.data;
   return deductionAct(tx, DEDUCTION_CREATE, input, { employeeId: d.employeeId }, async (w, info) => {
+    if (roundMoney(d.amount) > 0) await assertPayrollReady(w, d.employeeId); // BR-PAY-009: no penalty before the pay is applied
     const effective = d.status === DEDUCTION_STATUS.DEDUCTED;
     const row = await w.deduction.create({
       data: {

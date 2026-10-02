@@ -8,6 +8,7 @@
 // (no request scope in vitest).
 import { randomUUID } from 'crypto';
 import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { employeeFixture } from '@/test/money-fixtures';
 
 const RUN = process.env.SCOPE_IT === '1';
 
@@ -52,8 +53,7 @@ describe.skipIf(!RUN)('company scope (P1-FND-SCOPE) on PostgreSQL', { timeout: 6
   const actorOf = (who: Who) => resolveActor(prisma, { id: users[who].id, role: users[who].role as 'HR_MANAGER', employeeId: users[who].employeeId });
 
   async function newEmployee(company: 'A' | 'B', over: Record<string, unknown> = {}) {
-    const e = await prisma.employee.create({
-      data: {
+    const e = await employeeFixture({
         employeeId: `S-${tag}-${++seq}`,
         firstNameArabic: 'موظف',
         lastNameArabic: company,
@@ -69,8 +69,7 @@ describe.skipIf(!RUN)('company scope (P1-FND-SCOPE) on PostgreSQL', { timeout: 6
         branchId: branch[company],
         departmentId: dept[company],
         ...over,
-      },
-    });
+      });
     return e.id;
   }
 

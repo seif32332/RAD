@@ -5,6 +5,7 @@ import { BriefcaseBusiness, FileSignature, UploadCloud, CheckCircle, FileText, D
 import DashboardLayout from '@/components/DashboardLayout';
 import { toast, confirmDialog, readApiError } from '@/components/ui/feedback';
 import { formatDate, daysUntil, toDateInputValue } from '@/lib/dates';
+import { CompanyField, companyBody, useSelectableCompanies } from '@/components/CompanyField';
 
 interface Contract {
   id: string;
@@ -41,6 +42,8 @@ export default function LegalContractsPage() {
   const [editId, setEditId] = useState<string | null>(null);
 
   const [form, setForm] = useState(EMPTY_FORM);
+  const companies = useSelectableCompanies();
+  const [companyId, setCompanyId] = useState('');
 
   const [uploading, setUploading] = useState<Record<AttachmentField, boolean>>({ contractAttachment: false, otherAttachment: false });
 
@@ -112,7 +115,7 @@ export default function LegalContractsPage() {
       const res = await fetch(url, {
         method,
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(form)
+        body: JSON.stringify(editId ? form : { ...form, ...companyBody(companies, companyId) })
       });
       if (res.status === 401) { window.location.href = '/login'; return; }
       if (!res.ok) { toast.error(await readApiError(res, 'تعذر حفظ العقد')); return; }
@@ -216,7 +219,8 @@ export default function LegalContractsPage() {
                  {/* Section: Contract General Details */}
                  <div className="mb-10">
                    <h3 className="font-extrabold text-lg text-blue-900 flex items-center gap-2 mb-6"><FileSignature size={20}/> تفاصيل موضوع العقد</h3>
-                   <div className="bg-slate-50 p-6 border border-slate-100 rounded-[1.5rem]">
+                   <div className="bg-slate-50 p-6 border border-slate-100 rounded-[1.5rem] space-y-4">
+                      {!editId && <CompanyField companies={companies} value={companyId} onChange={setCompanyId} />}
                       <div>
                          <label className="text-[12px] font-extrabold text-slate-700 mb-2 block">مسمى وموضوع العقد / الاتفاقية</label>
                          <input type="text" required placeholder="مثال: عقد توريد معدات، اتفاقية صيانة سنوية، عقد مقاولة..." value={form.title} onChange={(e) => setForm({...form, title: e.target.value})} className="w-full px-5 py-3.5 bg-white border border-slate-200 focus:border-blue-500 rounded-2xl font-black text-[15px] text-blue-900 focus:outline-none focus:ring-4 focus:ring-blue-50 transition-all shadow-sm" />

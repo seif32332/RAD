@@ -4,6 +4,7 @@
 //   import '@/modules/payroll/consumers';
 // A module whose index registers its consumers is imported and asked to register (a deep import of
 // a module's consumers.ts would bypass its public interface, ARCH-001).
+import { INV_SAL_01_ID, payProjectionCheck, registerCompensationConsumers } from '@/modules/compensation';
 import { registerOffboardingConsumers } from '@/modules/offboarding';
 import { INV_PAY_04_ID, employmentChangeCheck, registerPayrollConsumers } from '@/modules/payroll';
 import { consumerRegistry, registerConsumer, registerInvariantCheck } from '@/modules/platform';
@@ -11,6 +12,11 @@ import { INV_RULE_02_ID, RULES_CONSUMERS, belowLegalOverrideCheck } from '@/modu
 
 // P1-LCY: offboarding projects the exit reason of every employment.* event.
 registerOffboardingConsumers();
+
+// P1-PAY-B: compensation cancels the pay changes that would start after an employment ends (ARC-PAY-A2),
+// and its INV-SAL-01 check compares the Employee pay projection with the facts.
+registerCompensationConsumers();
+registerInvariantCheck(INV_SAL_01_ID, payProjectionCheck);
 
 // P1-PAY-A (BL-PAY-025): payroll regenerates an employee's draft on every employment.* event, and its
 // INV-PAY-04 check reports the changes it could not apply (approved / paid lines, dead consumptions).

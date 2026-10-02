@@ -7,6 +7,7 @@
 // projection (ARCH-014, ARC-LCY-A5).
 import { randomUUID } from 'crypto';
 import { beforeAll, describe, expect, it } from 'vitest';
+import { employeeFixture } from '@/test/money-fixtures';
 
 const RUN = process.env.LCY_IT === '1';
 
@@ -34,13 +35,11 @@ describe.skipIf(!RUN)('lifecycle transitions on PostgreSQL (P1-LCY)', { timeout:
 
   async function employee(over: Record<string, unknown> = {}) {
     const t = tag();
-    return prisma.employee.create({
-      data: {
+    return employeeFixture({
         employeeId: `LCY-${t}`, firstNameArabic: 'موظف', lastNameArabic: t, nationality: 'SA', iqamaOrIdNumber: `LCY${t}`,
         iqamaOrIdExp: new Date('2030-01-01'), dateOfBirth: new Date('1990-01-01'), gender: 'M', joinDate: new Date('2024-01-01'),
         basicSalary: 5000, legalCompanyId: co, ...over,
-      },
-    });
+      });
   }
 
   type Input = Parameters<typeof runEmploymentTransition>[1];

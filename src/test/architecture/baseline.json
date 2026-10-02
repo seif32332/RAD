@@ -44,7 +44,6 @@
       "src/lib/hr-workflows.ts": 1
     },
     "ARCH-004": {
-      "src/app/api/incoming-requests/route.ts": 1,
       "src/app/api/settlements/route.ts": 2,
       "src/lib/finance.ts": 4
     },
@@ -94,7 +93,7 @@
       "src/app/settlements/page.tsx": 1,
       "src/lib/finance.ts": 2,
       "src/lib/payroll-core.ts": 6,
-      "src/lib/payroll.ts": 7
+      "src/lib/payroll.ts": 2
     },
     "ARCH-013": {
       "src/lib/gosi.ts": 2,

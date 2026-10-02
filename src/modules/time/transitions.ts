@@ -8,6 +8,7 @@
 // updateMany: a repeat finds nothing to link or unlink). decideOvertime / assignOvertime are user
 // transitions: operation key (OperationLog), gateway guard (BR-PAY-001), audit and event.
 import { conflict, notFound } from '@/lib/http';
+import { assertPayrollReady } from '@/modules/compensation';
 import { roundMoney } from '@/lib/money';
 import { assertTransactionClient, audit, emitEvent, idempotent, runMoneyOperation, type MoneyActor, type TxClient } from '@/modules/platform';
 import { OVERTIME_ASSIGN, OVERTIME_DECIDE, OVERTIME_PAYROLL_LINK, OVERTIME_SETTLEMENT_LINK } from './operations';
@@ -102,6 +103,11 @@ export async function decideOvertime(tx: TxClient, input: DecideOvertimeInput) {
   assertTransactionClient(tx, 'decideOvertime');
   const outcome = await idempotent(tx, { key: input.operationKey, operation: OVERTIME_DECIDE.name, actorId: input.actor.id }, (t) =>
     runMoneyOperation(t, OVERTIME_DECIDE, { actor: input.actor, input: { overtimeId: input.overtimeId }, operationKey: input.operationKey }, async (w, info) => {
+      if (input.status === 'APPROVED') {
+        // BR-PAY-009: no overtime approval before the employee's pay is applied.
+        const ot = await w.overtimeRequest.findUnique({ where: { id: input.overtimeId }, select: { employeeId: true } });
+        if (ot) await assertPayrollReady(w, ot.employeeId);
+      }
       const now = new Date();
       const res = await w.overtimeRequest.updateMany({
         where: { id: input.overtimeId, status: 'PENDING' },
@@ -157,6 +163,7 @@ export async function assignOvertime(tx: TxClient, input: AssignOvertimeInput) {
   assertTransactionClient(tx, 'assignOvertime');
   const outcome = await idempotent(tx, { key: input.operationKey, operation: OVERTIME_ASSIGN.name, actorId: input.actor.id }, (t) =>
     runMoneyOperation(t, OVERTIME_ASSIGN, { actor: input.actor, input: { employeeId: input.employeeId }, operationKey: input.operationKey }, async (w, info) => {
+      await assertPayrollReady(w, input.employeeId); // BR-PAY-009: no overtime before the pay is applied
       const now = new Date();
       const row = await w.overtimeRequest.create({
         data: {

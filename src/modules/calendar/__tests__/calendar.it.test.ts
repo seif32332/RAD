@@ -7,6 +7,7 @@
 // parser with parseWeekdays.
 import { randomUUID } from 'crypto';
 import { describe, expect, it } from 'vitest';
+import { employeeFixture } from '@/test/money-fixtures';
 
 const RUN = process.env.CAL_IT === '1';
 
@@ -26,13 +27,11 @@ describe.skipIf(!RUN)('calendar module on PostgreSQL (P1-CAL)', { timeout: 120_0
     return { c, b };
   }
   async function employee(t: string, legalCompanyId: string, branchId: string, workSchedule: string | null = null) {
-    return prisma.employee.create({
-      data: {
+    return employeeFixture({
         employeeId: `CAL-${t}`, firstNameArabic: 'موظف', lastNameArabic: t, nationality: 'SA', iqamaOrIdNumber: `CAL${t}`,
         iqamaOrIdExp: new Date('2035-01-01'), dateOfBirth: new Date('1990-01-01'), gender: 'M', joinDate: new Date('2026-01-01'),
         basicSalary: 5000, legalCompanyId, branchId, workSchedule,
-      },
-    });
+      });
   }
   async function employ(employeeId: string, companyId: string, t: string) {
     await prisma.$transaction((tx) =>

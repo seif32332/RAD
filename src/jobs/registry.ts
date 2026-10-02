@@ -13,6 +13,7 @@ import { documentsIntegrityJob, documentsRetentionJob } from '@/lib/documents/jo
 import { purgeAttendanceBiometricsJob } from '@/lib/self-attendance-retention';
 import type { SystemContext } from '@/modules/iam';
 import { noticeEndJob, stateOpeningJob } from '@/modules/lifecycle';
+import { applyFinancialChangesJob } from '@/modules/compensation';
 import { createDomainEventsJob, createOutboxDispatchJob, createReconcileJob, defineJobs, type JobDefinition } from '@/modules/platform';
 // DomainEvent consumers register themselves when their module's consumers.ts is imported. List each
 // module's consumers file here (none exists yet) so the domain-events job knows them.
@@ -27,6 +28,7 @@ export const JOBS: readonly JobDefinition<SystemContext>[] = defineJobs<SystemCo
   documentsRetentionJob,
   documentsIntegrityJob,
   applyEmployeeChangesJob,
+  applyFinancialChangesJob,
   createDomainEventsJob<SystemContext>(),
   noticeEndJob,
   stateOpeningJob,

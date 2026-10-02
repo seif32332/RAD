@@ -6,6 +6,7 @@ import DashboardLayout from '@/components/DashboardLayout';
 import { toast, readApiError } from '@/components/ui/feedback';
 import { formatDate, daysUntil, todayKey } from '@/lib/dates';
 import { formatMoney } from '@/lib/money';
+import { CompanyField, companyBody, useSelectableCompanies } from '@/components/CompanyField';
 
 interface PromissoryNote {
   id: string;
@@ -47,6 +48,8 @@ export default function PromissoryNotesPage() {
   const [isCompleting, setIsCompleting] = useState(false);
 
   const [form, setForm] = useState(EMPTY_FORM);
+  const companies = useSelectableCompanies();
+  const [companyId, setCompanyId] = useState('');
 
   const [uploading, setUploading] = useState<Record<string, boolean>>({});
 
@@ -111,7 +114,7 @@ export default function PromissoryNotesPage() {
       const res = await fetch('/api/legal/promissory-notes', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(form)
+        body: JSON.stringify({ ...form, ...companyBody(companies, companyId) })
       });
       if (res.status === 401) { window.location.href = '/login'; return; }
       if (!res.ok) { toast.error(await readApiError(res, 'تعذر حفظ السند')); return; }
@@ -237,6 +240,9 @@ export default function PromissoryNotesPage() {
                  <div className="mb-10">
                    <h3 className="font-extrabold text-lg text-indigo-900 flex items-center gap-2 mb-6"><UserCircle size={20}/> أطراف السند لأمر</h3>
                    <div className="grid grid-cols-1 md:grid-cols-2 gap-6 bg-slate-50 p-6 border border-slate-100 rounded-[1.5rem]">
+                      {companies.length > 1 && (
+                        <div className="md:col-span-2"><CompanyField companies={companies} value={companyId} onChange={setCompanyId} /></div>
+                      )}
                       <div>
                          <label className="text-[12px] font-extrabold text-slate-700 mb-2 block">اسم وتفاصيل (الدائن - المستفيد)</label>
                          <input type="text" required placeholder="مثال: شركة رديف، أو اسم مستثمر..." value={form.creditorName} onChange={(e) => setForm({...form, creditorName: e.target.value})} className="w-full px-5 py-3.5 bg-white border border-slate-200 focus:border-indigo-400 rounded-2xl font-bold text-[14px] focus:outline-none focus:ring-4 focus:ring-indigo-50 transition-all" />

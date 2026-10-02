@@ -1,6 +1,7 @@
 // effectiveContext (DOMAIN_MODEL §1.3): what was true for one employee on one day, now or as the
 // system knew it at a recorded instant. First sources (P1-FND-EFF): employment, compensation,
-// assignment. Later packages add state (P1-LCY), contract, GOSI and day type.
+// assignment; P1-PAY-B adds the bank identity (never the IBAN itself: its last 4 and fingerprint).
+// Later packages add state (P1-LCY), contract, GOSI and day type.
 //
 // Read-only and company-aware: the caller passes the company scope explicitly (no default). The
 // scope key is the legal company of the assignment active on that day (DOMAIN_BOUNDARIES §5.4.3),
@@ -65,6 +66,19 @@ export interface AssignmentOnDay {
   workPatternId: string | null;
 }
 
+export interface BankOnDay {
+  periodId: string;
+  lineageId: string;
+  validFrom: string;
+  validTo: string | null;
+  source: { type: string; id: string };
+  paymentMethod: string;
+  bankName: string | null;
+  ibanLast4: string | null;
+  /** sha256 of the normalized IBAN (null for CASH, or a legacy encrypted value not fingerprinted yet). */
+  ibanFingerprint: string | null;
+}
+
 export interface EffectiveContext {
   employeeId: string;
   date: string;
@@ -74,6 +88,8 @@ export interface EffectiveContext {
   employment: EmploymentOnDay | null;
   compensation: CompensationOnDay | null;
   assignment: AssignmentOnDay | null;
+  /** The bank identity in force (BankIdentityPeriod, P1-PAY-B). */
+  bank: BankOnDay | null;
 }
 
 /** Totals of a compensation period's allowances by payslip line, and the GOSI base. */
@@ -93,10 +109,11 @@ export async function effectiveContext(db: PeriodReader, employeeId: string, dat
   if (!opts || !('companyIds' in opts)) throw new Error('effectiveContext: companyIds is required (null only for an explicit cross-company context)');
   const day = toDateOnly(date, 'date');
   const read: ReadOptions = { asRecordedAt: opts.asRecordedAt ?? null };
-  const [employment, compensation, assignment] = await Promise.all([
+  const [employment, compensation, assignment, bank] = await Promise.all([
     activeAt(db, 'EMPLOYMENT', employeeId, day, read),
     activeAt(db, 'COMPENSATION', employeeId, day, read),
     activeAt(db, 'ASSIGNMENT', employeeId, day, read),
+    activeAt(db, 'BANK_IDENTITY', employeeId, day, read),
   ]);
 
   if (opts.companyIds !== null && opts.companyIds !== 'ALL') {
@@ -143,6 +160,19 @@ export async function effectiveContext(db: PeriodReader, employeeId: string, dat
           departmentId: (assignment.attrs.departmentId as string | null) ?? null,
           managerId: (assignment.attrs.managerId as string | null) ?? null,
           workPatternId: (assignment.attrs.workPatternId as string | null) ?? null,
+        }
+      : null,
+    bank: bank
+      ? {
+          periodId: bank.id,
+          lineageId: bank.lineageId,
+          validFrom: bank.validFrom,
+          validTo: bank.validTo,
+          source: bank.source,
+          paymentMethod: bank.attrs.paymentMethod as string,
+          bankName: (bank.attrs.bankName as string | null) ?? null,
+          ibanLast4: (bank.attrs.ibanLast4 as string | null) ?? null,
+          ibanFingerprint: (bank.attrs.ibanFingerprint as string | null) ?? null,
         }
       : null,
   };

@@ -15,11 +15,14 @@ import { ALL_COMPANIES, authz, forEachCompany, resolveActor, scopedContext, scop
 import { integrityDashboard, recordInvariantResults, registerInvariantCheck, takeInvariantSnapshot } from '@/modules/platform';
 import { INV_RULE_02_ID, belowLegalOverrideCheck } from '@/modules/rules';
 import { INV_PAY_04_ID, employmentChangeCheck } from '@/modules/payroll';
+import { INV_SAL_01_ID, payProjectionCheck } from '@/modules/compensation';
 
 // INV-RULE-02's check belongs to rules (DEC-PO-126); a manual run and the dashboard see it too.
 registerInvariantCheck(INV_RULE_02_ID, belowLegalOverrideCheck);
 // INV-PAY-04's employment-change check belongs to payroll (BL-PAY-025): same composition root.
 registerInvariantCheck(INV_PAY_04_ID, employmentChangeCheck);
+// INV-SAL-01's check belongs to compensation (P1-PAY-B).
+registerInvariantCheck(INV_SAL_01_ID, payProjectionCheck);
 
 export const dynamic = 'force-dynamic';
 

@@ -12,6 +12,7 @@
 import { randomUUID } from 'crypto';
 import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { moneyFixture } from '@/test/money-fixtures';
+import { employeeFixture } from '@/test/money-fixtures';
 
 const RUN = process.env.LCY_IT === '1';
 
@@ -56,13 +57,11 @@ describe.skipIf(!RUN)('P1-LCY routes: exits through transitionEmploymentState (r
 
   async function employee(company: 'A' | 'B', over: Record<string, unknown> = {}) {
     seq += 1;
-    return prisma.employee.create({
-      data: {
+    return employeeFixture({
         employeeId: `LR-${tag}-${seq}`, firstNameArabic: 'موظف', lastNameArabic: `${seq}`, nationality: 'SA', iqamaOrIdNumber: `LR${tag}${seq}`,
         iqamaOrIdExp: new Date('2030-01-01'), dateOfBirth: new Date('1990-01-01'), gender: 'MALE', joinDate: new Date('2024-01-01'),
         basicSalary: 6000, legalCompanyId: co[company], actualCompanyId: co[company], ...over,
-      },
-    });
+      });
   }
   const facts = (employeeId: string) => prisma.employmentStateChange.findMany({ where: { employeeId }, orderBy: { seq: 'asc' } });
   const exits = async (employeeId: string) => (await facts(employeeId)).filter((f) => f.transition !== 'LEGACY_OPENING');

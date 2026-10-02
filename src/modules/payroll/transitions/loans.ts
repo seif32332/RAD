@@ -9,6 +9,7 @@
 // (BR-PAY-001); the transferring finance user is none of the manager / HR / owner approvers
 // (BR-PAY-017, BR-PAY-002). Roles and the team scope of managers stay the caller's checks (authz).
 import { conflict, notFound } from '@/lib/http';
+import { assertPayrollReady } from '@/modules/compensation';
 import { roundMoney, sumMoney } from '@/lib/money';
 import { LOAN_DEDUCTIBLE_STATUSES, LOAN_STATUS, PAYROLL_STATUS } from '@/lib/constants';
 import { assertTransactionClient, audit, emitEvent, idempotent, runMoneyOperation, type MoneyActor, type MoneyOperation, type MoneyRunInfo, type TxClient } from '@/modules/platform';
@@ -74,6 +75,7 @@ export async function createLoan(tx: TxClient, input: CreateLoanInput): Promise<
   assertTransactionClient(tx, 'createLoan');
   const outcome = await idempotent(tx, { key: input.operationKey, operation: LOAN_CREATE.name, actorId: input.actor.id }, (t) =>
     runMoneyOperation(t, LOAN_CREATE, { actor: input.actor, input: { employeeId: input.employeeId }, operationKey: input.operationKey }, async (w, info) => {
+      await assertPayrollReady(w, input.employeeId); // BR-PAY-009: no loan before the pay is applied
       const amount = roundMoney(input.amount);
       const loan = await w.loan.create({
         data: {

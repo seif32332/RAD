@@ -15,11 +15,19 @@
 // No PRE_CONSUMER watermark: every employment.* event is processed from the first (RT-SYS-653/658). A
 // re-run of the consumer on the same event does nothing new (the dispatcher's at-most-once, and the
 // regeneration's own operation key).
+//
+// payroll.compensation (P1-PAY-B; DOMAIN_BOUNDARIES §5.5 "payroll consumes compensation.periodOpened"):
+// the same rule for the CompensationPeriod events (periodOpened / periodClosed / periodSuperseded: the pay
+// of an employee in force from a date, applied by compensation): the drafts from that month on are
+// regenerated from the new periods; an approved / paid line is HELD / RETRO_ROUTED and reported by
+// INV-PAY-04 (the routes refuse a pay change dated inside an approved month, so this is the race-only
+// path until BL-PAY-008b's retro difference).
+import { COMPENSATION_PERIOD_EVENT_TYPES } from '@/modules/compensation';
 import { EMPLOYMENT_EVENT_TYPES } from '@/modules/lifecycle';
 import { employeeForLifecycle } from '@/modules/people';
 import type { DomainEventRecord, EventConsumer, ConsumerContext } from '@/modules/platform';
 import { PAYROLL_STATUS } from '@/lib/constants';
-import { PAYROLL_EMPLOYMENT_CONSUMER } from './gate';
+import { PAYROLL_COMPENSATION_CONSUMER, PAYROLL_EMPLOYMENT_CONSUMER } from './gate';
 
 type Target = { companyId: string; year: number; month: number };
 
@@ -42,10 +50,10 @@ export interface EmploymentConsumerDeps {
   regenerate: (ctx: ConsumerContext, target: Target & { employeeId: string }) => Promise<void>;
 }
 
-export function createPayrollEmploymentConsumer(deps?: EmploymentConsumerDeps): EventConsumer {
+export function createPayrollEmploymentConsumer(deps?: EmploymentConsumerDeps, opts: { name: string; eventTypes: readonly string[] } = { name: PAYROLL_EMPLOYMENT_CONSUMER, eventTypes: EMPLOYMENT_EVENT_TYPES }): EventConsumer {
   return {
-    name: PAYROLL_EMPLOYMENT_CONSUMER,
-    eventTypes: EMPLOYMENT_EVENT_TYPES,
+    name: opts.name,
+    eventTypes: opts.eventTypes,
     // A regeneration reads the employee's whole month: give it room.
     timeoutMs: 60_000,
     async handle(event, ctx) {
@@ -89,4 +97,7 @@ export function createPayrollEmploymentConsumer(deps?: EmploymentConsumerDeps): 
 }
 
 export const PAYROLL_EMPLOYMENT_CONSUMER_DEF = createPayrollEmploymentConsumer();
-export const PAYROLL_CONSUMERS: readonly EventConsumer[] = [PAYROLL_EMPLOYMENT_CONSUMER_DEF];
+/** payroll.compensation: the same regeneration for a pay change applied by compensation (P1-PAY-B). */
+export const COMPENSATION_EVENT_TYPES: readonly string[] = COMPENSATION_PERIOD_EVENT_TYPES;
+export const PAYROLL_COMPENSATION_CONSUMER_DEF = createPayrollEmploymentConsumer(undefined, { name: PAYROLL_COMPENSATION_CONSUMER, eventTypes: COMPENSATION_EVENT_TYPES });
+export const PAYROLL_CONSUMERS: readonly EventConsumer[] = [PAYROLL_EMPLOYMENT_CONSUMER_DEF, PAYROLL_COMPENSATION_CONSUMER_DEF];

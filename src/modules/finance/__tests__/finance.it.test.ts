@@ -7,6 +7,7 @@
 // Opt-in: PAY_IT=1 with DATABASE_URL on a THROWAWAY migrated database (rows are not cleaned up).
 import { randomUUID } from 'crypto';
 import { beforeAll, describe, expect, it } from 'vitest';
+import { employeeFixture } from '@/test/money-fixtures';
 
 const RUN = process.env.PAY_IT === '1';
 
@@ -25,12 +26,10 @@ describe.skipIf(!RUN)('finance payment requests on PostgreSQL (P1-PAY-A)', { tim
   beforeAll(async () => {
     const co = await prisma.company.create({ data: { nameArabic: `مالية ${tag}`, commercialRegNum: `FN${tag}`, commercialRegExp: new Date('2030-01-01') } });
     employeeId = (
-      await prisma.employee.create({
-        data: {
+      await employeeFixture({
           employeeId: `FN-${tag}`, firstNameArabic: 'م', lastNameArabic: 'ن', nationality: 'SA', iqamaOrIdNumber: `FN${tag}`, iqamaOrIdExp: new Date('2030-01-01'),
           dateOfBirth: new Date('1990-01-01'), gender: 'MALE', joinDate: new Date('2024-01-01'), basicSalary: 1, legalCompanyId: co.id,
-        },
-      })
+        })
     ).id;
     for (const [k, role] of [['gov', 'GOV_RELATIONS'], ['owner', 'COMPANY_ADMIN'], ['fin', 'FINANCE_MANAGER'], ['fin2', 'PAYROLL_ADMIN'], ['superAdmin', 'SUPER_ADMIN'], ['beneficiary', 'FINANCE_MANAGER']] as const) {
       const u = await prisma.user.create({ data: { email: `fn-${k}-${tag}@example.test`, passwordHash: 'x', role } });

@@ -106,6 +106,10 @@ model User {
   settlementsCreated         Settlement[]      @relation("SettlementCreatedBy")
   settlementsApproved        Settlement[]      @relation("SettlementApprovedBy")
   settlementsPaid            Settlement[]      @relation("SettlementPaidBy")
+  // P1-PAY-B (9zg_financial_change): actors of EmployeeFinancialChange (BR-PAY-006, RESTRICT)
+  financialChangesRequested  EmployeeFinancialChange[] @relation("FinancialChangeRequestedBy")
+  financialChangesDecided    EmployeeFinancialChange[] @relation("FinancialChangeDecidedBy")
+  financialChangesCancelled  EmployeeFinancialChange[] @relation("FinancialChangeCancelledBy")
 }
 
 // --- وحدة التدقيق (Audit Logs) ---
@@ -202,6 +206,7 @@ model Company {
   // P1-PAY-A (9zf): payroll per company and month (ARC-PAY-A7, DOMAIN_BOUNDARIES §5.4.3 payroll key)
   payrollMonths      PayrollMonth[]        @relation("PayrollMonthCompany")
   payrolls           Payroll[]             @relation("PayrollCompany")
+  financialChanges   EmployeeFinancialChange[] // 9zg_financial_change (P1-PAY-B)
 
   // محرك إصدار المستندات (docs/document-engine): الشركة هنا هي الجهة النظامية المُصدِرة
   brandProfile         BrandProfile?
@@ -528,7 +533,10 @@ model Employee {
   noticePeriodDays      Int?         @default(30) // فترة الإشعار بالأيام
   leaveAccrualStartDate DateTime? // تاريخ احتساب الإجازة (يتحدث عند العودة)
 
-  basicSalary            Float // الراتب الأساسي
+  basicSalary            Float      @default(0) // الراتب الأساسي: إسقاط CompensationPeriod النافذة اليوم (يكتبه compensation فقط، ARCH-011)
+  /// Projection (ARC-PAY-A4), written by compensation's projector only: the pay (and, when paid by bank,
+  /// the bank identity) of the employee is applied. Existing employees start TRUE (DEC-PO-017, LEGACY_READY).
+  payrollReady           Boolean    @default(false)
   gosiDeduction          Float?     @default(0) // مبلغ خصم التأمينات الاجتماعية
   gosiRegime             GosiRegime @default(UNKNOWN) // OLD: مشترك قبل 2024-07-03، NEW: النظام الجديد، UNKNOWN: يلزم تأكيد HR
   gosiRegistrationSource String? // مصدر تأكيد النظام (شهادة اشتراك، قائمة GOSI للمنشأة...)
@@ -622,6 +630,8 @@ model Employee {
   settlementEffects         SettlementEffect[]           // 9zd_lcy_tables
   paymentsReceived          PaymentRequest[]             @relation("PaymentBeneficiary") // 9zf_payroll_gateway
   compensationPeriods       CompensationPeriod[]
+  bankIdentityPeriods       BankIdentityPeriod[]      // 9zg_financial_change (P1-PAY-B)
+  financialChanges          EmployeeFinancialChange[] // 9zg_financial_change (P1-PAY-B)
   assignmentPeriods         AssignmentPeriod[]   @relation("AssignmentEmployee")
   managedAssignmentPeriods  AssignmentPeriod[]   @relation("AssignmentManager")
   // back-relations of the foreign keys added by 9x_db_constraints (P1-FND-DB)
@@ -3443,10 +3453,109 @@ model CompensationPeriod {
   employee     Employee            @relation(fields: [employeeId], references: [id], onDelete: Restrict)
   supersedes   CompensationPeriod? @relation("CompensationPeriodSupersede", fields: [supersedesId], references: [id], onDelete: Restrict)
   supersededBy CompensationPeriod? @relation("CompensationPeriodSupersede")
+  financialChanges EmployeeFinancialChange[] // 9zg_financial_change (P1-PAY-B)
 
   @@index([employeeId, validFrom])
   @@index([lineageId])
   @@index([sourceType, sourceId])
+}
+
+/// kind: FACT
+/// Owner: compensation (ARC-PAY-A3, ADR-0001 #8). The bank identity of an employee: the IBAN (encrypted,
+/// src/lib/crypto.ts; a legacy opening keeps the stored value), its fingerprint (sha256 of the normalized
+/// IBAN, BR-PAY-006) and last 4, the bank and the payment method. Never back-dated: validFrom is the
+/// day the change is applied. Written through src/modules/platform/effective only (ARCH-012), called by
+/// compensation only (ARCH-021). Employee.ibanNumber / bankName / salaryPaymentMethod are its projection.
+model BankIdentityPeriod {
+  id              String        @id @default(uuid())
+  employeeId      String
+  validFrom       DateTime      @db.Date
+  validTo         DateTime?     @db.Date
+  lineageId       String
+  supersedesId    String?       @unique
+  supersededAt    DateTime?
+  supersedeReason String?
+  sourceType      String
+  sourceId        String
+  recordedAt      DateTime      @default(now())
+  createdById     String?
+  ibanEncrypted   String?
+  ibanFingerprint String?
+  ibanLast4       String?
+  bankName        String?
+  paymentMethod   PaymentMethod
+
+  employee         Employee                  @relation(fields: [employeeId], references: [id], onDelete: Restrict)
+  supersedes       BankIdentityPeriod?       @relation("BankIdentityPeriodSupersede", fields: [supersedesId], references: [id], onDelete: Restrict)
+  supersededBy     BankIdentityPeriod?       @relation("BankIdentityPeriodSupersede")
+  financialChanges EmployeeFinancialChange[]
+
+  @@index([employeeId, validFrom])
+  @@index([lineageId])
+  @@index([sourceType, sourceId])
+  @@index([ibanFingerprint])
+}
+
+/// kind: REQUEST
+/// Owner: compensation (BR-PAY-009, ARC-PAY-A2; SOURCE_OF_TRUTH "طلب تغيير مالي أو آيبان"). A change of an
+/// employee's pay (field COMPENSATION) or bank identity (field BANK_IDENTITY) with an effective date:
+/// PENDING -> PENDING_EFFECT -> APPLIED, or REJECTED / CANCELLED (CHECK). Decided by a second person
+/// (requester != decider != the employee; SINGLE_OPERATOR: recorded self-act). No number is read from
+/// it: applying it opens a CompensationPeriod / BankIdentityPeriod (compensation.applyDecision).
+/// companyId is the scope key (the employee's legal company when filed).
+model EmployeeFinancialChange {
+  id                   String         @id @default(uuid())
+  employeeId           String
+  companyId            String?
+  field                String // COMPENSATION | BANK_IDENTITY
+  source               String // FORM | IMPORT | ONBOARDING | EDIT | PORTAL
+  status               String         @default("PENDING") // LEGACY_UNVERIFIED | PENDING | PENDING_EFFECT | APPLIED | REJECTED | CANCELLED
+  effectiveDate        DateTime       @db.Date
+  /// COMPENSATION: the requested { basicSalary, allowances[], gosiBaseOverride } (CompensationAttrs)
+  compensation         Json?
+  /// BANK_IDENTITY: the IBAN encrypted (src/lib/crypto.ts), its fingerprint and last 4, the bank and method
+  ibanEncrypted        String?
+  ibanFingerprint      String?
+  ibanLast4            String?
+  bankName             String?
+  paymentMethod        PaymentMethod?
+  /// The applied values when the request was filed (display only; the IBAN masked)
+  beforeJson           Json?
+  note                 String?
+  /// Rows filed by one import: approved together by another person (BR-PAY-009 IMPORT)
+  batchKey             String?
+  /// null only for a migrated LEGACY_UNVERIFIED request until the employee confirms it
+  requestedById        String?
+  /// LEGACY_UNVERIFIED: who filed (or touched) the original portal request; never a decider (G1b)
+  legacyFiledByUserIds String[]       @default([])
+  requestedAt          DateTime       @default(now())
+  decidedById          String?
+  decidedAt            DateTime?
+  decisionNote         String?
+  /// The decision broke the second-person rule in a SINGLE_OPERATOR tenant (BR-PAY-020)
+  decisionSelfAct      Boolean        @default(false)
+  cancelledById        String?
+  cancelledAt          DateTime?
+  cancelReason         String?
+  appliedAt            DateTime?
+  compensationPeriodId String?
+  bankIdentityPeriodId String?
+  operationKey         String         @unique
+  createdAt            DateTime       @default(now())
+  updatedAt            DateTime       @updatedAt
+
+  employee           Employee            @relation(fields: [employeeId], references: [id], onDelete: Restrict)
+  company            Company?            @relation(fields: [companyId], references: [id], onDelete: Restrict)
+  requestedBy        User?               @relation("FinancialChangeRequestedBy", fields: [requestedById], references: [id], onDelete: Restrict)
+  decidedBy          User?               @relation("FinancialChangeDecidedBy", fields: [decidedById], references: [id], onDelete: Restrict)
+  cancelledBy        User?               @relation("FinancialChangeCancelledBy", fields: [cancelledById], references: [id], onDelete: Restrict)
+  compensationPeriod CompensationPeriod? @relation(fields: [compensationPeriodId], references: [id], onDelete: Restrict)
+  bankIdentityPeriod BankIdentityPeriod? @relation(fields: [bankIdentityPeriodId], references: [id], onDelete: Restrict)
+
+  @@index([employeeId, field, status])
+  @@index([companyId, status])
+  @@index([status, effectiveDate])
+  @@index([batchKey])
 }
 
 /// kind: FACT

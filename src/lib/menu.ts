@@ -313,6 +313,8 @@ export const MENU_GROUPS: readonly MenuGroup[] = [
       },
       { href: '/evaluations', label: 'إدارة التقييم', iconName: 'ClipboardCheck', iconClassName: 'text-violet-500', roles: PAGE_ROLES.hrOnly },
       { href: '/payrolls', label: 'مسير إدارة الراتب', iconName: 'Wallet', roles: PAGE_ROLES.payroll },
+      // P1-PAY-B: salary / allowance / IBAN changes waiting for a second person (GET /api/financial-changes: PAYROLL)
+      { href: '/financial-changes', label: 'طلبات التغيير المالي', iconName: 'ClipboardList', iconClassName: 'text-amber-600', roles: PAGE_ROLES.payroll },
       { href: '/penalties', label: 'الجزاءات والمخالفات', iconName: 'AlertTriangle', iconClassName: 'text-rose-500', roles: PAGE_ROLES.payroll },
       { href: '/overtimes', label: 'التكليفات والعمل الإضافي', iconName: 'CalendarClock', iconClassName: 'text-indigo-500', roles: PAGE_ROLES.payroll },
       { href: '/loans', label: 'إدارة السلف (والعفو)', iconName: 'PiggyBank', iconClassName: 'text-emerald-500', roles: PAGE_ROLES.payroll },

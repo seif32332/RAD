@@ -67,6 +67,11 @@ export const POLICIES: Readonly<Record<string, Policy>> = Object.freeze({
   'payroll.read': { roles: [...ROLE_GROUPS.PAYROLL, ...ROLE_GROUPS.MANAGERS], contexts: ['scoped', 'team'] },
   'payroll.hub.act': { roles: ROLE_GROUPS.ALL, contexts: ['scoped', 'team', 'self'] },
   'payroll.run': { roles: ROLE_GROUPS.PAYROLL, contexts: STAFF_KINDS },
+  // P1-PAY-B: financial change requests (BR-PAY-009). The second-person and beneficiary rules of a
+  // decision are the compensation transition's (money.gateway), not a role check.
+  'compensation.change.read': { roles: ROLE_GROUPS.PAYROLL, contexts: STAFF_KINDS },
+  'compensation.change.decide': { roles: ROLE_GROUPS.PAYROLL, contexts: STAFF_KINDS },
+  'compensation.change.cancel': { roles: ROLE_GROUPS.PAYROLL, contexts: STAFF_KINDS },
   'settlement.read': { roles: [...ROLE_GROUPS.HR, ...ROLE_GROUPS.FINANCE, ...ROLE_GROUPS.GOV], contexts: STAFF_KINDS },
   'settlement.create': { roles: ROLE_GROUPS.HR, contexts: STAFF_KINDS },
   'settlement.decide': { roles: ROLE_GROUPS.FINANCE, contexts: STAFF_KINDS },

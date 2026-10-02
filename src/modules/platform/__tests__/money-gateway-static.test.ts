@@ -78,10 +78,8 @@ describe('money.gateway static checks (BL-PAY-002)', () => {
 
   it('the runtime lists are the constitution\'s (MONEY_MODELS that exist in the schema; EMPLOYEE_MONEY_FIELDS)', () => {
     const models = new Set(Prisma.dmmf.datamodel.models.map((m) => m.name));
-    // CompensationPeriod is written by platform/effective only (ARCH-012, fact of compensation); its gateway
-    // operation is compensation.applyDecision of P1-PAY-B, which then adds it to MONEY_TABLES.
-    const LATER = ['CompensationPeriod'];
-    expect([...MONEY_TABLES].sort()).toEqual(MONEY_MODELS.filter((m) => models.has(m) && !LATER.includes(m)).sort());
+    // P1-PAY-B: the period tables of compensation joined (written by platform/effective inside compensation's operations).
+    expect([...MONEY_TABLES].sort()).toEqual(MONEY_MODELS.filter((m) => models.has(m)).sort());
     expect([...EMPLOYEE_MONEY_COLUMNS].sort()).toEqual([...EMPLOYEE_MONEY_FIELDS].sort());
   });
 });

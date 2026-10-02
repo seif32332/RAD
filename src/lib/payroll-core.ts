@@ -581,6 +581,14 @@ export interface PayrollLineInput {
   employmentEnd?: Date | null;
   /** Periods already paid by a settlement. */
   excluded?: ReadonlyArray<DateRange>;
+  /**
+   * P1-PAY-B: the compensation of the month by stretch of days (CompensationPeriod segments, inclusive
+   * 'YYYY-MM-DD' bounds). When given, the basic salary and the recurring allowances are prorated per
+   * segment over its paid days, and only the days a segment covers are paid; `employee.basicSalary` /
+   * `employee.allowances` are then the rate of the month (the last segment) for the per-day charges,
+   * overtime and GOSI. Omitted = the employee's one salary over the month (legacy callers, previews).
+   */
+  compensationSegments?: ReadonlyArray<{ from: string; to: string; basicSalary: number; allowances: ReadonlyArray<AllowanceLike> }>;
   bonuses: ReadonlyArray<{ id: string; amount: number }>;
   overtimes: ReadonlyArray<OvertimeLike>;
   deductions: ReadonlyArray<{ id: string; amount: number }>;
@@ -826,6 +834,52 @@ export function reviewNoteText(note: string | null | undefined): string {
   return (note ?? '').replace(/\[[A-Z_]+\]\s*/g, '').trim();
 }
 
+const laterKey = (a: string | null, b: string) => (a && a > b ? a : b);
+const earlierKey = (a: string | null, b: string) => (a && a < b ? a : b);
+
+/**
+ * The basic salary and recurring allowances of a month paid by compensation segment (P1-PAY-B): each
+ * segment is prorated over its own paid days (employment, settlement exclusions) on the calendar-day
+ * basis; with one segment covering the employment this is exactly the single-salary computation.
+ */
+function prorateSegments(input: PayrollLineInput, days: EmploymentDays) {
+  const segs = input.compensationSegments ?? [];
+  const join = dateKey(input.employee.joinDate);
+  const end = dateKey(input.employmentEnd ?? null);
+  let eligibleDays = 0;
+  const basics: number[] = [];
+  const recurring: number[] = [];
+  const split = { housing: 0, transport: 0, other: 0 };
+  for (const s of segs) {
+    const from = laterKey(join, s.from);
+    const to = earlierKey(end, s.to);
+    if (from > to) continue;
+    const d = employmentDaysInMonth({
+      year: input.year,
+      month: input.month,
+      joinDate: new Date(`${from}T00:00:00.000Z`),
+      employmentEnd: new Date(`${to}T00:00:00.000Z`),
+      excluded: input.excluded,
+    });
+    if (!d.eligibleDays) continue;
+    eligibleDays += d.eligibleDays;
+    const rec = roundMoney(monthlyAllowancesTotal(s.allowances) * d.factor);
+    basics.push(roundMoney(s.basicSalary * d.factor));
+    recurring.push(rec);
+    const parts = splitRecurringAllowances(s.allowances, d.factor, rec);
+    split.housing = roundMoney(split.housing + parts.housing);
+    split.transport = roundMoney(split.transport + parts.transport);
+    split.other = roundMoney(split.other + parts.other);
+  }
+  return {
+    eligibleDays,
+    factor: days.daysInMonth ? eligibleDays / days.daysInMonth : 0,
+    basicSalary: sumMoney(basics),
+    recurringAllowances: sumMoney(recurring),
+    split,
+  };
+}
+
 /**
  * Computes one employee's payroll for a month. Loan installments are only taken from what is
  * left after the other deductions, so an installment is never recorded as collected when the
@@ -840,12 +894,13 @@ export function computePayrollLine(input: PayrollLineInput): PayrollLineResult {
     employmentEnd: input.employmentEnd ?? null,
     excluded: input.excluded,
   });
-  const factor = days.factor;
   const basicFull = emp.basicSalary ?? 0;
-  const recurringFull = monthlyAllowancesTotal(emp.allowances);
-  const basicSalary = roundMoney(basicFull * factor);
-  const recurringAllowances = roundMoney(recurringFull * factor);
-  const split = splitRecurringAllowances(emp.allowances, factor, recurringAllowances);
+  const paid = input.compensationSegments ? prorateSegments(input, days) : null;
+  const factor = paid ? paid.factor : days.factor;
+  const eligibleDays = paid ? paid.eligibleDays : days.eligibleDays;
+  const basicSalary = paid ? paid.basicSalary : roundMoney(basicFull * factor);
+  const recurringAllowances = paid ? paid.recurringAllowances : roundMoney(monthlyAllowancesTotal(emp.allowances) * factor);
+  const split = paid ? paid.split : splitRecurringAllowances(emp.allowances, factor, recurringAllowances);
   const bonuses = sumMoney(input.bonuses.map((b) => b.amount));
   const totalAllowances = roundMoney(recurringAllowances + bonuses);
 
@@ -942,7 +997,7 @@ export function computePayrollLine(input: PayrollLineInput): PayrollLineResult {
     overtimeCost,
     totalDeductions,
     netSalary,
-    eligibleDays: days.eligibleDays,
+    eligibleDays,
     daysInMonth: days.daysInMonth,
     factor,
     breakdown: {
