@@ -11,7 +11,9 @@ import {
   LOAN_DEDUCTIBLE_STATUSES,
   PAYROLL_STATUS,
   ROLE_GROUPS,
+  SETTLEMENT_REVERSED,
   SETTLEMENT_STATUS,
+  isSettlementVoid,
   roleIn,
 } from '@/lib/constants';
 import { badRequest, conflict, forbidden, handleApiError, notFound, parseBody } from '@/lib/http';
@@ -41,7 +43,8 @@ import { approveSettlement, markSettlementPaid, rejectSettlement, SETTLEMENT_CRE
 import { moneyActorOf, runMoneyOperation } from '@/modules/platform';
 import { linkOvertimeToSettlement } from '@/modules/time';
 import { authz, resolveActor, scopedContext, scopedPrisma } from '@/modules/iam';
-import { recordSettlementEffects } from '@/modules/offboarding';
+import { liveEndOfServiceWhere, recordSettlementEffects } from '@/modules/offboarding';
+import { employmentEnd, isSeparated } from '@/modules/lifecycle';
 
 export const dynamic = 'force-dynamic';
 
@@ -156,9 +159,9 @@ export function statutoryPaymentDeadline(s: {
   return { dueDate: due, days, endedBy: workerEnded ? 'WORKER' : 'EMPLOYER' };
 }
 
-/** Days past the deadline for a settlement not yet paid (0 when on time, paid or rejected). */
+/** Days past the deadline for a settlement not yet paid (0 when on time, paid, rejected or reversed). */
 export function paymentOverdueDays(deadline: PaymentDeadline | null, status: string, asOf: Date): number {
-  if (!deadline || status === SETTLEMENT_STATUS.PAID || status === SETTLEMENT_STATUS.REJECTED || status === 'TRANSFERRED') return 0;
+  if (!deadline || status === SETTLEMENT_STATUS.PAID || isSettlementVoid(status) || status === 'TRANSFERRED') return 0;
   return Math.max(0, daysBetween(deadline.dueDate, asOf));
 }
 
@@ -379,7 +382,9 @@ async function computeForRequest(body: CreateSettlementBody) {
         probationEndDate: true,
         basicSalary: true,
         nationality: true,
+        employmentState: true,
         isTerminated: true,
+        terminationDate: true,
         leaveAccrualStartDate: true,
         legalCompanyId: true,
         // Company cost setting: overtime hourly basis (legal company, else actual company).
@@ -416,11 +421,10 @@ async function computeForRequest(body: CreateSettlementBody) {
       },
       select: { id: true },
     }),
-    // DOM-004: one END_OF_SERVICE settlement per employee unless the owner rejected it.
-    prisma.settlement.findFirst({
-      where: { employeeId: body.employeeId, type: 'END_OF_SERVICE', status: { not: SETTLEMENT_STATUS.REJECTED } },
-      select: { id: true, status: true },
-    }),
+    // DOM-004: one END_OF_SERVICE settlement per employment period unless it was rejected or reversed
+    // (BL-LCY-012 site 3: SETTLEMENT_VOID_STATUSES and the current period; a rehired employee can be
+    // settled again).
+    liveEndOfServiceWhere(prisma, body.employeeId).then((where) => prisma.settlement.findFirst({ where, select: { id: true, status: true } })),
     loadPayrollSettings(prisma),
     getNumericSetting(prisma, SETTING_KEYS.ANNUAL_LEAVE_DAYS),
     getNumericSetting(prisma, SETTING_KEYS.EXIT_REENTRY_VISA_FEE),
@@ -534,10 +538,12 @@ const SETTLEMENT_STATUS_LABELS: Record<string, string> = {
   PENDING_APPROVAL: 'بانتظار تعميد صاحب العمل',
   OWNER_APPROVED: 'معتمدة',
   PAID: 'مدفوعة',
+  REJECTED: 'مرفوضة',
+  [SETTLEMENT_REVERSED]: 'معكوسة',
 };
 
 function endOfServiceExistsMessage(status: string): string {
-  return `يوجد للموظف تصفية نهاية خدمة سابقة (${SETTLEMENT_STATUS_LABELS[status] ?? status}). لا تُنشأ تصفية نهاية خدمة أخرى إلا إذا رُفضت السابقة.`;
+  return `يوجد للموظف تصفية نهاية خدمة سابقة (${SETTLEMENT_STATUS_LABELS[status] ?? status}). لا تُنشأ تصفية نهاية خدمة أخرى في فترة التوظيف نفسها إلا إذا رُفضت السابقة أو عُكست.`;
 }
 
 /**
@@ -560,8 +566,17 @@ export async function POST(req: Request) {
     const { employee, existingSettlement, existingEndOfService, calc, overtimeIds, serverOvertime, reasonProblem, forfeitedAward, investigationId } =
       await computeForRequest(body);
     const isEndOfService = body.type === 'END_OF_SERVICE';
-    const terminatedLeaveSettlement = employee.isTerminated && !isEndOfService;
+    const separated = isSeparated(employee);
+    const terminatedLeaveSettlement = separated && !isEndOfService;
     const TERMINATED_LEAVE_MSG = 'الموظف منتهية خدمته، ولا تُنشأ له إلا تصفية نهاية الخدمة';
+    // BL-LCY-012 (BR-LCY-011): an employee in NOTICE or TERMINATED has a recorded last working day; the
+    // end-of-service settlement is for that day. A different day is a correction (D1) first.
+    const recordedEnd = employmentEnd(employee);
+    const recordedEndKey = recordedEnd ? dateKey(recordedEnd) : null;
+    const dateMismatchMsg =
+      isEndOfService && recordedEndKey && body.lastWorkingDate && dateKey(body.lastWorkingDate) !== recordedEndKey
+        ? `آخر يوم عمل المسجَّل للموظف هو ${recordedEndKey}. أنشئ التصفية بهذا التاريخ، أو صحّح تاريخ الخروج أولاً (طلب تصحيح بشخصين).`
+        : null;
 
     // DOM-004 (same rule as PATCH /api/employees/[id] terminate): the employer may not end the
     // contract during an approved maternity / sick leave in effect. Resignation / Article 81 are the
@@ -582,9 +597,10 @@ export async function POST(req: Request) {
     if (body.preview === true) {
       const warnings: string[] = [];
       if (terminatedLeaveSettlement) warnings.push(TERMINATED_LEAVE_MSG);
+      if (dateMismatchMsg) warnings.push(dateMismatchMsg);
       if (isEndOfService && existingEndOfService) warnings.push(endOfServiceExistsMessage(existingEndOfService.status));
       else if (existingSettlement) warnings.push('يوجد معاملة تصفية قائمة حالياً للموظف');
-      if (isEndOfService && employee.isTerminated && !existingEndOfService) {
+      if (isEndOfService && separated && !existingEndOfService) {
         warnings.push('الموظف مسجَّل منتهي الخدمة دون تصفية نهاية خدمة. يمكن إنشاء تصفيته الآن لتسجيل مستحقاته.');
       }
       if (isEndOfService && isCounselPendingReason(body.terminationReason)) {
@@ -604,6 +620,7 @@ export async function POST(req: Request) {
     }
 
     if (terminatedLeaveSettlement) throw conflict(TERMINATED_LEAVE_MSG);
+    if (dateMismatchMsg) throw conflict(dateMismatchMsg);
     if (protectedLeaveMsg && user.role !== 'SUPER_ADMIN') throw conflict(protectedLeaveMsg);
     if (isEndOfService && existingEndOfService) throw conflict(endOfServiceExistsMessage(existingEndOfService.status));
     if (existingSettlement) {
@@ -624,13 +641,13 @@ export async function POST(req: Request) {
     }
 
     const settlement = await prisma.$transaction(async (tx) => {
-      // Re-checked inside the transaction (two HR users saving at the same time).
+      // Re-checked inside the transaction (two HR users saving at the same time). BL-LCY-012 site 4: the
+      // end-of-service part is the same live (not void, current period) filter as the pre-check.
       const concurrent = await tx.settlement.findFirst({
         where: {
-          employeeId: body.employeeId,
           OR: [
-            { status: { in: [SETTLEMENT_STATUS.PENDING_APPROVAL, SETTLEMENT_STATUS.OWNER_APPROVED] } },
-            ...(isEndOfService ? [{ type: 'END_OF_SERVICE' as const, status: { not: SETTLEMENT_STATUS.REJECTED } }] : []),
+            { employeeId: body.employeeId, status: { in: [SETTLEMENT_STATUS.PENDING_APPROVAL, SETTLEMENT_STATUS.OWNER_APPROVED] } },
+            ...(isEndOfService ? [await liveEndOfServiceWhere(tx, body.employeeId)] : []),
           ],
         },
         select: { id: true },
@@ -718,7 +735,7 @@ export async function POST(req: Request) {
             overtimeIds,
             terminationReason: body.terminationReason ?? null,
             ...(article80Clause ? { article80Clause, investigationId } : {}),
-            ...(isEndOfService && employee.isTerminated ? { employeeAlreadyTerminated: true } : {}),
+            ...(isEndOfService && separated ? { employeeAlreadyTerminated: true } : {}),
           },
           ipAddress: getClientIp(req),
         },

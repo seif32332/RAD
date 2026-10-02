@@ -151,6 +151,7 @@ const SETTLEMENT_STATUS_AR: Record<string, string> = {
   OWNER_APPROVED: 'معتمدة',
   PAID: 'مدفوعة',
   REJECTED: 'مرفوضة',
+  REVERSED: 'معكوسة', // SETTLEMENT_REVERSED (BL-LCY-012: the reversal R1, BL-LCY-016)
 };
 
 /** Why the final exit cannot be issued now (empty = eligible). Order: most fundamental first. */

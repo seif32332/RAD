@@ -47,13 +47,13 @@ export const TRANSITION_NAMES: Readonly<Record<EmploymentTransition, string>> = 
 export const TWO_PERSON_TRANSITIONS: readonly EmploymentTransition[] = ['CANCEL_EXIT', 'TERMINATE_IN_NOTICE', 'REHIRE', 'AMEND', 'VOID'];
 
 /**
- * NOTICE is not released yet (ADR-0004 #3): until the payroll interface of BL-LCY-012 reads the last
- * working day in NOTICE (employmentEnd, after BL-PAY-006 / BL-PAY-025), an exit with a future last
- * day keeps today's meaning, TERMINATED with that date (the payroll prorates only a terminated
- * employee today, payroll.ts). BL-LCY-012 flips this; the state machine itself supports NOTICE and is
- * tested with it.
+ * NOTICE is released (ADR-0004 #3, flipped by BL-LCY-012): an exit whose last working day is still
+ * ahead is NOTICE until then (T2 ends it). Payroll reads the last day through employmentEnd /
+ * payrollEligible, not isTerminated, so an employee in NOTICE is prorated in the exit month and has no
+ * line after it. The gate stays as a constant (and the noticeReleased input) for the tests of both
+ * meanings.
  */
-export const NOTICE_STATE_RELEASED = false;
+export const NOTICE_STATE_RELEASED = true;
 
 /** The ExitReason dictionary (ARC-OFF-A3: one dictionary, owned by lifecycle). */
 export const EXIT_REASON_CODES = [
@@ -250,7 +250,10 @@ export function planTransition(cur: CurrentEmployment, req: TransitionRequest, t
       const voluntary = req.amendsReason ? (req.exitVoluntary ?? null) : cur.exitVoluntary;
       const to = exitStateFor(lastDay, today, noticeReleased);
       const dateChanged = lastDay !== cur.terminationDate;
-      if (!dateChanged && reason === cur.exitReason && voluntary === cur.exitVoluntary) {
+      // Same date, reason and state: nothing to correct. A same-date D1 that changes the state is a real
+      // correction: a legacy TERMINATED row with a future last day (NOTICE_CANDIDATE of LCY-J1) becomes
+      // NOTICE once NOTICE is released (ADR-0004 #3, BL-LCY-012).
+      if (!dateChanged && reason === cur.exitReason && voluntary === cur.exitVoluntary && to === s) {
         return { kind: 'NO_CHANGE', transition: 'AMEND', reason: 'NOTHING_TO_CORRECT' };
       }
       const events = ['employment.exitAmended'];

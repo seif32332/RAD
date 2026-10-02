@@ -66,6 +66,80 @@ export function headcountWhere(day: DateOnly): Prisma.EmployeeWhereInput {
   };
 }
 
+/**
+ * Prisma filter: in service on at least one day of [from, to] (BL-LCY-012, the payroll month): joined by
+ * `to`, and no last working day before `from`. NOTICE counts until its last day; a TERMINATED row without
+ * a date is never in service (as in the generator before, BR-LCY-011).
+ */
+export function employedDuringWhere(from: DateOnly, to: DateOnly): Prisma.EmployeeWhereInput {
+  const start = toDateOnly(from, 'from');
+  const end = toDateOnly(to, 'to');
+  return {
+    joinDate: { lte: end },
+    OR: [
+      { employmentState: 'ACTIVE' },
+      { employmentState: null, isTerminated: false },
+      { employmentState: { in: ['NOTICE', 'TERMINATED'] }, terminationDate: { gte: start } },
+      { employmentState: null, isTerminated: true, terminationDate: { gte: start } },
+    ],
+  };
+}
+
+/** One employment period as the batch readers return it (dates 'YYYY-MM-DD'; validTo exclusive). */
+export interface EmploymentSpan {
+  validFrom: string;
+  validTo: string | null;
+}
+
+/**
+ * The active (not superseded) employment periods of many employees in one query, oldest first
+ * (BL-LCY-012: payroll reads them for a whole month). Employees without a period are absent.
+ */
+export async function employmentSpansOf(db: Pick<TxClient, 'employmentPeriod'>, employeeIds: readonly string[]): Promise<Map<string, EmploymentSpan[]>> {
+  const out = new Map<string, EmploymentSpan[]>();
+  if (!employeeIds.length) return out;
+  const rows = await db.employmentPeriod.findMany({
+    where: { employeeId: { in: [...new Set(employeeIds)] }, supersededAt: null },
+    select: { employeeId: true, validFrom: true, validTo: true },
+    orderBy: [{ employeeId: 'asc' }, { validFrom: 'asc' }, { recordedAt: 'asc' }],
+  });
+  for (const r of rows) {
+    const list = out.get(r.employeeId) ?? [];
+    list.push({ validFrom: key(r.validFrom) as string, validTo: key(r.validTo) });
+    out.set(r.employeeId, list);
+  }
+  return out;
+}
+
+/** The first day of the current period among `spans` (the open one, else the latest), or null (BR-LCY-010 currentPeriod). */
+export function currentPeriodStart(spans: readonly EmploymentSpan[] | undefined): string | null {
+  if (!spans?.length) return null;
+  return (spans.find((p) => p.validTo === null) ?? spans[spans.length - 1]).validFrom;
+}
+
+/**
+ * The days of [from, to] that fall BETWEEN two employment periods (a termination then a rehire, T4):
+ * not in service, so not paid. Only the gaps between periods: the start (joinDate) and the end
+ * (employmentEnd) stay with the projection. Inclusive 'YYYY-MM-DD' ranges.
+ */
+export function employmentGapsWithin(spans: readonly EmploymentSpan[] | undefined, from: DateOnly, to: DateOnly): { start: string; end: string }[] {
+  if (!spans || spans.length < 2) return [];
+  const lo = key(toDateOnly(from, 'from')) as string;
+  const hi = key(toDateOnly(to, 'to')) as string;
+  const out: { start: string; end: string }[] = [];
+  for (let i = 1; i < spans.length; i++) {
+    const prevEnd = spans[i - 1].validTo; // exclusive: the first day out of service
+    if (!prevEnd) continue;
+    const gapStart = prevEnd;
+    const gapEnd = addDayKey(spans[i].validFrom, -1);
+    if (gapEnd < gapStart) continue;
+    const s = gapStart > lo ? gapStart : lo;
+    const e = gapEnd < hi ? gapEnd : hi;
+    if (s <= e) out.push({ start: s, end: e });
+  }
+  return out;
+}
+
 type StateReader = Pick<TxClient, 'employmentStateChange'>;
 
 /** The latest state change of the employee (its `toState` is the projection, DEC-PO-119). */

@@ -137,11 +137,13 @@ describe.skipIf(!RUN)('P1-LCY routes: exits through transitionEmploymentState (r
       expect((await prisma.employee.findUniqueOrThrow({ where: { id: e.id } })).isTerminated).toBe(false);
     });
 
-    it('a future last day keeps today\'s meaning until NOTICE is released (TERMINATED with that date)', async () => {
+    it('a future last day is NOTICE (released by BL-LCY-012): in service until then, the date recorded', async () => {
       const e = await employee('A');
       await as('hrA');
       expect((await terminate(e.id, { terminationDate: day(20) })).status).toBe(200);
-      expect((await exits(e.id))[0]).toMatchObject({ transition: 'TERMINATE', toState: 'TERMINATED' });
+      expect((await exits(e.id))[0]).toMatchObject({ transition: 'NOTICE', toState: 'NOTICE' });
+      const row = await prisma.employee.findUniqueOrThrow({ where: { id: e.id } });
+      expect([row.employmentState, row.isTerminated, row.terminationDate?.toISOString().slice(0, 10)]).toEqual(['NOTICE', false, day(20)]);
     });
   });
 

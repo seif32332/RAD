@@ -23,9 +23,14 @@ import { PAYROLL_EMPLOYMENT_CONSUMER } from './gate';
 
 type Target = { companyId: string; year: number; month: number };
 
-/** 'YYYY-MM-DD' (or a Date) → { year, month } of the event's effective day. */
+/**
+ * { year, month } of the first day the event affects: payload.affectsFrom (BL-LCY-012: the earlier
+ * of the old and new last day of a D1, the first day of a voided period), else payload.effectiveDate,
+ * else the event's effectiveDate column.
+ */
 export function effectiveMonthOf(event: Pick<DomainEventRecord, 'payload' | 'effectiveDate' | 'occurredAt'>): { year: number; month: number } {
-  const raw = (event.payload as { effectiveDate?: unknown } | null)?.effectiveDate;
+  const p = event.payload as { effectiveDate?: unknown; affectsFrom?: unknown } | null;
+  const raw = typeof p?.affectsFrom === 'string' ? p.affectsFrom : p?.effectiveDate;
   const d = typeof raw === 'string' && /^\d{4}-\d{2}-\d{2}/.test(raw) ? new Date(`${raw.slice(0, 10)}T00:00:00.000Z`) : event.effectiveDate ?? event.occurredAt;
   return { year: d.getUTCFullYear(), month: d.getUTCMonth() + 1 };
 }

@@ -131,6 +131,25 @@ export const SETTLEMENT_STATUS = {
   REJECTED: 'REJECTED',
 } as const;
 
+/**
+ * REVERSED: a settlement undone by its reversal R1 (lcy-to-be.md BR-LCY-011; R1 / settlement.reverse is
+ * its only writer and comes with BL-LCY-016 / BL-PAY-001, so the Settlement_status_check of 9x does not
+ * accept it yet and SETTLEMENT_STATUS does not list it). Readers are ready for it already.
+ */
+export const SETTLEMENT_REVERSED = 'REVERSED';
+
+/**
+ * BL-LCY-012 (BR-LCY-011): the statuses of a settlement that no longer counts (rejected by the owner, or
+ * reversed). EVERY reader of settlement status treats them alike: payroll's coverage, the "one end of
+ * service" guard, hasOpenEos, the overdue count and the labels. One constant, never a literal REJECTED.
+ */
+export const SETTLEMENT_VOID_STATUSES: readonly string[] = [SETTLEMENT_STATUS.REJECTED, SETTLEMENT_REVERSED];
+
+/** Whether a settlement status no longer counts (SETTLEMENT_VOID_STATUSES). */
+export function isSettlementVoid(status: string): boolean {
+  return SETTLEMENT_VOID_STATUSES.includes(status);
+}
+
 export const PAYROLL_STATUS = { DRAFT: 'DRAFT', APPROVED: 'APPROVED', PAID: 'PAID' } as const;
 
 /** Default exit/re-entry visa fee (SAR) used when no SystemSetting overrides it. */

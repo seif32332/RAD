@@ -9,6 +9,7 @@ import { OFFBOARDING_CONSUMERS } from './consumers';
 export { projectExitReason, recordSettlementEffects } from './transitions';
 export type { ProjectExitReasonResult, RecordSettlementEffects, RecordSettlementEffectsResult } from './transitions';
 export { SETTLEMENT_EFFECT_KINDS, settlementEffects } from './effects';
+export { currentPeriodStartOf, hasOpenEos, liveEndOfServiceWhere, settlementInPeriodWhere } from './queries';
 export type { SettlementEffectInput, SettlementEffectKind } from './effects';
 export { OFFBOARDING_CONSUMERS, EXIT_REASON_PROJECTION_CONSUMER, exitReasonProjection } from './consumers';
 

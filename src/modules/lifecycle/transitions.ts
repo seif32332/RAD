@@ -351,6 +351,12 @@ async function apply(tx: TxClient, input: TransitionEmploymentStateInput): Promi
     ipAddress: input.access?.ipAddress ?? null,
   });
 
+  // The first day the change affects (BL-LCY-012): a D1 moving the last day later also changes the
+  // month of the old day; a V1 undoes the period from its first day.
+  let affectsFrom = plan.effectiveDate;
+  if (plan.transition === 'AMEND' && cur.terminationDate && cur.terminationDate < affectsFrom) affectsFrom = cur.terminationDate;
+  if (plan.transition === 'VOID' && cur.period && cur.period.validFrom < affectsFrom) affectsFrom = cur.period.validFrom;
+
   const payload: EmploymentEventPayload = {
     stateChangeId,
     employeeId: input.employeeId,
@@ -361,6 +367,7 @@ async function apply(tx: TxClient, input: TransitionEmploymentStateInput): Promi
     toState: plan.toState,
     effectiveDate: plan.effectiveDate,
     terminationDate: plan.terminationDate,
+    affectsFrom,
     exitReason: plan.exitReason,
     exitVoluntary: plan.exitVoluntary,
     singleOperator,
@@ -375,7 +382,7 @@ async function apply(tx: TxClient, input: TransitionEmploymentStateInput): Promi
       payload: payload as unknown as Record<string, unknown>,
       companyId,
       actorId,
-      effectiveDate: toDateOnly(plan.effectiveDate, 'effectiveDate'),
+      effectiveDate: toDateOnly(affectsFrom, 'affectsFrom'),
     });
   }
 

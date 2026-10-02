@@ -30,6 +30,8 @@ export {
   concludeInvestigationDeductions,
 } from './transitions/deductions';
 export type { DeductionActor, CreateDeductionInput, InvestigationOutcomeInput, InvestigationOutcome } from './transitions/deductions';
+export { payrollEligible } from './eligibility';
+export type { PayrollEligibility, PayrollEligibilityInput, PayrollIneligibleReason } from './eligibility';
 export { loanStageRule, PAYROLL_MONTH_STATUS } from './policy';
 export type { LoanStage } from './policy';
 export { assertEmploymentGate, EmploymentChangePendingError, PAYROLL_EMPLOYMENT_CONSUMER, monthEnd } from './gate';

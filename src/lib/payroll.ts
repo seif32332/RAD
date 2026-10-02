@@ -33,7 +33,7 @@ import {
   LEAVE_STATUS,
   LOAN_DEDUCTIBLE_STATUSES,
   PAYROLL_STATUS,
-  SETTLEMENT_STATUS,
+  SETTLEMENT_VOID_STATUSES,
 } from '@/lib/constants';
 import { conflict } from '@/lib/http';
 import { decryptField } from '@/lib/crypto';
@@ -59,9 +59,11 @@ import {
 } from '@/lib/payroll-core';
 import { DEFAULT_GOSI_RATES, pickGosiRate, type GosiRateLike } from '@/lib/gosi';
 import { createRulesReader } from '@/modules/rules';
+import { currentPeriodStart, employedDuringWhere, employmentGapsWithin, employmentSpansOf } from '@/modules/lifecycle';
 import {
   approvePayrollMonth,
   commitPayrollGeneration,
+  payrollEligible,
   markPayrollMonthPaid,
   runPayrollTransaction,
   type TxRunner,
@@ -181,18 +183,20 @@ function settlementCoveragePrecheck(year: number, month: number) {
         lastNameArabic: true,
         basicSalary: true,
         allowances: { where: { isMonthly: true }, select: { name: true, amount: true, isMonthly: true } },
+        // BL-LCY-012 site 2: void settlements (rejected / reversed) never count; period-scoped below.
         settlements: {
-          where: { status: { not: SETTLEMENT_STATUS.REJECTED } },
+          where: { status: { notIn: [...SETTLEMENT_VOID_STATUSES] } },
           select: { type: true, status: true, lastWorkingDate: true, createdAt: true, salaryBasis: true, leaveCompensation: true },
         },
       },
     });
     const byId = new Map(employees.map((e) => [e.id, e]));
+    const spans = await employmentSpansOf(tx, employees.map((e) => e.id));
     const stale = drafts.filter((d) => {
       const e = byId.get(d.employeeId);
       if (!e) return false;
       const newer = e.settlements.filter((s) => s.createdAt > d.createdAt);
-      return settlementCoversMonth(newer, { basicSalary: e.basicSalary, allowances: e.allowances }, year, month);
+      return settlementCoversMonth(newer, { basicSalary: e.basicSalary, allowances: e.allowances }, year, month, { periodStart: currentPeriodStart(spans.get(e.id)) });
     });
     if (stale.length) {
       const names = stale
@@ -322,8 +326,8 @@ export async function computeGenerationPlan(db: Tx, input: PlanInput): Promise<P
     where: {
       legalCompanyId: companyId,
       ...(only ? { id: { in: only } } : {}),
-      joinDate: { lte: monthEnd },
-      OR: [{ isTerminated: false }, { terminationDate: { gte: monthStart } }],
+      // BL-LCY-012: in service on a day of the month (lifecycle reader; NOTICE until its last day).
+      ...employedDuringWhere(monthStart, monthEnd),
     },
     select: {
       id: true,
@@ -332,6 +336,7 @@ export async function computeGenerationPlan(db: Tx, input: PlanInput): Promise<P
       gosiDeduction: true,
       gosiRegime: true,
       joinDate: true,
+      employmentState: true,
       isTerminated: true,
       terminationDate: true,
       legalCompanyId: true,
@@ -407,8 +412,9 @@ export async function computeGenerationPlan(db: Tx, input: PlanInput): Promise<P
           totalDeduction: true,
         },
       },
+      // BL-LCY-012 site 1: void settlements (rejected / reversed) never count; period-scoped below.
       settlements: {
-        where: { status: { not: SETTLEMENT_STATUS.REJECTED } },
+        where: { status: { notIn: [...SETTLEMENT_VOID_STATUSES] } },
         select: { type: true, status: true, lastWorkingDate: true, createdAt: true, salaryBasis: true, leaveCompensation: true },
       },
       payrolls: {
@@ -429,6 +435,10 @@ export async function computeGenerationPlan(db: Tx, input: PlanInput): Promise<P
     ).map((r) => r.employeeId),
   );
 
+  // Employment periods (lifecycle): the current period scopes the settlements, the gaps between periods
+  // (a termination then a rehire in the month) are not paid.
+  const spans = await employmentSpansOf(db, employees.map((e) => e.id));
+
   const rows: GeneratedPayrollRow[] = [];
   const installments: Array<{ id: string; loanId: string; payrollId: string; month: number; year: number; amount: number }> = [];
   const bonusReservations: Array<{ payrollId: string; allowanceIds: string[] }> = [];
@@ -443,11 +453,17 @@ export async function computeGenerationPlan(db: Tx, input: PlanInput): Promise<P
 
     const recurring = emp.allowances.filter((a) => a.isMonthly);
     const salary: SalaryLike = { basicSalary: emp.basicSalary, allowances: recurring };
-    const coverage = settlementCoverage(emp.settlements, salary);
-    if (coverage.finalDay && coverage.finalDay <= monthEnd) continue; // final month paid by the EOS settlement
-
-    let employmentEnd: Date | null = null;
-    if (emp.isTerminated && emp.terminationDate) employmentEnd = emp.terminationDate;
+    const empSpans = spans.get(emp.id);
+    const coverage = settlementCoverage(emp.settlements, salary, { periodStart: currentPeriodStart(empSpans) });
+    // payrollEligible (BL-LCY-012): the one condition, from lifecycle's employmentEnd (NOTICE included)
+    // and the EOS settlement of the current period (it pays its last month).
+    const eligibility = payrollEligible({ employee: emp, year, month, settlementFinalDay: coverage.finalDay });
+    if (!eligibility.eligible) continue;
+    const employmentEnd = eligibility.employmentEnd;
+    const excluded = [
+      ...coverage.excluded,
+      ...employmentGapsWithin(empSpans, monthStart, monthEnd).map((g) => ({ start: new Date(`${g.start}T00:00:00.000Z`), end: new Date(`${g.end}T00:00:00.000Z`) })),
+    ];
 
     // One-off bonuses due up to this month and not reserved by another month's draft.
     const bonuses = emp.allowances.filter((a) => {
@@ -496,7 +512,7 @@ export async function computeGenerationPlan(db: Tx, input: PlanInput): Promise<P
       },
       gosiRates,
       employmentEnd,
-      excluded: coverage.excluded,
+      excluded,
       bonuses: bonuses.map((b) => ({ id: b.id, amount: b.amount })),
       overtimes,
       deductions: deductions.map((d) => ({ id: d.id, amount: d.amount })),

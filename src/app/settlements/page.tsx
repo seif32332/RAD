@@ -6,7 +6,7 @@ import { Receipt, Plus, Search, Clock, Printer, CheckCircle, ShieldCheck, Bankno
 import DashboardLayout from '@/components/DashboardLayout';
 import { toast, confirmDialog, promptDialog, readApiError } from '@/components/ui/feedback';
 import { useRole } from '@/context/RoleContext';
-import { ROLE_GROUPS, SETTLEMENT_STATUS, roleIn } from '@/lib/constants';
+import { ROLE_GROUPS, SETTLEMENT_REVERSED, SETTLEMENT_STATUS, isSettlementVoid, roleIn } from '@/lib/constants';
 import { formatDate } from '@/lib/dates';
 import { formatMoney } from '@/lib/money';
 import SettlementPaymentProofFields, { EMPTY_PAYMENT_PROOF, paymentProofComplete, type PaymentProofValue } from '@/components/SettlementPaymentProofFields';
@@ -383,6 +383,7 @@ const statusFlow: Record<string, { label: string; color: string; icon: LucideIco
   OWNER_APPROVED: { label: 'معتمدة - بانتظار التحويل', color: 'text-blue-700', icon: Banknote, bg: 'bg-blue-50 border-blue-200' },
   PAID: { label: 'تم الدفع', color: 'text-emerald-700', icon: CheckCircle, bg: 'bg-emerald-50 border-emerald-200' },
   REJECTED: { label: 'مرفوضة من صاحب العمل', color: 'text-rose-700', icon: AlertCircle, bg: 'bg-rose-50 border-rose-200' },
+  [SETTLEMENT_REVERSED]: { label: 'معكوسة', color: 'text-slate-600', icon: AlertCircle, bg: 'bg-slate-50 border-slate-200' },
   // Backward compatibility
   PENDING_TRANSFER: { label: 'بانتظار التعميد', color: 'text-amber-700', icon: Clock, bg: 'bg-amber-50 border-amber-200' },
   TRANSFERRED: { label: 'تم التحويل', color: 'text-emerald-700', icon: CheckCircle, bg: 'bg-emerald-50 border-emerald-200' },
@@ -397,7 +398,7 @@ function overdueLabel(n: number): string {
 
 /** "موعد الصرف النظامي" (article 88) with a late badge while the settlement is not paid. */
 function PaymentDeadlineLine({ deadline, status }: { deadline: NonNullable<SettlementRow['paymentDeadline']>; status: string }) {
-  const settled = status === 'PAID' || status === 'TRANSFERRED' || status === 'REJECTED';
+  const settled = status === 'PAID' || status === 'TRANSFERRED' || isSettlementVoid(status);
   const basis = deadline.endedBy === 'WORKER' ? 'أسبوعان من آخر يوم عمل (أنهى العامل العقد)' : 'أسبوع من آخر يوم عمل';
   return (
     <p className="mt-2 flex flex-wrap items-center gap-2 text-[11px] font-bold text-slate-500">

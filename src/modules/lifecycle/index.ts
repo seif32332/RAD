@@ -32,6 +32,10 @@ export {
   canPunch,
   inServiceWhere,
   headcountWhere,
+  employedDuringWhere,
+  employmentSpansOf,
+  currentPeriodStart,
+  employmentGapsWithin,
   latestStateChange,
   stateHistory,
   currentPeriod,
@@ -40,7 +44,7 @@ export {
   employmentLineage,
   migrationReviews,
 } from './queries';
-export type { EmploymentProjection } from './queries';
+export type { EmploymentProjection, EmploymentSpan } from './queries';
 
 export { TERMINATE_ROLES, TwoPersonRequiredError, eligibleSecondPersons, decideTwoPerson, removesLastEligible } from './policy';
 export type { PersonDecision } from './policy';

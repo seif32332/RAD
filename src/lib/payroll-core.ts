@@ -38,7 +38,7 @@
 //   month's payroll was generated is paid by the next generated month.
 import { roundMoney, sumMoney } from '@/lib/money';
 import { addDays, dateKey, monthRange, today, todayKey } from '@/lib/dates';
-import { SETTLEMENT_STATUS } from '@/lib/constants';
+import { isSettlementVoid } from '@/lib/constants';
 import { validateSaudiIban } from '@/lib/iban';
 import { isSaudiNational as isSaudiNationalCanonical } from '@/lib/nationality';
 import {
@@ -978,30 +978,48 @@ export interface SettlementCoverageLike {
   leaveCompensation: number | null;
 }
 
+/** Options of the settlement readers (BL-LCY-012). */
+export interface SettlementCoverageOptions {
+  /**
+   * 'YYYY-MM-DD' first day of the employee's current employment period (lifecycle currentPeriod). An
+   * END_OF_SERVICE settlement whose last working day is before it belongs to an earlier period (a rehire
+   * came after it): it no longer ends the payroll, it only covers the working days of its own last
+   * month it paid (BR-LCY-011 "period scoping"). Omitted / null = no period known (every settlement is
+   * the current one, the legacy reading).
+   */
+  periodStart?: string | null;
+}
+
 /**
- * - END_OF_SERVICE (not rejected): payroll stops the month of the last working day
- *   (the settlement pays that month's working days) -> returns `endsEmployment`.
- * - LEAVE_SETTLEMENT (not rejected): the settlement paid the working days of the month up to
+ * - END_OF_SERVICE (not void, SETTLEMENT_VOID_STATUSES) of the current employment period: payroll
+ *   stops the month of the last working day (the settlement pays that month's working days) -> returns
+ *   `finalDay`. One of an earlier period only excludes the days of its last month it paid.
+ * - LEAVE_SETTLEMENT (not void): the settlement paid the working days of the month up to
  *   lastWorkingDate plus the compensated leave days after it -> excluded date ranges.
  */
 export function settlementCoverage(
   settlements: ReadonlyArray<SettlementCoverageLike>,
   emp: SalaryLike,
+  opts: SettlementCoverageOptions = {},
 ): { finalDay: Date | null; excluded: DateRange[] } {
   let finalDay: Date | null = null;
   const excluded: DateRange[] = [];
   for (const s of settlements) {
-    if (s.status === SETTLEMENT_STATUS.REJECTED) continue;
+    if (isSettlementVoid(s.status)) continue;
     const last = s.lastWorkingDate ?? today(s.createdAt);
     const lastKey = dateKey(last);
     if (!lastKey) continue;
     const lastDay = new Date(`${lastKey}T00:00:00.000Z`);
+    const monthStart = new Date(Date.UTC(lastDay.getUTCFullYear(), lastDay.getUTCMonth(), 1));
     if (s.type === 'END_OF_SERVICE') {
+      if (opts.periodStart && lastKey < opts.periodStart) {
+        excluded.push({ start: monthStart, end: lastDay }); // an earlier period's last month, already paid
+        continue;
+      }
       if (!finalDay || lastDay < finalDay) finalDay = lastDay;
       continue;
     }
     if (s.type === 'LEAVE_SETTLEMENT') {
-      const monthStart = new Date(Date.UTC(lastDay.getUTCFullYear(), lastDay.getUTCMonth(), 1));
       excluded.push({ start: monthStart, end: lastDay });
       const basis: SalaryBasis = s.salaryBasis === 'basic' ? 'basic' : 'total';
       const rate = dailyRate(emp, basis);
@@ -1014,8 +1032,8 @@ export function settlementCoverage(
 
 /**
  * Whether settlements change the payroll of `year/month` (the same rule generatePayrollMonth
- * applies): an END_OF_SERVICE whose last working day falls in or before the month (the
- * employee gets no payroll), or a LEAVE_SETTLEMENT whose settled days intersect the month.
+ * applies): an END_OF_SERVICE of the current period whose last working day falls in or before the
+ * month (the employee gets no payroll), or settled days that intersect the month.
  * Used to refuse approving a draft generated before such a settlement existed.
  */
 export function settlementCoversMonth(
@@ -1023,10 +1041,11 @@ export function settlementCoversMonth(
   emp: SalaryLike,
   year: number,
   month: number,
+  opts: SettlementCoverageOptions = {},
 ): boolean {
   if (!settlements.length) return false;
   const { start, end } = monthRange(year, month);
-  const coverage = settlementCoverage(settlements, emp);
+  const coverage = settlementCoverage(settlements, emp, opts);
   if (coverage.finalDay && coverage.finalDay <= end) return true;
   return coverage.excluded.some((r) => r.start <= end && r.end >= start);
 }

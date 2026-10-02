@@ -28,6 +28,12 @@ export interface EmploymentEventPayload {
   /** 'YYYY-MM-DD' */
   effectiveDate: string;
   terminationDate: string | null;
+  /**
+   * 'YYYY-MM-DD' first day the change affects (BL-LCY-012): the earlier of the old and new last day for
+   * a correction (D1), the voided period's first day for V1, else effectiveDate. It is also the event's
+   * effectiveDate column, so the payroll gate and payroll.employment cover every month it changes.
+   */
+  affectsFrom: string;
   exitReason: string | null;
   exitVoluntary: boolean | null;
   /** SELF_ACT_SINGLE_OPERATOR (N-LCY-005 goes to the owner's summary). */

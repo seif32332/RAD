@@ -43,6 +43,8 @@ import {
   submitDeductionObjection,
 } from '@/modules/payroll';
 import { createBonus } from '@/modules/compensation';
+import { isSeparated } from '@/modules/lifecycle';
+import { hasOpenEos } from '@/modules/offboarding';
 import { assignOvertime, decideOvertime } from '@/modules/time';
 
 export const dynamic = 'force-dynamic';
@@ -737,13 +739,16 @@ const HANDLERS: Record<string, Handler> = {
     if (!(p.amount > 0) || !(p.monthlyInstallment > 0)) throw badRequest('الرجاء التأكد من صحة المبلغ والقسط');
     if (p.monthlyInstallment > p.amount) throw badRequest('لا يمكن أن يتجاوز القسط الشهري مبلغ السلفة');
 
-    const employee = await db.employee.findUnique({ where: { id: employeeId }, select: { id: true, isTerminated: true } });
+    const employee = await db.employee.findUnique({ where: { id: employeeId }, select: { id: true, employmentState: true, isTerminated: true, terminationDate: true } });
     if (!employee) throw notFound('الموظف غير موجود');
-    if (employee.isTerminated) throw conflict('لا يمكن تسجيل سلفة لموظف منتهية خدمته');
+    if (isSeparated(employee)) throw conflict('لا يمكن تسجيل سلفة لموظف منتهية خدمته');
 
     // payroll.createLoan behind money.gateway: a pending request (for oneself too, DEC-PO-006), createdById recorded.
-    const created = await runPayrollTransaction(db, (tx) =>
-      createLoan(tx, {
+    // BL-LCY-012 (BR-LCY-011): no new loan once an end-of-service settlement of the current employment
+    // period exists (not rejected / reversed), checked in the loan's transaction.
+    const created = await runPayrollTransaction(db, async (tx) => {
+      if (await hasOpenEos(tx, employeeId)) throw conflict('لا يمكن تسجيل سلفة: للموظف تصفية نهاية خدمة قائمة');
+      return createLoan(tx, {
         actor: moneyActorOf(user),
         employeeId,
         amount: p.amount,
@@ -751,8 +756,8 @@ const HANDLERS: Record<string, Handler> = {
         reason: p.reason ?? '',
         operationKey: opKey(ctx, 'loan.create', randomUUID()),
         ipAddress: ip,
-      }),
-    );
+      });
+    });
     await logAudit({ userId: user.id, action: 'CREATE', entityType: 'LOAN', entityId: created.id, details: { employeeId, amount: created.amount }, ipAddress: ip });
     return ok('تم تسجيل السلفة', created);
   },
