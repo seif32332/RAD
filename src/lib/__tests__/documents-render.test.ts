@@ -14,7 +14,7 @@ import { createSealCertificate } from '@/lib/documents/seal/cert';
 import { sealPdf } from '@/lib/documents/seal/pades';
 import { hasOpenssl, opensslVerify } from './seal-fixtures';
 import {
-  ADMIN_CIRCULAR, buildCandidateContractData, buildCompanyContractData, buildContractData, CLEARANCE_CERTIFICATE, CONTRACT_ADDENDUM, type AddendumFacts, WORK_COMMENCEMENT, WORK_COMMENCEMENT_LETTER, type CommencementFacts, EMPLOYMENT_CERTIFICATE, EXPERIENCE_CERTIFICATE, EVALUATION_REPORT, EXIT_ACCEPTANCE, INVESTIGATION_MINUTES, JOB_OFFER, LEAVE_APPROVAL, NO_OBJECTION, paramsSchema, PAYSLIP, PROMOTION_DECISION, SALARY_CERTIFICATE, SALARY_TRANSFER, SETTLEMENT_STATEMENT, TERMINATION_NOTICE, WARNING_LETTER,
+  ADMIN_CIRCULAR, buildCandidateContractData, buildCompanyContractData, buildContractData, CLEARANCE_CERTIFICATE, CONTRACT_ADDENDUM, type AddendumFacts, WORK_COMMENCEMENT, WORK_COMMENCEMENT_LETTER, type CommencementFacts, TRANSFER_DECISION, type TransferFacts, EMPLOYMENT_CERTIFICATE, EXPERIENCE_CERTIFICATE, EVALUATION_REPORT, EXIT_ACCEPTANCE, INVESTIGATION_MINUTES, JOB_OFFER, LEAVE_APPROVAL, NO_OBJECTION, paramsSchema, PAYSLIP, PROMOTION_DECISION, SALARY_CERTIFICATE, SALARY_TRANSFER, SETTLEMENT_STATEMENT, TERMINATION_NOTICE, WARNING_LETTER,
   type CompanyRecord, type DocumentLanguage, type DocumentTypeDefinition, type EmployeeRecord, type ExitFacts, type PayrollFacts, type BankFacts, type EvaluationFacts, type InvestigationFacts, type LeaveFacts, type SettlementFacts, type TerminationFacts,
 } from '@/lib/documents/types';
 
@@ -39,10 +39,10 @@ const company: CompanyRecord = { id: 'c1', nameArabic: 'شركة أكمي للم
 async function render(
   def: DocumentTypeDefinition,
   language: DocumentLanguage,
-  opts: { terminated?: boolean; signature?: boolean; logo?: boolean; params?: Record<string, unknown>; facts?: ExitFacts; settlement?: SettlementFacts; payroll?: PayrollFacts; termination?: TerminationFacts; investigation?: InvestigationFacts; bank?: BankFacts; leave?: LeaveFacts; evaluation?: EvaluationFacts; addendum?: AddendumFacts; commencement?: CommencementFacts } = {},
+  opts: { terminated?: boolean; signature?: boolean; logo?: boolean; params?: Record<string, unknown>; facts?: ExitFacts; settlement?: SettlementFacts; payroll?: PayrollFacts; termination?: TerminationFacts; investigation?: InvestigationFacts; bank?: BankFacts; leave?: LeaveFacts; evaluation?: EvaluationFacts; addendum?: AddendumFacts; commencement?: CommencementFacts; transfer?: TransferFacts } = {},
 ) {
   const emp = opts.terminated ? { ...employee, isTerminated: true, terminationDate: new Date('2026-08-31T21:00:00Z') } : employee;
-  const data = buildContractData(def, { employee: emp, company, params: paramsSchema.parse({ language, ...opts.params }), facts: opts.facts, settlement: opts.settlement, payroll: opts.payroll, termination: opts.termination, investigation: opts.investigation, bank: opts.bank, leave: opts.leave, evaluation: opts.evaluation, addendum: opts.addendum, commencement: opts.commencement }) as never;
+  const data = buildContractData(def, { employee: emp, company, params: paramsSchema.parse({ language, ...opts.params }), facts: opts.facts, settlement: opts.settlement, payroll: opts.payroll, termination: opts.termination, investigation: opts.investigation, bank: opts.bank, leave: opts.leave, evaluation: opts.evaluation, addendum: opts.addendum, commencement: opts.commencement, transfer: opts.transfer }) as never;
   const token = newVerifyToken();
   const url = verifyUrl('https://acme.radeef.sa', token);
   const model = buildRenderModel(data, { primaryColor: '#0F4C81', numerals: 'latn', addressAr: 'الرياض، حي العليا', addressEn: null, phone: '+966 11 234 5678', email: null, logoSha256: null }, {
@@ -185,6 +185,18 @@ describe.skipIf(!config)('templates through radeef-render', () => {
       commencement: { leave: { id: 'l1', employeeId: employee.id, leaveType: 'ANNUAL', startDate: new Date('2026-08-31T21:00:00Z'), endDate: new Date('2026-09-09T21:00:00Z'), isReturned: true, actualReturnDate: new Date('2026-09-13T21:00:00Z') } },
     });
     expect(back.out.pdf.subarray(0, 5).toString('latin1')).toBe('%PDF-');
+  });
+
+  it('transfer decision (branch, department and manager)', async () => {
+    const { out } = await render(TRANSFER_DECISION, 'ar', {
+      params: { transfer: { effectiveDate: '2026-10-01', newBranchId: 'b2', newDepartmentId: 'd2', newDirectManagerId: 'm2', reasonAr: 'لحاجة العمل' } },
+      transfer: {
+        branch: { id: 'b1', nameAr: 'فرع العليا', city: 'الرياض' }, department: { id: 'd1', nameAr: 'إدارة المشاريع' }, manager: { id: 'm1', nameAr: 'خالد السالم' },
+        newBranch: { id: 'b2', nameAr: 'فرع الملز', city: 'الرياض' }, newDepartment: { id: 'd2', nameAr: 'إدارة الصيانة', branchId: 'b2' },
+        newManager: { id: 'm2', nameAr: 'سعد الحربي', inService: true }, allowCityChange: false,
+      },
+    });
+    expect(out.pdf.subarray(0, 5).toString('latin1')).toBe('%PDF-');
   });
 
   it('contract addendum (every kind of term)', async () => {

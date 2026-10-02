@@ -6,6 +6,7 @@ import { requireUser } from '@/lib/auth';
 import { ROLE_GROUPS } from '@/lib/constants';
 import { handleApiError, parseQuery } from '@/lib/http';
 import { zId, zOptDate } from '@/lib/validation';
+import { authz, resolveActor, scopedContext, scopedPrisma } from '@/modules/iam';
 
 export const dynamic = 'force-dynamic';
 
@@ -24,10 +25,15 @@ const querySchema = z.object({
 /**
  * GET /api/attendance-punches — self clock-in attempts (HR only): newest first, paginated.
  * Coordinates are returned for HR review; selfies are fetched separately (…/[id]/photo).
+ * P1-SCOPE: ScopedContext over the user's companies (the punch follows its employee's company); the
+ * list, the total and the pending-review count go through the scoped client.
  */
 export async function GET(req: Request) {
   try {
-    await requireUser(ROLE_GROUPS.HR);
+    const user = await requireUser(ROLE_GROUPS.HR);
+    const ctx = scopedContext(await resolveActor(prisma, user));
+    authz.assert(ctx, 'attendance.read');
+    const db = scopedPrisma(ctx);
     const q = parseQuery(req, querySchema);
     const where: Prisma.AttendancePunchWhereInput = {
       ...(q.result ? { result: q.result } : {}),
@@ -39,7 +45,7 @@ export async function GET(req: Request) {
     const take = q.take ?? 50;
     const skip = q.skip ?? 0;
     const [punches, total, pendingReview] = await Promise.all([
-      prisma.attendancePunch.findMany({
+      db.attendancePunch.findMany({
         where,
         orderBy: { createdAt: 'desc' },
         take,
@@ -66,8 +72,8 @@ export async function GET(req: Request) {
           employee: { select: { employeeId: true, firstNameArabic: true, lastNameArabic: true, branch: { select: { nameArabic: true } } } },
         },
       }),
-      prisma.attendancePunch.count({ where }),
-      prisma.attendancePunch.count({ where: { result: 'FLAGGED', reviewedAt: null } }),
+      db.attendancePunch.count({ where }),
+      db.attendancePunch.count({ where: { result: 'FLAGGED', reviewedAt: null } }),
     ]);
     return NextResponse.json({
       punches: punches.map(({ selfieStoredName, ...p }) => ({ ...p, hasSelfie: !!selfieStoredName })),

@@ -20,8 +20,13 @@ import {
   zRole,
 } from '../shared';
 import { assertPasswordLength, friendlyValidationError } from '../../security';
+import { ALL_COMPANIES, authz, resolveActor, scopedContext } from '@/modules/iam';
 
 export const dynamic = 'force-dynamic';
+
+// P1-SCOPE: tenant-wide (SystemSetting / User / RolePermission / AuditLog have no company): an admin
+// who sees EVERY company only. scopedContext(actor, ALL_COMPANIES) refuses (403) an actor restricted
+// to some companies by UserCompanyScope, whatever his role.
 
 type Ctx = { params: Promise<{ id: string }> };
 
@@ -42,7 +47,9 @@ function countActiveSuperAdmins(tx: Prisma.TransactionClient) {
 
 export async function GET(_req: Request, { params }: Ctx) {
   try {
-    await requireUser(ROLE_GROUPS.ADMIN);
+    const actor = await requireUser(ROLE_GROUPS.ADMIN);
+    const ctx = scopedContext(await resolveActor(prisma, actor), ALL_COMPANIES);
+    authz.assert(ctx, 'platform.settings.manage');
     const id = zId.parse((await params).id);
     const user = await prisma.user.findUnique({ where: { id }, select: safeUserSelect });
     if (!user) throw notFound('المستخدم غير موجود');
@@ -55,6 +62,8 @@ export async function GET(_req: Request, { params }: Ctx) {
 export async function PATCH(req: Request, { params }: Ctx) {
   try {
     const actor = await requireUser(ROLE_GROUPS.ADMIN);
+    const ctx = scopedContext(await resolveActor(prisma, actor), ALL_COMPANIES);
+    authz.assert(ctx, 'platform.settings.manage');
     const id = zId.parse((await params).id);
     const body = await parseBody(req, UpdateUserSchema);
 
@@ -120,6 +129,8 @@ export async function PATCH(req: Request, { params }: Ctx) {
 export async function DELETE(req: Request, { params }: Ctx) {
   try {
     const actor = await requireUser(ROLE_GROUPS.ADMIN);
+    const ctx = scopedContext(await resolveActor(prisma, actor), ALL_COMPANIES);
+    authz.assert(ctx, 'platform.settings.manage');
     const id = zId.parse((await params).id);
 
     // An account is never removed: deleting it would orphan its audit trail (AuditLog.userId is

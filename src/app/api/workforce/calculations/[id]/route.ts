@@ -8,6 +8,7 @@ import { ROLE_GROUPS } from '@/lib/constants';
 import { handleApiError, notFound } from '@/lib/http';
 import { zId } from '@/lib/validation';
 import { canSeeDisability, redactSnapshotJson } from '@/lib/workforce/privacy';
+import { calculationScopeWhere, workforceScope } from '../../_lib/scope';
 
 export const dynamic = 'force-dynamic';
 
@@ -27,7 +28,9 @@ export async function GET(_req: Request, ctx: { params: Promise<{ id: string }> 
     const view = canSeeDisability(user.role) ? (v: unknown) => v : redactSnapshotJson;
     const idParse = zId.safeParse((await ctx.params).id);
     if (!idParse.success) throw notFound('الحساب المحفوظ غير موجود');
-    const row = await prisma.workforceCalculation.findUnique({ where: { id: idParse.data } });
+    // P1-SCOPE: a snapshot whose subject is outside the caller's companies is "not found".
+    const inScope = await calculationScopeWhere(await workforceScope(user));
+    const row = await prisma.workforceCalculation.findFirst({ where: { id: idParse.data, ...(inScope ? { AND: [inScope] } : {}) } });
     if (!row) throw notFound('الحساب المحفوظ غير موجود');
     const creator = row.createdById ? await prisma.user.findUnique({ where: { id: row.createdById }, select: { name: true, email: true } }) : null;
     return NextResponse.json({

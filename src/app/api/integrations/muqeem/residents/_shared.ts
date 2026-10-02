@@ -1,5 +1,6 @@
 // Server helpers shared by the resident sync routes (not a route: no route.ts here).
 import 'server-only';
+import type { Prisma } from '@prisma/client';
 import { prisma } from '@/lib/prisma';
 import { createMuqeemClient, findResidentRows, activeResidentsTotal, normalizeActiveResidents, type NormalizedResident } from '@/lib/muqeem';
 import { collectReportPages, MAX_SYNC_RESIDENTS, SYNC_PAGE_SIZE, type CollectedReport, type SyncEmployee } from '@/lib/muqeem-sync';
@@ -89,11 +90,16 @@ export function toSyncEmployee(e: EmployeeRow): SyncEmployee {
 /**
  * Employees of the legal company (terminated included) plus employees of other companies whose
  * iqama number appears in the report (to explain residents not found under this company).
+ * `scope` (P1-SCOPE): the employee filter of the user's companies (scopeWhere(ctx, 'Employee')), so a
+ * scoped user never gets an employee of a company outside his scope; null = unrestricted.
  */
-export async function loadEmployeesForDiff(companyId: string, iqamaNumbers: string[]): Promise<SyncEmployee[]> {
+export async function loadEmployeesForDiff(companyId: string, iqamaNumbers: string[], scope: Prisma.EmployeeWhereInput | null): Promise<SyncEmployee[]> {
   const rows = await prisma.employee.findMany({
     where: {
-      OR: [{ legalCompanyId: companyId }, ...(iqamaNumbers.length ? [{ iqamaOrIdNumber: { in: iqamaNumbers } }] : [])],
+      AND: [
+        { OR: [{ legalCompanyId: companyId }, ...(iqamaNumbers.length ? [{ iqamaOrIdNumber: { in: iqamaNumbers } }] : [])] },
+        ...(scope ? [scope] : []),
+      ],
     },
     select: EMPLOYEE_SELECT,
   });

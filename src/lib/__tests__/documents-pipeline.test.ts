@@ -8,6 +8,7 @@ import { readFileSync, writeFileSync } from 'fs';
 import path from 'path';
 import { beforeAll, describe, expect, it } from 'vitest';
 import { storedNameFromSegments } from '@/lib/storage';
+import { moneyFixture, payrollLineFixture } from '@/test/money-fixtures';
 
 const RUN = process.env.DOCUMENTS_IT === '1';
 const fixtures = path.join(process.cwd(), 'services', 'render', 'test', 'fixtures', 'F2-ar-en');
@@ -44,7 +45,8 @@ describe.skipIf(!RUN)('document issuance pipeline (Postgres + radeef-render)', {
 
   async function newEmployee(i: number, over: Record<string, unknown> = {}) {
     const user = await prisma.user.create({ data: { email: `emp-${tag}-${i}@example.test`, passwordHash: 'x', role: 'EMPLOYEE' } });
-    const e = await prisma.employee.create({
+    // Money rows as fixtures go through the test operation of money.gateway (P1-PAY-A).
+    const e = await moneyFixture((tx) => tx.employee.create({
       data: {
         employeeId: `E-${tag}-${i}`, firstNameArabic: 'محمد', lastNameArabic: 'عبدالله الأحمد', firstNameEnglish: 'Mohammed', lastNameEnglish: 'Alahmad',
         nationality: 'أردني', iqamaOrIdNumber: `2${tag.replace(/\D/g, '').padEnd(4, '7').slice(0, 4)}${String(i).padStart(5, '0')}`,
@@ -53,7 +55,7 @@ describe.skipIf(!RUN)('document issuance pipeline (Postgres + radeef-render)', {
         allowances: { create: [{ name: 'بدل سكن', amount: 2375, isMonthly: true, allowanceType: 'HOUSING' }] },
         ...over,
       },
-    });
+    }));
     return { employeeId: e.id, userId: user.id };
   }
 
@@ -369,13 +371,13 @@ describe.skipIf(!RUN)('document issuance pipeline (Postgres + radeef-render)', {
   it('clearance: refused while anything is open (listing it); issued after approval once all is settled', async () => {
     const e = await newEmployee(950, { isTerminated: true, terminationDate: new Date('2026-08-31T21:00:00Z') });
     const asset = await prisma.asset.create({ data: { employeeId: e.employeeId, assetType: 'لابتوب', description: 'Dell', status: 'ACTIVE' } });
-    const st = await prisma.settlement.create({ data: { employeeId: e.employeeId, type: 'END_OF_SERVICE', status: 'OWNER_APPROVED', lastWorkingDate: new Date('2026-08-30T21:00:00Z') } });
+    const st = await moneyFixture((tx) => tx.settlement.create({ data: { employeeId: e.employeeId, type: 'END_OF_SERVICE', status: 'OWNER_APPROVED', lastWorkingDate: new Date('2026-08-30T21:00:00Z') } }));
     const attempt = svc.createDocumentRequest({ typeKey: 'CLEARANCE_CERTIFICATE', employeeId: e.employeeId, params: { language: 'ar-en' }, source: 'HR' }, hr(), renderer);
     await expect(attempt).rejects.toThrow(/عهدة لم تُسترجع: لابتوب - Dell/);
     await expect(attempt).rejects.toThrow(/لم تُصرف بعد/);
 
     await prisma.asset.update({ where: { id: asset.id }, data: { status: 'RETURNED', returnDate: new Date() } });
-    await prisma.settlement.update({ where: { id: st.id }, data: { status: 'PAID' } });
+    await moneyFixture((tx) => tx.settlement.update({ where: { id: st.id }, data: { status: 'PAID' } }));
     const r = await svc.createDocumentRequest({ typeKey: 'CLEARANCE_CERTIFICATE', employeeId: e.employeeId, params: { language: 'ar-en' }, source: 'HR' }, hr(), renderer);
     expect(r.status).toBe('PENDING_APPROVAL');
     const req = await prisma.documentRequest.findUniqueOrThrow({ where: { id: r.requestId }, include: { currentSnapshot: true } });
@@ -394,9 +396,9 @@ describe.skipIf(!RUN)('document issuance pipeline (Postgres + radeef-render)', {
 
   it('paid settlement: clearance + experience requests suggested for approval, once (SPEC §13)', async () => {
     const e = await newEmployee(970, { isTerminated: true, terminationDate: new Date('2026-08-31T21:00:00Z') });
-    const st = await prisma.settlement.create({ data: { employeeId: e.employeeId, type: 'END_OF_SERVICE', status: 'OWNER_APPROVED' } });
+    const st = await moneyFixture((tx) => tx.settlement.create({ data: { employeeId: e.employeeId, type: 'END_OF_SERVICE', status: 'OWNER_APPROVED' } }));
     expect(await svc.suggestExitDocuments(st.id)).toEqual([]); // not paid yet
-    await prisma.settlement.update({ where: { id: st.id }, data: { status: 'PAID' } });
+    await moneyFixture((tx) => tx.settlement.update({ where: { id: st.id }, data: { status: 'PAID' } }));
 
     const first = await svc.suggestExitDocuments(st.id);
     expect(first.map((x) => [x.typeKey, x.outcome])).toEqual([['CLEARANCE_CERTIFICATE', 'CREATED'], ['EXPERIENCE_CERTIFICATE', 'CREATED'], ['SETTLEMENT_STATEMENT', 'SKIPPED']]);
@@ -416,7 +418,7 @@ describe.skipIf(!RUN)('document issuance pipeline (Postgres + radeef-render)', {
     // Blocked suggestion (open custody) is SKIPPED with the reason, and created by a later sweep.
     const b = await newEmployee(971, { isTerminated: true, terminationDate: new Date('2026-08-31T21:00:00Z') });
     const item = await prisma.asset.create({ data: { employeeId: b.employeeId, assetType: 'سيارة', status: 'ACTIVE' } });
-    const st2 = await prisma.settlement.create({ data: { employeeId: b.employeeId, type: 'END_OF_SERVICE', status: 'PAID' } });
+    const st2 = await moneyFixture((tx) => tx.settlement.create({ data: { employeeId: b.employeeId, type: 'END_OF_SERVICE', status: 'PAID' } }));
     const blocked = await svc.suggestExitDocuments(st2.id);
     expect(blocked.find((x) => x.typeKey === 'CLEARANCE_CERTIFICATE')).toMatchObject({ outcome: 'SKIPPED', reason: expect.stringMatching(/سيارة/) });
     expect(blocked.find((x) => x.typeKey === 'EXPERIENCE_CERTIFICATE')?.outcome).toBe('CREATED');
@@ -432,13 +434,13 @@ describe.skipIf(!RUN)('document issuance pipeline (Postgres + radeef-render)', {
     const finance = { id: (await prisma.user.create({ data: { email: `fin-${tag}@example.test`, passwordHash: 'x', role: 'FINANCE_MANAGER' } })).id, email: '', role: 'FINANCE_MANAGER' as const, name: '', avatarUrl: null, employeeId: null, sessionVersion: 0 };
     const e = await newEmployee(990, { isTerminated: true, terminationDate: new Date('2026-08-31T21:00:00Z') });
     // Components as the settlement screen stores them: 1200 + 30000 + 4500 + (overtime 800 + other 300) - (loans 2000 + other 500) = 34300
-    const st = await prisma.settlement.create({
+    const st = await moneyFixture((tx) => tx.settlement.create({
       data: {
         employeeId: e.employeeId, type: 'END_OF_SERVICE', terminationReason: 'RESIGNATION', status: 'OWNER_APPROVED', lastWorkingDate: new Date('2026-08-30T21:00:00Z'),
         yearsOfService: 7.4789, workingDaysSalary: 1200, endOfServiceAmount: 30000, leaveCompensation: 4500, overtimeAmount: 800, additionalEntitlements: 1100,
         loansDeduction: 2000, additionalDeductions: 2500, totalSettlement: 34300,
       },
-    });
+    }));
     // Not paid yet, then paid without proof is impossible (the proof is a required parameter).
     await expect(svc.createDocumentRequest({ typeKey: 'SETTLEMENT_STATEMENT', employeeId: e.employeeId, params: { language: 'ar', settlementId: st.id }, source: 'HR' }, hr(), renderer)).rejects.toThrow(/لم تُصرف/);
     const receipt = Buffer.from('%PDF-1.4 receipt of transfer 88213', 'latin1');
@@ -483,20 +485,20 @@ describe.skipIf(!RUN)('document issuance pipeline (Postgres + radeef-render)', {
     expect(notices[0].body).not.toContain('بدل الإجازة'); // the reason stays behind the login
 
     // Inconsistent stored components are refused rather than printed.
-    await prisma.settlement.update({ where: { id: st.id }, data: { totalSettlement: 34300.5 } });
+    await moneyFixture((tx) => tx.settlement.update({ where: { id: st.id }, data: { totalSettlement: 34300.5 } }));
     await expect(svc.createDocumentRequest({ typeKey: 'SETTLEMENT_STATEMENT', employeeId: e.employeeId, params: { language: 'ar', settlementId: st.id }, source: 'HR' }, hr(), renderer)).rejects.toThrow(/لا يطابق/);
 
     // A paid leave settlement suggests its statement (and nothing else).
-    const lv = await prisma.settlement.create({
+    const lv = await moneyFixture((tx) => tx.settlement.create({
       data: { employeeId: e.employeeId, type: 'LEAVE_SETTLEMENT', status: 'PAID', leaveCompensation: 3000, totalSettlement: 3000, paymentMethod: 'CASH_VOUCHER', paymentReference: 'SV-17', paidAt: new Date('2026-09-10T21:00:00Z') },
-    });
+    }));
     const sug = await svc.suggestExitDocuments(lv.id);
     expect(sug.map((x) => [x.typeKey, x.outcome])).toEqual([['SETTLEMENT_STATEMENT', 'CREATED']]);
   });
 
   it('leaver: documents-only window at termination (not for absconding), then the nightly job deactivates', async () => {
     const { deactivateEmployeeUser } = await import('@/lib/access');
-    const { runJob } = await import('../../../scripts/jobs.mjs');
+    const { runRegisteredJob: runJob } = await import('@/jobs/run');
     const e = await newEmployee(995, { isTerminated: true, terminationDate: new Date('2026-08-31T21:00:00Z') });
     const before = await prisma.user.findUniqueOrThrow({ where: { id: e.userId } });
     const r = await prisma.$transaction((tx) => deactivateEmployeeUser(tx, e.employeeId, { reason: 'test' }));
@@ -520,19 +522,20 @@ describe.skipIf(!RUN)('document issuance pipeline (Postgres + radeef-render)', {
   });
 
   it('payslips: issued for the whole month once paid, unsigned, no approval, once per row; a failed month blocks nothing', async () => {
-    const { markPayrollMonthPaid } = await import('@/lib/payroll');
+    // Payroll rows are fixtures here (company + month, 9zf); "paid" is set directly: the payment act itself
+    // is payroll's (tested in src/modules/payroll), this test is about the payslips.
+    const markPayrollMonthPaid = (_tx: unknown, year: number, month: number) =>
+      moneyFixture((tx) => tx.payroll.updateMany({ where: { year, month, status: 'APPROVED', employeeId: { in: [a.employeeId, b.employeeId] } }, data: { status: 'PAID', paidAt: new Date() } }));
     const a = await newEmployee(1001);
     const b = await newEmployee(1002);
-    const row = (employeeId: string, month: number) => prisma.payroll.create({
-      data: {
+    const row = (employeeId: string, month: number) => moneyFixture((tx) => payrollLineFixture(tx, {
         employeeId, month, year: 2031, status: 'APPROVED', basicSalary: 9500, totalAllowances: 2375, bonusAmount: 0, overtimeCost: 0,
         gosiEmployee: 1068.75, loansDeduction: 0, violationsDeduction: 0, leaveDeduction: 0, otherDeductions: 0, totalDeductions: 1068.75, netSalary: 10806.25,
-      },
-    });
+    }));
     const [ra, rb] = [await row(a.employeeId, 3), await row(b.employeeId, 3)];
     expect((await svc.issuePayslips({ year: 2031, month: 3 })).issued).toBe(0); // approved, not paid yet
 
-    await prisma.$transaction((tx) => markPayrollMonthPaid(tx, 2031, 3));
+    await markPayrollMonthPaid(null, 2031, 3);
     const run = await svc.issuePayslips({ year: 2031, month: 3 });
     expect(run).toEqual({ issued: 2, existing: 0, failed: [] });
     const docs = await prisma.issuedDocument.findMany({ where: { typeKey: 'PAYSLIP', employeeId: { in: [a.employeeId, b.employeeId] } }, include: { request: true } });
@@ -548,12 +551,12 @@ describe.skipIf(!RUN)('document issuance pipeline (Postgres + radeef-render)', {
 
     // A month whose render fails stays APPROVED and does not block the next month.
     const rb4 = await row(b.employeeId, 4);
-    await prisma.$transaction((tx) => markPayrollMonthPaid(tx, 2031, 4));
+    await markPayrollMonthPaid(null, 2031, 4);
     const broken = { id: 'typst' as const, render: async () => { throw new RenderError('down', 'SERVICE_UNAVAILABLE', true); } };
     const stuck = await svc.createDocumentRequest({ typeKey: 'PAYSLIP', employeeId: b.employeeId, params: { language: 'ar', payrollId: rb4.id }, source: 'SYSTEM', sourceRef: `payroll:${rb4.id}` }, svc.SYSTEM_ACTOR, broken);
     expect(stuck.status).toBe('APPROVED');
     const rb5 = await row(b.employeeId, 5);
-    await prisma.$transaction((tx) => markPayrollMonthPaid(tx, 2031, 5));
+    await markPayrollMonthPaid(null, 2031, 5);
     expect((await svc.issuePayslips({ year: 2031, month: 5 })).issued).toBe(1);
     expect(rb5.id).toBeTruthy();
     expect(rb.id).toBeTruthy();
@@ -609,7 +612,7 @@ describe.skipIf(!RUN)('document issuance pipeline (Postgres + radeef-render)', {
   });
 
   it('promotion decision: applied on issuance when due, later by the job when future; revocation cancels a pending order only', async () => {
-    const { runJob } = await import('../../../scripts/jobs.mjs');
+    const { runRegisteredJob: runJob } = await import('@/jobs/run');
     const checker = { userId: signatoryUserId, role: 'COMPANY_ADMIN', employeeId: null, ip: null };
     const issue = async (employeeId: string, promotion: Record<string, unknown>) => {
       const r = await svc.createDocumentRequest({ typeKey: 'PROMOTION_DECISION', employeeId, params: { language: 'ar', promotion }, source: 'HR' }, hr(), renderer);
@@ -650,7 +653,7 @@ describe.skipIf(!RUN)('document issuance pipeline (Postgres + radeef-render)', {
 
   it('job offer: to a candidate, second-person approval, private link, answered once, purged after the candidate retention', async () => {
     const cand = await import('@/lib/documents/candidate');
-    const { runJob } = await import('../../../scripts/jobs.mjs');
+    const { runRegisteredJob: runJob } = await import('@/jobs/run');
     const hrEmployee = await newEmployee(1501);
     const jr = await prisma.jobRequest.create({ data: { requesterId: hrEmployee.employeeId, jobTitle: 'محاسب', jobType: 'كامل', nationality: 'غير محدد', description: 'x', status: 'APPROVED' } });
     const app = await prisma.jobApplication.create({ data: { jobRequestId: jr.id, candidateName: 'سارة أحمد', candidatePhone: '0500000000', candidateEmail: `cand-${tag}@example.test`, status: 'INTERVIEW' } });
@@ -786,7 +789,7 @@ describe.skipIf(!RUN)('document issuance pipeline (Postgres + radeef-render)', {
   });
 
   it('contract addendum: second-person approval; nothing changes until the employee accepts by the effective date; a decline or no answer changes nothing', async () => {
-    const { runJob } = await import('../../../scripts/jobs.mjs');
+    const { runRegisteredJob: runJob } = await import('@/jobs/run');
     const checker = { userId: signatoryUserId, role: 'COMPANY_ADMIN', employeeId: null, ip: null };
     const riyadh = (offsetDays: number) => new Date(Date.now() + 3 * 3600e3 + offsetDays * 86_400_000).toISOString().slice(0, 10);
     const [b1, b2] = await Promise.all(['فرع الرياض', 'فرع جدة'].map((nameArabic) => prisma.branch.create({ data: { companyId, nameArabic } })));
@@ -946,6 +949,49 @@ describe.skipIf(!RUN)('document issuance pipeline (Postgres + radeef-render)', {
     await expect(prisma.circularRecipient.delete({ where: { id: ackRow.id } })).rejects.toThrow(/never deleted/);
     // Only a circular may have no subject.
     await expect(prisma.documentRequest.create({ data: { typeKey: 'SALARY_CERTIFICATE', legalCompanyId: companyId, source: 'HR', paramsJson: '{}', status: 'DRAFT' } })).rejects.toThrow(/one_subject/);
+  });
+
+  it('transfer decision: approved, hidden from the employee until issued, applied to the file; another city only when the company allows it', async () => {
+    const queries = await import('@/lib/documents/queries');
+    const { runRegisteredJob: runJob } = await import('@/jobs/run');
+    const checker = { userId: signatoryUserId, role: 'COMPANY_ADMIN', employeeId: null, ip: null };
+    const today = new Date(Date.now() + 3 * 3600e3).toISOString().slice(0, 10);
+    const olaya = await prisma.branch.create({ data: { companyId, nameArabic: 'فرع العليا', city: 'الرياض' } });
+    const malaz = await prisma.branch.create({ data: { companyId, nameArabic: 'فرع الملز', city: 'الرياض' } });
+    const jeddah = await prisma.branch.create({ data: { companyId, nameArabic: 'فرع جدة', city: 'جدة' } });
+    const maintenance = await prisma.department.create({ data: { branchId: malaz.id, nameArabic: 'إدارة الصيانة' } });
+    const manager = await newEmployee(2801);
+    const e = await newEmployee(2802, { branchId: olaya.id });
+    const request = (transfer: Record<string, unknown>) =>
+      svc.createDocumentRequest({ typeKey: 'TRANSFER_DECISION', employeeId: e.employeeId, params: { language: 'ar', transfer }, source: 'HR' }, hr(), renderer);
+    const approve = async (requestId: string) => {
+      const req = await prisma.documentRequest.findUniqueOrThrow({ where: { id: requestId }, include: { currentSnapshot: true } });
+      return svc.approveDocumentRequest(requestId, req.currentSnapshot!.dataSha256, null, checker, renderer);
+    };
+
+    // Same city, effective today: approved, then applied at issuance.
+    const r = await request({ effectiveDate: today, newBranchId: malaz.id, newDepartmentId: maintenance.id, newDirectManagerId: manager.employeeId });
+    expect(r.status).toBe('PENDING_APPROVAL');
+    expect((await queries.myDocumentRequests(e.employeeId)).some((x) => x.id === r.requestId)).toBe(false); // HR's decision: not before it is issued
+    const out = await approve(r.requestId);
+    expect(out.status).toBe('ISSUED');
+    const moved = await prisma.employee.findUniqueOrThrow({ where: { id: e.employeeId } });
+    expect([moved.branchId, moved.departmentId, moved.directManagerId]).toEqual([malaz.id, maintenance.id, manager.employeeId]);
+    expect((await queries.myDocumentRequests(e.employeeId)).some((x) => x.id === r.requestId)).toBe(true);
+    await expect(svc.revokeIssuedDocument(out.documentId!, 'خطأ', hr())).rejects.toThrow(/نُفّذ على ملف الموظف/);
+
+    // Another city: refused by default (contract addendum), allowed once the company says so; a future date waits for the job.
+    await expect(request({ effectiveDate: '2096-01-01', newBranchId: jeddah.id })).rejects.toThrow(/مدينة العمل/);
+    await prisma.documentTypeSetting.upsert({
+      where: { companyId_typeKey: { companyId, typeKey: 'TRANSFER_DECISION' } },
+      create: { companyId, typeKey: 'TRANSFER_DECISION', optionsJson: '{"allowCityChange":true}' },
+      update: { optionsJson: '{"allowCityChange":true}' },
+    });
+    const far = await request({ effectiveDate: '2096-01-01', newBranchId: jeddah.id });
+    expect((await approve(far.requestId)).status).toBe('ISSUED');
+    expect((await prisma.employee.findUniqueOrThrow({ where: { id: e.employeeId } })).branchId).toBe(malaz.id);
+    await runJob(prisma, 'apply-employee-changes', { now: new Date('2096-01-01T08:00:00Z') });
+    expect((await prisma.employee.findUniqueOrThrow({ where: { id: e.employeeId } })).branchId).toBe(jeddah.id);
   });
 
   it('PAdES seal: every issued PDF is sealed with the company key (one per company, stored encrypted), verifiable and tamper-evident', async () => {

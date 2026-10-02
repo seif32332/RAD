@@ -1,112 +1,38 @@
 import { describe, expect, it } from 'vitest';
-import {
-  accessExpired,
-  alertCutoffDate as jobCutoff,
-  buildDigest,
-  CATEGORY_LABELS,
-  classifyForDigest,
-  classifySendError,
-  daysUntil as jobDaysUntil,
-  DIGEST_THRESHOLDS,
-  digestIdempotencyKey,
-  digestThresholds,
-  outboxSendConfig,
-  parseDigestRoles,
-  parseGraceDays,
-  riyadhTodayKey,
-  withConnectionLimit,
-} from '../../../scripts/jobs.mjs';
-import { ALERT_THRESHOLD_SETTINGS, alertCutoffDate, classifyExpiry, parseAlertThresholds } from '@/lib/alerts';
-import { daysUntil, todayKey } from '@/lib/dates';
+import { accessExpired, parseDigestRoles } from '@/lib/access';
+import { buildDigest, DIGEST_CATEGORIES, DIGEST_CATEGORY_LABELS, digestIdempotencyKey, digestLevel, loginUrl } from '@/lib/alerts-digest';
+import { ALERT_THRESHOLD_SETTINGS, classifyExpiry } from '@/lib/alerts';
+import { classifySendError, outboxSendConfig } from '@/modules/platform';
+import { withConnectionLimit } from '@/jobs/cli';
 
-// scripts/jobs.mjs re-implements a minimal copy of the date math and thresholds of
-// src/lib/dates.ts + src/lib/alerts.ts (it runs with plain node). These tests keep them identical.
+// Behaviour of the background jobs' rules. Since P1-FND-JOBS (DEC-PO-121) the jobs run the modules'
+// own TypeScript (src/jobs/registry.ts), so there is no second copy of the thresholds or the date math
+// to keep in sync any more: the parity tests that guarded scripts/jobs.mjs are gone.
 
-const NOW_CASES = [
-  new Date('2026-09-24T09:00:00Z'),
-  new Date('2026-09-24T20:59:59Z'), // 23:59:59 Riyadh
-  new Date('2026-09-24T21:00:00Z'), // 00:00 Riyadh next day
-  new Date('2026-12-31T22:30:00Z'),
-  new Date('2028-02-28T23:00:00Z'),
-];
-
-describe('jobs.mjs date math matches src/lib/dates.ts', () => {
-  it('riyadhTodayKey == todayKey', () => {
-    for (const now of NOW_CASES) expect(riyadhTodayKey(now)).toBe(todayKey(now));
-  });
-
-  it('daysUntil == dates.daysUntil for stored date-only values', () => {
-    for (const now of NOW_CASES) {
-      for (const d of ['2026-09-23', '2026-09-24', '2026-09-25', '2027-01-01', '2028-02-29', '2025-01-01']) {
-        const stored = new Date(`${d}T00:00:00.000Z`);
-        expect(jobDaysUntil(stored, now)).toBe(daysUntil(stored, now));
-      }
-    }
-    expect(jobDaysUntil(null)).toBeNull();
-    expect(jobDaysUntil('not a date')).toBeNull();
-  });
-});
-
-describe('jobs.mjs thresholds and classification match src/lib/alerts.ts', () => {
-  it('every digest threshold has the same SystemSetting key and default as ALERT_THRESHOLD_SETTINGS', () => {
-    for (const [name, t] of Object.entries(DIGEST_THRESHOLDS)) {
-      expect(ALERT_THRESHOLD_SETTINGS[name as keyof typeof ALERT_THRESHOLD_SETTINGS]).toEqual(t);
-    }
-  });
-
-  it('covers the three branch service contracts (waste, safety, cameras) with the alerts.ts keys', () => {
-    for (const name of ['wasteContract', 'safetyContract', 'cameraContract'] as const) {
-      expect(DIGEST_THRESHOLDS).toHaveProperty(name);
-      expect((DIGEST_THRESHOLDS as Record<string, unknown>)[name]).toEqual(ALERT_THRESHOLD_SETTINGS[name]);
-    }
-  });
-
-  it('every digest category has an Arabic label, and the commercial register is an annual confirmation', () => {
-    for (const name of Object.keys(DIGEST_THRESHOLDS)) {
-      const label = (CATEGORY_LABELS as Record<string, string>)[name];
-      expect(label, name).toBeTruthy();
-      expect(label).toMatch(/[؀-ۿ]/);
-    }
-    expect(CATEGORY_LABELS.commercialReg).toContain('التأكيد السنوي');
-    expect(CATEGORY_LABELS.safetyContract).toContain('السلامة');
-  });
-
-  it('SystemSetting overrides parse the same way', () => {
-    const rows = [
-      { key: 'alert_iqama_days', value: '45' },
-      { key: 'alert_passport_days', value: '-3' },
-      { key: 'alert_agency_days', value: 'abc' },
-      { key: 'alert_trademark_days', value: '99999' },
-      { key: 'alert_safety_contract_days', value: '14' },
-    ];
-    const ours = digestThresholds(rows);
-    const theirs = parseAlertThresholds(rows);
-    for (const name of Object.keys(DIGEST_THRESHOLDS)) expect(ours[name]).toBe(theirs[name as keyof typeof theirs]);
-    expect(ours.iqama).toBe(45);
-    expect(ours.passport).toBe(120);
-    expect(ours.safetyContract).toBe(14);
-    expect(ours.cameraContract).toBe(30);
-  });
-
-  it('expired / expiring agree with classifyExpiry (critical + warning = expiring)', () => {
-    const now = new Date('2026-09-24T09:00:00Z');
-    for (let offset = -40; offset <= 140; offset++) {
-      const date = new Date(Date.parse('2026-09-24T00:00:00Z') + offset * 86400000);
-      for (const threshold of [0, 7, 30, 60, 120]) {
-        const ref = classifyExpiry(date, threshold, now);
-        const expected = !ref || ref.level === 'ok' ? null : ref.level === 'expired' ? 'expired' : 'expiring';
-        expect(classifyForDigest(date, threshold, now)).toBe(expected);
-      }
-    }
-  });
-
-  it('alertCutoffDate is identical', () => {
-    for (const now of NOW_CASES) for (const d of [0, 7, 30, 120]) expect(jobCutoff(d, now).toISOString()).toBe(alertCutoffDate(d, now).toISOString());
-  });
-});
-
-describe('expiry digest content', () => {
+describe('expiry digest', () => {
   const zero = { expired: 0, expiring: 0 };
+
+  it('every digest category is an alert window of alerts.ts and has an Arabic label', () => {
+    for (const name of DIGEST_CATEGORIES) {
+      expect(ALERT_THRESHOLD_SETTINGS).toHaveProperty(name);
+      expect(DIGEST_CATEGORY_LABELS[name]).toMatch(/[؀-ۿ]/);
+    }
+    for (const name of ['wasteContract', 'safetyContract', 'cameraContract'] as const) expect(DIGEST_CATEGORIES).toContain(name);
+    expect(DIGEST_CATEGORY_LABELS.commercialReg).toContain('التأكيد السنوي');
+    expect(DIGEST_CATEGORY_LABELS.safetyContract).toContain('السلامة');
+  });
+
+  it('expired / expiring are classifyExpiry folded (critical + warning = expiring)', () => {
+    const now = new Date('2026-09-24T09:00:00Z');
+    const day = (offset: number) => new Date(Date.parse('2026-09-24T00:00:00Z') + offset * 86400000);
+    expect(digestLevel(day(-1), 30, now)).toBe('expired');
+    expect(digestLevel(day(0), 30, now)).toBe('expiring');
+    expect(digestLevel(day(30), 30, now)).toBe('expiring');
+    expect(digestLevel(day(31), 30, now)).toBeNull();
+    expect(digestLevel(null, 30, now)).toBeNull();
+    expect(classifyExpiry(day(3), 30, now)?.level).toBe('critical');
+    expect(digestLevel(day(3), 30, now)).toBe('expiring');
+  });
 
   it('returns null on a quiet day (nothing is enqueued)', () => {
     expect(buildDigest({ iqama: zero, passport: zero }, { dayKey: '2026-09-24', loginUrl: 'https://x/login' })).toBeNull();
@@ -133,8 +59,11 @@ describe('expiry digest content', () => {
     expect(d!.body).not.toContain('عقود النفايات');
   });
 
-  it('idempotency key is per user per day', () => {
+  it('idempotency key is per user per day; the login link only from a valid APP_URL', () => {
     expect(digestIdempotencyKey('u1', '2026-09-24')).toBe('expiry-digest:u1:2026-09-24');
+    expect(loginUrl({ APP_URL: 'https://t.example/' })).toBe('https://t.example/login');
+    expect(loginUrl({ APP_URL: 'javascript:alert(1)' })).toBeNull();
+    expect(loginUrl({})).toBeNull();
   });
 
   it('digest roles default to owners/admins and never include EMPLOYEE', () => {
@@ -145,14 +74,6 @@ describe('expiry digest content', () => {
 });
 
 describe('deactivate-terminated rule', () => {
-  it('parses terminated_access_days like src/lib/access.ts', () => {
-    expect(parseGraceDays(undefined)).toBe(0);
-    expect(parseGraceDays('abc')).toBe(0);
-    expect(parseGraceDays('-2')).toBe(0);
-    expect(parseGraceDays('3.9')).toBe(3);
-    expect(parseGraceDays('500')).toBe(90);
-  });
-
   it('grace 0 = immediately; grace N = from termination day + N (Riyadh calendar)', () => {
     const now = new Date('2026-09-24T09:00:00Z');
     const on = (d: string) => new Date(`${d}T00:00:00.000Z`);

@@ -7,6 +7,7 @@ import { ROLE_GROUPS } from '@/lib/constants';
 import { handleApiError, parseQuery } from '@/lib/http';
 import { zPagination } from '@/lib/validation';
 import { MUQEEM_OPERATIONS, MUQEEM_TX_STATUS, STALE_PENDING_MS, featureSettlePath } from '@/lib/muqeem';
+import { authz, resolveActor, scopedContext, scopedPrisma } from '@/modules/iam';
 
 export const dynamic = 'force-dynamic';
 
@@ -27,10 +28,16 @@ const QuerySchema = zPagination.extend({
  * Muqeem transaction log, newest first, with employee / company / requester names.
  * 200 { items, total, statusCounts: { PENDING, SUCCEEDED, FAILED, UNKNOWN }, needsReconciliationCount, canReconcile, stalePendingMinutes }
  * Summaries are stored already redacted (no credentials, no PDFs).
+ * P1-SCOPE: the transactions of the user's companies (MuqeemTransaction.companyId, scoped client; a
+ * transaction without a company is visible to unrestricted users only); names are then loaded for
+ * those rows only.
  */
 export async function GET(req: Request) {
   try {
     const user = await requireUser(ROLE_GROUPS.GOV);
+    const ctx = scopedContext(await resolveActor(prisma, user));
+    authz.assert(ctx, 'gov.muqeem.operate');
+    const db = scopedPrisma(ctx);
     const q = parseQuery(req, QuerySchema);
     const take = q.take ?? 50;
     const skip = q.skip ?? 0;
@@ -44,10 +51,10 @@ export async function GET(req: Request) {
 
     const staleBefore = new Date(Date.now() - STALE_PENDING_MS);
     const [rows, total, grouped, needsReconciliationCount] = await Promise.all([
-      prisma.muqeemTransaction.findMany({ where, orderBy: { createdAt: 'desc' }, take, skip }),
-      prisma.muqeemTransaction.count({ where }),
-      prisma.muqeemTransaction.groupBy({ by: ['status'], where: scope, _count: { _all: true } }),
-      prisma.muqeemTransaction.count({
+      db.muqeemTransaction.findMany({ where, orderBy: { createdAt: 'desc' }, take, skip }),
+      db.muqeemTransaction.count({ where }),
+      db.muqeemTransaction.groupBy({ by: ['status'], where: scope, _count: { _all: true } }),
+      db.muqeemTransaction.count({
         where: {
           ...scope,
           OR: [{ status: MUQEEM_TX_STATUS.UNKNOWN }, { status: MUQEEM_TX_STATUS.PENDING, createdAt: { lt: staleBefore } }],

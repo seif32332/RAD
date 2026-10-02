@@ -1,11 +1,13 @@
 import { NextResponse } from 'next/server';
 import { z } from 'zod';
+import type { Prisma } from '@prisma/client';
 import { prisma } from '@/lib/prisma';
 import { requireUser } from '@/lib/auth';
 import { ROLE_GROUPS } from '@/lib/constants';
 import { badRequest, handleApiError, parseQuery } from '@/lib/http';
 import { zMonth, zYear } from '@/lib/validation';
 import { sumMoney } from '@/lib/money';
+import { authz, resolveActor, scopedContext, scopedPrisma } from '@/modules/iam';
 import { currentPayrollMonth, defaultPayrollMonth, payrollMonths, payrollMonthSummary } from '@/lib/payroll';
 
 export const dynamic = 'force-dynamic';
@@ -28,11 +30,15 @@ const QuerySchema = z.object({
  */
 export async function GET(req: Request) {
   try {
-    await requireUser(ROLE_GROUPS.PAYROLL);
+    const user = await requireUser(ROLE_GROUPS.PAYROLL);
     const q = parseQuery(req, QuerySchema);
+    // P1-SCOPE: months and totals of the user's companies only (scoped client).
+    const ctx = scopedContext(await resolveActor(prisma, user));
+    authz.assert(ctx, 'payroll.read');
+    const db = scopedPrisma(ctx) as unknown as Prisma.TransactionClient;
     if ((q.month === undefined) !== (q.year === undefined)) throw badRequest('يرجى تحديد الشهر والسنة معاً');
 
-    const groups = await payrollMonths(prisma);
+    const groups = await payrollMonths(db);
     const months: Array<{
       year: number;
       month: number;
@@ -62,7 +68,7 @@ export async function GET(req: Request) {
       ({ month, year } = pick);
     }
 
-    const summary = await payrollMonthSummary(prisma, year, month);
+    const summary = await payrollMonthSummary(db, year, month);
     return NextResponse.json({ summary, months });
   } catch (err) {
     return handleApiError(err, 'payroll-hub/summary:GET');

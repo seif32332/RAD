@@ -26,6 +26,7 @@ import {
   type PlanStatus,
 } from '@/lib/workforce/planning';
 import { currentDecisions } from '../../_lib/saudization';
+import { assertBranchVisible, assertCompanyVisible, assertDepartmentVisible, assertEmployeeVisible, companyScopeWhere, planScopeWhere, type WfScope } from '../../_lib/scope';
 
 export const PLAN_ENTITY = 'HeadcountPlan';
 
@@ -45,8 +46,12 @@ export function todayDate(): Date {
   return new Date(`${todayKey()}T00:00:00.000Z`);
 }
 
-export async function loadPlanOr404(id: string, db: Prisma.TransactionClient = prisma): Promise<PlanRow> {
-  const row = await db.headcountPlan.findUnique({ where: { id }, include: PLAN_INCLUDE });
+/**
+ * The plan when it is inside the caller's scope (P1-SCOPE): a plan of another company, or of every company
+ * (companyId null) for a restricted caller, is "not found".
+ */
+export async function loadPlanOr404(id: string, s: WfScope, db: Prisma.TransactionClient = prisma): Promise<PlanRow> {
+  const row = await db.headcountPlan.findFirst({ where: { id, AND: [planScopeWhere(s)] }, include: PLAN_INCLUDE });
   if (!row) throw notFound('الخطة غير موجودة');
   return row;
 }
@@ -97,7 +102,9 @@ export async function loadPlanBase(row: PlanRow): Promise<PlanBaseInput> {
   const fromKey = planMonthKey(row.fromMonth)!;
   const exitIds = [...new Set(row.positions.filter((p) => p.kind === 'EXIT' && p.exitEmployeeId).map((p) => p.exitEmployeeId!))];
   const [loaded, register, decisionRows, branches, departments, turnoverEmployees, details] = await Promise.all([
-    loadTrueCostInput({ startMonth: fromKey, months: row.months, scope: null }),
+    // A company plan loads that legal company only (levy tiers are per legal company): nothing of another
+    // company enters its projection or its snapshot. A plan of every company (unrestricted callers only) loads all.
+    loadTrueCostInput({ startMonth: fromKey, months: row.months, scope: row.companyId ? { companyIds: [row.companyId] } : null }),
     loadNitaqatRegister(),
     loadLocalizationDecisions(),
     prisma.branch.findMany({ select: { id: true, nameArabic: true, city: true }, orderBy: { id: 'asc' } }),
@@ -376,8 +383,9 @@ export function planHeader(
   };
 }
 
-export async function companyNameMap(): Promise<Map<string, string>> {
-  const rows = await prisma.company.findMany({ select: { id: true, nameArabic: true } });
+/** Company names (the caller's companies only when `s` is given). */
+export async function companyNameMap(s?: WfScope): Promise<Map<string, string>> {
+  const rows = await prisma.company.findMany({ where: s ? companyScopeWhere(s) : undefined, select: { id: true, nameArabic: true } });
   return new Map(rows.map((c) => [c.id, c.nameArabic]));
 }
 
@@ -417,8 +425,13 @@ export interface PositionData {
 }
 
 /** Throws 400 / 404 / 409 (Arabic) when a position does not fit the plan and the data. */
-export async function validatePosition(row: PlanRow, p: PositionData, selfId: string | null): Promise<void> {
+export async function validatePosition(row: PlanRow, p: PositionData, selfId: string | null, s: WfScope): Promise<void> {
   const bad = (m: string) => new HttpError(400, m);
+  // P1-SCOPE: every company / branch / department / employee named by the position is in the caller's scope (404).
+  assertCompanyVisible(s, p.companyId);
+  await assertBranchVisible(s, p.branchId);
+  await assertDepartmentVisible(s, p.departmentId);
+  if (p.exitEmployeeId) await assertEmployeeVisible(s, p.exitEmployeeId);
   if (row.companyId && p.companyId && p.companyId !== row.companyId) throw bad('شركة البند يجب أن تكون شركة الخطة');
   if (p.companyId && !(await prisma.company.findUnique({ where: { id: p.companyId }, select: { id: true } }))) throw notFound('الشركة غير موجودة');
   if (p.branchId && !(await prisma.branch.findUnique({ where: { id: p.branchId }, select: { id: true } }))) throw notFound('الفرع غير موجود');
@@ -448,7 +461,11 @@ export interface RaiseData {
   effectiveMonth: string;
 }
 
-export async function validateRaise(row: PlanRow, r: RaiseData): Promise<void> {
+export async function validateRaise(row: PlanRow, r: RaiseData, s: WfScope): Promise<void> {
+  // P1-SCOPE: the company / department / employee the raise targets is in the caller's scope (404).
+  if (r.scope === 'COMPANY') assertCompanyVisible(s, r.scopeId);
+  else if (r.scope === 'DEPARTMENT') await assertDepartmentVisible(s, r.scopeId);
+  else if (r.scope === 'EMPLOYEE' && r.scopeId) await assertEmployeeVisible(s, r.scopeId);
   if (!inHorizon(row, r.effectiveMonth)) throw new HttpError(400, 'شهر سريان الزيادة خارج فترة الخطة');
   if (r.scope === 'COMPANY') {
     if (row.companyId && r.scopeId !== row.companyId) throw new HttpError(400, 'الشركة يجب أن تكون شركة الخطة');
@@ -513,8 +530,8 @@ export function positionData(p: PlannedPosition): PositionData {
 }
 
 /** Plans compared / listed must exist; returns them in the requested order. */
-export async function loadPlansOr404(ids: ReadonlyArray<string>): Promise<PlanRow[]> {
-  const rows = await prisma.headcountPlan.findMany({ where: { id: { in: [...ids] } }, include: PLAN_INCLUDE });
+export async function loadPlansOr404(ids: ReadonlyArray<string>, s: WfScope): Promise<PlanRow[]> {
+  const rows = await prisma.headcountPlan.findMany({ where: { id: { in: [...ids] }, AND: [planScopeWhere(s)] }, include: PLAN_INCLUDE });
   const byId = new Map(rows.map((r) => [r.id, r]));
   return ids.map((id) => {
     const r = byId.get(id);

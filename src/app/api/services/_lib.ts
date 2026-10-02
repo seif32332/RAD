@@ -4,6 +4,9 @@ import 'server-only';
 import type { Prisma } from '@prisma/client';
 import { z } from 'zod';
 import { badRequest, conflict } from '@/lib/http';
+import { ALL_COMPANIES, authz, resolveActor, scopedContext, scopedPrisma, type ScopeContext } from '@/modules/iam';
+import type { AuthUser } from '@/lib/auth';
+import { prisma } from '@/lib/prisma';
 import { zOptText, zText } from '@/lib/validation';
 
 type Ref = string | null | undefined;
@@ -51,6 +54,22 @@ export async function ensureRefsExist(
   if (branches !== branchIds.length) throw badRequest('الفرع المحدد غير موجود');
   if (vehicles !== vehicleIds.length) throw badRequest('المركبة المحددة غير موجودة');
   if (opts.activeOnly && hasTerminatedEmployee(employees)) throw conflict(TERMINATED_HOLDER_MESSAGE);
+}
+
+/**
+ * P1-SCOPE (telecom / utilities): the user's ScopedContext and its scoped client. TelecomSim is keyed
+ * by companyId, UtilityMeter by legalCompanyId (§5.4.3): a row of another company is "not found", and
+ * a restricted user writes rows of his companies only.
+ */
+export async function logisticsScope(user: AuthUser, action: 'logistics.read' | 'logistics.manage') {
+  const ctx = scopedContext(await resolveActor(prisma, user));
+  authz.assert(ctx, action);
+  return { ctx, db: scopedPrisma(ctx) };
+}
+
+/** A restricted user must name the owning company of a new row (it is its scope key). */
+export function requireOwningCompany(ctx: ScopeContext, companyId: string | null | undefined): void {
+  if (ctx.companies !== ALL_COMPANIES && !companyId) throw badRequest('يرجى تحديد الشركة المالكة');
 }
 
 /** Query flag `?heldByTerminated=1`: only items still held by employees whose service has ended. */

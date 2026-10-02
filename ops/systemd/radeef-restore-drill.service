@@ -1,0 +1,14 @@
+# /etc/systemd/system/radeef-restore-drill.service: monthly restore drill of every tenant's newest
+# backup into a throwaway database (ops/restore-drill.sh). Root, like ops/backup.sh: it reads
+# /var/backups/radeef and /etc/radeef/backup.conf.
+[Unit]
+Description=Radeef restore drill (all tenants)
+After=network-online.target postgresql.service
+
+[Service]
+Type=oneshot
+Environment=RADEEF_ROOT=/opt/radeef
+ExecStart=/opt/radeef/src/ops/restore-drill.sh --all
+Nice=10
+IOSchedulingClass=idle
+TimeoutStartSec=3h

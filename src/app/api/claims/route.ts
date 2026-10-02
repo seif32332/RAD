@@ -3,18 +3,23 @@ import { ClaimStatus } from '@prisma/client';
 import { prisma } from '@/lib/prisma';
 import { getClientIp, requireUser } from '@/lib/auth';
 import { ROLE_GROUPS } from '@/lib/constants';
-import { handleApiError, parseBody } from '@/lib/http';
+import { badRequest, handleApiError, parseBody } from '@/lib/http';
 import { logAudit } from '@/lib/audit';
 import { roundMoney } from '@/lib/money';
 import { ensureRefsExist } from '@/app/api/services/_lib';
-import { claimCreateSchema, claimVehicleInclude } from './_lib';
+import { claimCreateSchema, claimScopeWhere, claimVehicleInclude } from './_lib';
+import { authz, resolveActor, scopedContext, scopedPrisma } from '@/modules/iam';
 
 export const dynamic = 'force-dynamic';
 
 export async function GET() {
   try {
-    await requireUser(ROLE_GROUPS.STAFF);
+    const user = await requireUser(ROLE_GROUPS.STAFF);
+    // P1-SCOPE: claims of vehicles of the user's companies.
+    const ctx = scopedContext(await resolveActor(prisma, user));
+    authz.assert(ctx, 'logistics.read');
     const claims = await prisma.accidentClaim.findMany({
+      where: claimScopeWhere(ctx),
       include: claimVehicleInclude,
       orderBy: { createdAt: 'desc' },
     });
@@ -28,9 +33,15 @@ export async function POST(req: Request) {
   try {
     const user = await requireUser(ROLE_GROUPS.LOGISTICS);
     const body = await parseBody(req, claimCreateSchema);
+    // P1-SCOPE: the vehicle must belong to the user's companies (else "not found" as a bad reference).
+    const ctx = scopedContext(await resolveActor(prisma, user));
+    authz.assert(ctx, 'logistics.manage');
 
     const claim = await prisma.$transaction(async (tx) => {
       await ensureRefsExist(tx, { vehicleIds: [body.vehicleId] });
+      if (!(await scopedPrisma(ctx).vehicle.findUnique({ where: { id: body.vehicleId }, select: { id: true } }))) {
+        throw badRequest('المركبة المحددة غير موجودة');
+      }
       const created = await tx.accidentClaim.create({
         data: {
           vehicleId: body.vehicleId,

@@ -2,18 +2,23 @@ import { NextResponse } from 'next/server';
 import { prisma } from '@/lib/prisma';
 import { getClientIp, requireUser } from '@/lib/auth';
 import { ROLE_GROUPS } from '@/lib/constants';
-import { conflict, handleApiError, parseBody } from '@/lib/http';
+import { conflict, forbidden, handleApiError, notFound, parseBody } from '@/lib/http';
 import { logAudit } from '@/lib/audit';
 import { roundMoney } from '@/lib/money';
 import { ensureRefsExist } from '@/app/api/services/_lib';
 import { findPlateDuplicate, nextVehicleCode, vehicleCreateSchema } from './_lib';
+import { recordCompanyId } from '@/lib/record-company';
+import { authz, companiesAllowed, resolveActor, scopedContext, scopedPrisma } from '@/modules/iam';
 
 export const dynamic = 'force-dynamic';
 
+/** Vehicles owned (legal company) by the user's companies (P1-SCOPE: Vehicle.legalCompanyId, scoped client). */
 export async function GET() {
   try {
-    await requireUser(ROLE_GROUPS.STAFF);
-    const vehicles = await prisma.vehicle.findMany({
+    const user = await requireUser(ROLE_GROUPS.STAFF);
+    const ctx = scopedContext(await resolveActor(prisma, user));
+    authz.assert(ctx, 'logistics.read');
+    const vehicles = await scopedPrisma(ctx).vehicle.findMany({
       include: {
         legalCompany: { select: { nameArabic: true } },
         actualCompany: { select: { nameArabic: true } },
@@ -40,18 +45,27 @@ export async function GET() {
 export async function POST(req: Request) {
   try {
     const user = await requireUser(ROLE_GROUPS.LOGISTICS);
+    const ctx = scopedContext(await resolveActor(prisma, user));
+    authz.assert(ctx, 'logistics.manage');
     const body = await parseBody(req, vehicleCreateSchema);
+    // P1-SCOPE: the owning company (scope key) defaults to the user's only company; the user company
+    // and the driver must be inside the user's companies too (403 / 404).
+    const legalCompanyId = await recordCompanyId(prisma, ctx, body.legalCompanyId);
+    if (body.actualCompanyId && !companiesAllowed(ctx.companies, [body.actualCompanyId])) throw forbidden('هذه الشركة خارج نطاق صلاحياتك');
+    if (body.driverId && !(await scopedPrisma(ctx).employee.findUnique({ where: { id: body.driverId }, select: { id: true } }))) {
+      throw notFound('الموظف المحدد غير موجود');
+    }
 
     const vehicle = await prisma.$transaction(async (tx) => {
       const [, activePlates, lastCoded, total] = await Promise.all([
         // The driver must still be in service (409 otherwise).
         ensureRefsExist(
           tx,
-          { companyIds: [body.legalCompanyId, body.actualCompanyId], employeeIds: [body.driverId] },
+          { companyIds: [legalCompanyId, body.actualCompanyId], employeeIds: [body.driverId] },
           { activeOnly: true },
         ),
         // Duplicate check on the normalised plate (spaces, alef forms, Latin/Arabic letters, digits).
-        tx.vehicle.findMany({ where: { isArchived: false }, select: { id: true, plateNumber: true, vehicleCode: true } }),
+        tx.vehicle.findMany({ where: { isArchived: false }, select: { id: true, plateNumber: true, vehicleCode: true, legalCompanyId: true } }),
         tx.vehicle.findFirst({
           where: { vehicleCode: { startsWith: 'VH-' } },
           orderBy: { vehicleCode: 'desc' },
@@ -61,6 +75,8 @@ export async function POST(req: Request) {
       ]);
       const duplicate = findPlateDuplicate(body.plateNumber, activePlates);
       if (duplicate) {
+        // The plate is unique in the tenant; another company's vehicle is not described (INV-SCOPE-01).
+        if (!companiesAllowed(ctx.companies, [duplicate.legalCompanyId])) throw conflict('توجد مركبة مسجلة بنفس رقم اللوحة');
         throw conflict(`توجد مركبة مسجلة بنفس رقم اللوحة (${duplicate.vehicleCode ?? '-'}: ${duplicate.plateNumber})`);
       }
 
@@ -73,7 +89,7 @@ export async function POST(req: Request) {
           color: body.color ?? '',
           sequenceNumber: body.sequenceNumber ?? '',
           plateNumber: body.plateNumber,
-          legalCompanyId: body.legalCompanyId ?? null,
+          legalCompanyId,
           actualCompanyId: body.actualCompanyId ?? null,
           licenseExpDate: body.licenseExpDate ?? null,
           insuranceExpDate: body.insuranceExpDate ?? null,

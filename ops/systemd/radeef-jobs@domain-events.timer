@@ -1,0 +1,12 @@
+# /etc/systemd/system/radeef-jobs@domain-events.timer: every 5 minutes + up to 1 min (DomainEvent consumers,
+# P1-FND-JOBS). A run still in progress is not started twice (oneshot unit + JobRun lock).
+[Unit]
+Description=Radeef background job domain-events (schedule)
+
+[Timer]
+OnCalendar=*-*-* *:0/5:00 Asia/Riyadh
+RandomizedDelaySec=1min
+Persistent=true
+
+[Install]
+WantedBy=timers.target

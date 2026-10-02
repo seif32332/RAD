@@ -8,6 +8,7 @@ import { handleApiError, badRequest, HttpError } from '@/lib/http';
 import { addDays } from '@/lib/dates';
 import { roundMoney, toNumber } from '@/lib/money';
 import { logAudit } from '@/lib/audit';
+import { authz, companiesAllowed, resolveActor, scopedContext, scopedPrisma } from '@/modules/iam';
 import {
   ALLOWANCE_NAMES,
   IMPORT_EXAMPLE_ROW,
@@ -47,6 +48,11 @@ import {
   type ImportRow,
 } from '@/lib/employee';
 import { normalizeIban } from '@/lib/iban';
+import { resolveWorkPatternId } from '@/modules/calendar';
+import { valueAt } from '@/modules/rules';
+import { editEmployeePay, setInitialAllowances, type EmployeePayChange } from '@/modules/compensation';
+import { setEmployeeGosiDeduction } from '@/modules/payroll';
+import { moneyActorOf } from '@/modules/platform';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -181,6 +187,14 @@ function isTruthyFlag(v: FormDataEntryValue | string | null): boolean {
 export async function POST(req: Request) {
   try {
     const user = await requireUser(ROLE_GROUPS.HR);
+    // P1-SCOPE: a scoped HR user imports into his companies only. The org units offered to the rows
+    // are those of his companies; a row whose ID belongs to an employee of another company, or a new
+    // employee without one of his companies, is a row error (nothing of another company is written
+    // or named).
+    const ctx = scopedContext(await resolveActor(prisma, user));
+    authz.assert(ctx, 'employee.create');
+    const db = scopedPrisma(ctx);
+    const inScope = (companyId: string | null | undefined) => companiesAllowed(ctx.companies, [companyId]);
 
     let formData: FormData;
     try {
@@ -223,10 +237,12 @@ export async function POST(req: Request) {
 
     // ---- Reference data ----------------------------------------------------------------
     const [companies, departments, branches, administrations, existingEmployees, maxCode] = await Promise.all([
-      prisma.company.findMany({ select: { id: true, nameArabic: true, nameEnglish: true, commercialRegNum: true, unifiedNumber: true } }),
-      prisma.department.findMany({ select: { id: true, nameArabic: true, nameEnglish: true, branchId: true } }),
-      prisma.branch.findMany({ select: { id: true, nameArabic: true, nameEnglish: true, branchCode: true, companyId: true } }),
-      prisma.administration.findMany({ select: { id: true, nameArabic: true, nameEnglish: true } }),
+      db.company.findMany({ select: { id: true, nameArabic: true, nameEnglish: true, commercialRegNum: true, unifiedNumber: true } }),
+      db.department.findMany({ select: { id: true, nameArabic: true, nameEnglish: true, branchId: true } }),
+      db.branch.findMany({ select: { id: true, nameArabic: true, nameEnglish: true, branchCode: true, companyId: true } }),
+      db.administration.findMany({ select: { id: true, nameArabic: true, nameEnglish: true } }),
+      // Every employee (root client): an ID number is unique across the tenant, so a row must be
+      // matched against all of them; only those of the user's companies are ever updated or named.
       prisma.employee.findMany({
         select: {
           ...KNOWN_EMPLOYEE_SELECT,
@@ -238,7 +254,7 @@ export async function POST(req: Request) {
 
     type KnownEmployee = Prisma.EmployeeGetPayload<{ select: typeof KNOWN_EMPLOYEE_SELECT }>;
     const byIdNumber = new Map<string, KnownEmployee>(existingEmployees.map((e) => [e.iqamaOrIdNumber, e]));
-    const knownEmployees: KnownEmployee[] = [...existingEmployees];
+    const knownEmployees: KnownEmployee[] = existingEmployees.filter((e) => inScope(e.legalCompanyId));
     let nextCodeNumber = maxCode + 1;
 
     // ---- File-level checks ----------------------------------------------------------------
@@ -252,6 +268,7 @@ export async function POST(req: Request) {
     // IBAN owners after this import: the database value, replaced by the row's IBAN when the row has one.
     const ibanOwners = new Map<string, { iban: string; label: string }>();
     for (const e of existingEmployees) {
+      if (!inScope(e.legalCompanyId)) continue;
       const iban = e.ibanNumber ? normalizeIban(e.ibanNumber) : '';
       if (iban) ibanOwners.set(e.id, { iban, label: e.employeeId });
     }
@@ -261,6 +278,7 @@ export async function POST(req: Request) {
       const iban = cellText(data.ibanNumber) ? normalizeIban(cellText(data.ibanNumber)) : '';
       if (!id || !iban || (rowsById.get(id)?.length ?? 0) > 1) continue;
       const existing = byIdNumber.get(id);
+      if (existing && !inScope(existing.legalCompanyId)) continue; // that row is refused below
       const key = existing?.id ?? `row:${rowNum}`;
       ibanOwners.set(key, { iban, label: existing?.employeeId || `الصف ${rowNum}` });
       ibanOwnerKeyOfRow.set(rowNum, key);
@@ -309,6 +327,10 @@ export async function POST(req: Request) {
       }
 
       const existingEmp = byIdNumber.get(idNumber);
+      if (existingEmp && !inScope(existingEmp.legalCompanyId)) {
+        errors.push({ row: rowNum, name: displayName, reason: 'رقم الهوية مسجل لموظف في شركة خارج نطاق صلاحياتك' });
+        continue;
+      }
       const rowWarnings: string[] = [];
       // Blocking problems found while matching the org units (e.g. a company name shared by several records).
       const rowErrors: string[] = [];
@@ -518,14 +540,17 @@ export async function POST(req: Request) {
           if (txt(raw.maritalStatus)) updateData.maritalStatus = cellText(raw.maritalStatus);
           if (txt(raw.mobileNumber)) updateData.mobileNumber = cellText(raw.mobileNumber);
           if (txt(raw.email)) updateData.email = cellText(raw.email).toLowerCase();
-          if (iban) updateData.ibanNumber = iban;
-          if (bankName) updateData.bankName = bankName;
+          // Pay columns (money.gateway): collected here, written only when CHANGED, through compensation
+          // (and payroll's gosiDeduction) below — never on one's own row (BR-PAY-001).
+          const payIn: EmployeePayChange = {};
+          if (iban) payIn.ibanNumber = iban;
+          if (bankName) payIn.bankName = bankName;
           if (txt(raw.jobTitle)) updateData.jobTitle = cellText(raw.jobTitle);
           if (txt(raw.jobTitleEnglish)) updateData.jobTitleEnglish = cellText(raw.jobTitleEnglish);
           if (txt(raw.workSchedule)) updateData.workSchedule = cellText(raw.workSchedule);
-          if (basicSalary !== null) updateData.basicSalary = roundMoney(basicSalary);
-          if (gosiDeduction !== null) updateData.gosiDeduction = roundMoney(gosiDeduction);
-          if (txt(raw.salaryPaymentMethod)) updateData.salaryPaymentMethod = salaryPaymentMethod;
+          if (basicSalary !== null) payIn.basicSalary = roundMoney(basicSalary);
+          const gosiIn = gosiDeduction !== null ? roundMoney(gosiDeduction) : undefined;
+          if (txt(raw.salaryPaymentMethod)) payIn.salaryPaymentMethod = salaryPaymentMethod;
           if (txt(raw.accommodationType)) updateData.accommodationType = accommodationType;
           if (txt(raw.contractType)) updateData.contractType = contractType;
           if (noticeDays !== null) updateData.noticePeriodDays = Math.max(0, Math.round(noticeDays));
@@ -533,6 +558,9 @@ export async function POST(req: Request) {
           if (actualCompanyId) updateData.actualCompanyId = actualCompanyId;
           if (administrationId) updateData.administrationId = administrationId;
           if (branchId) updateData.branchId = branchId;
+          // P1-CAL: the work pattern as a FK, from the typed name within the (new) branch.
+          if (txt(raw.workSchedule)) updateData.workPatternId = await resolveWorkPatternId(prisma, effectiveBranchId, cellText(raw.workSchedule));
+          else if (branchId && branchId !== existingEmp.branchId) updateData.workPatternId = await resolveWorkPatternId(prisma, branchId, null);
           if (departmentId) updateData.departmentId = departmentId;
           if (directManagerId) updateData.directManagerId = directManagerId;
           if (dateOfBirth) updateData.dateOfBirth = dateOfBirth;
@@ -549,17 +577,39 @@ export async function POST(req: Request) {
               if (Object.keys(updateData).length) {
                 // Fields listed in the employee's incomplete-data warning that this row completes are removed from it.
                 const current = await tx.employee.findUnique({ where: { id: existingEmp.id }, select: REVIEW_STATE_SELECT });
-                const note = current ? reviewNoteAfterEdit(current, updateData) : undefined;
+                const note = current ? reviewNoteAfterEdit(current, { ...updateData, ...payIn, ...(gosiIn !== undefined ? { gosiDeduction: gosiIn } : {}) }) : undefined;
                 if (note !== undefined) updateData.dataReviewNote = note;
                 await tx.employee.update({ where: { id: existingEmp.id }, data: updateData });
               }
-              // Replace recurring allowances only when the row carries allowance amounts.
-              // One-off bonuses (isMonthly=false) are never touched.
-              if (allowances.length > 0) {
-                await tx.allowance.deleteMany({ where: { employeeId: existingEmp.id, isMonthly: true } });
-                await tx.allowance.createMany({
-                  data: allowances.map((a) => ({ employeeId: existingEmp.id, ...a, isMonthly: true })),
-                });
+              // Replace recurring allowances only when the row carries allowance amounts (one-off bonuses
+              // are never touched), and only what CHANGED is written (compensation.editEmployeePay).
+              const cur = await tx.employee.findUniqueOrThrow({
+                where: { id: existingEmp.id },
+                select: {
+                  basicSalary: true, gosiDeduction: true, salaryPaymentMethod: true, ibanNumber: true, bankName: true, legalCompanyId: true,
+                  allowances: { where: { isMonthly: true }, select: { name: true, amount: true, countsTowardGosi: true, allowanceType: true } },
+                },
+              });
+              const pay: EmployeePayChange = {};
+              if (payIn.basicSalary !== undefined && payIn.basicSalary !== cur.basicSalary) pay.basicSalary = payIn.basicSalary;
+              if (payIn.salaryPaymentMethod !== undefined && payIn.salaryPaymentMethod !== cur.salaryPaymentMethod) pay.salaryPaymentMethod = payIn.salaryPaymentMethod;
+              if (payIn.ibanNumber !== undefined && payIn.ibanNumber !== cur.ibanNumber) pay.ibanNumber = payIn.ibanNumber;
+              if (payIn.bankName !== undefined && payIn.bankName !== cur.bankName) pay.bankName = payIn.bankName;
+              const key = (x: { name: string; amount: number; countsTowardGosi: boolean; allowanceType: string | null }) => JSON.stringify([x.name, roundMoney(x.amount), !!x.countsTowardGosi, x.allowanceType ?? null]);
+              const sameAllowances = cur.allowances.map(key).sort().join('|') === allowances.map(key).sort().join('|');
+              const actor = moneyActorOf(user);
+              const opKey = `employee.import.pay:${existingEmp.id}:${user.id}:${Date.now()}`;
+              await editEmployeePay(tx, {
+                actor,
+                employeeId: existingEmp.id,
+                companyId: cur.legalCompanyId,
+                pay,
+                allowances: allowances.length > 0 && !sameAllowances ? allowances : undefined,
+                before: { basicSalary: cur.basicSalary, salaryPaymentMethod: cur.salaryPaymentMethod, bankName: cur.bankName, allowances: cur.allowances },
+                operationKey: opKey,
+              });
+              if (gosiIn !== undefined && gosiIn !== cur.gosiDeduction) {
+                await setEmployeeGosiDeduction(tx, { actor, employeeId: existingEmp.id, gosiDeduction: gosiIn, before: cur.gosiDeduction, companyId: cur.legalCompanyId, operationKey: `${opKey}:gosi` });
               }
             });
           }
@@ -584,6 +634,10 @@ export async function POST(req: Request) {
           pushWarnings();
         } else {
           // ---- Create: required dates must be present (no invented values) ----
+          if (!inScope(legalCompanyId)) {
+            errors.push({ row: rowNum, name: firstNameArabic, reason: 'حدد شركة قانونية من شركات نطاق صلاحياتك للموظف الجديد', warnings: rowWarningList });
+            continue;
+          }
           const missing: string[] = [];
           if (!dateOfBirth) missing.push('تاريخ الميلاد');
           if (!iqamaOrIdExp) missing.push('تاريخ انتهاء الهوية / الإقامة');
@@ -621,17 +675,18 @@ export async function POST(req: Request) {
             jobTitle: txt(raw.jobTitle),
             jobTitleEnglish: txt(raw.jobTitleEnglish),
             workSchedule: txt(raw.workSchedule),
+            workPatternId: await resolveWorkPatternId(prisma, branchId, txt(raw.workSchedule)),
             accommodationType,
             joinDate,
             contractType,
             contractEndDate,
             probationEndDate,
-            noticePeriodDays: noticeDays !== null ? Math.max(0, Math.round(noticeDays)) : 30,
+            // Default: the worker's statutory notice (art. 75) of the company on the join date (P1-RULE).
+            noticePeriodDays: noticeDays !== null ? Math.max(0, Math.round(noticeDays)) : await valueAt('NOTICE_DAYS_EMPLOYEE', legalCompanyId, joinDate, prisma),
             leaveAccrualStartDate: leaveAccrualStartDate ?? joinDate,
             basicSalary: roundMoney(basicSalary ?? 0),
             gosiDeduction: roundMoney(gosiDeduction ?? 0),
             directManagerId,
-            allowances: allowances.length ? { create: allowances.map((a) => ({ ...a, isMonthly: true })) } : undefined,
           };
 
           let created: KnownEmployee;
@@ -657,11 +712,15 @@ export async function POST(req: Request) {
           } else {
             const res = await createWithEmployeeCode(
               prisma,
-              (code, tx) =>
-                tx.employee.create({
+              async (code, tx) => {
+                const emp = await tx.employee.create({
                   data: { ...createData, employeeId: code },
                   select: KNOWN_EMPLOYEE_SELECT,
-                }),
+                });
+                // The new employee's recurring allowances through compensation (money.gateway).
+                await setInitialAllowances(tx, { actor: moneyActorOf(user), employeeId: emp.id, allowances, companyId: legalCompanyId, operationKey: `employee.import.allowances:${emp.id}` });
+                return emp;
+              },
               { start: nextCodeNumber },
             );
             created = res.result;

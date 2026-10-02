@@ -1,3 +1,4 @@
+import { randomUUID } from 'crypto';
 import { after, NextResponse } from 'next/server';
 import { z } from 'zod';
 import type { LeaveStatus, LeaveType } from '@prisma/client';
@@ -35,7 +36,12 @@ import {
   yearsOfService,
 } from '@/lib/settlement';
 import { getNumericSetting, SETTING_KEYS } from '@/lib/hr-workflows';
-import { approveSettlement, markSettlementPaid, rejectSettlement, SETTLEMENT_LOANS_AUDIT_KEY } from '@/lib/finance';
+import { catalogueValueAt, laborLawFor } from '@/modules/rules';
+import { approveSettlement, markSettlementPaid, rejectSettlement, SETTLEMENT_CREATE, SETTLEMENT_LOANS_AUDIT_KEY, SETTLEMENT_NOTE } from '@/lib/finance';
+import { moneyActorOf, runMoneyOperation } from '@/modules/platform';
+import { linkOvertimeToSettlement } from '@/modules/time';
+import { authz, resolveActor, scopedContext, scopedPrisma } from '@/modules/iam';
+import { recordSettlementEffects } from '@/modules/offboarding';
 
 export const dynamic = 'force-dynamic';
 
@@ -54,12 +60,15 @@ function safeDecrypt(v: string | null): string | null {
 // DOM-004 / DOM-005 guards (pure helpers, unit-tested in src/lib/__tests__/c2-termination.test.ts)
 // ---------------------------------------------------------------------------
 
-/** Article 53: the probation period (including a written extension) never exceeds 180 days. */
-export const PROBATION_MAX_DAYS = 180;
+/**
+ * Article 53: the probation period (including a written extension) never exceeds 180 days. The
+ * catalogue's value (P1-RULE); the route passes the company's (rules.laborLawFor).
+ */
+export const PROBATION_MAX_DAYS = catalogueValueAt('PROBATION_MAX_DAYS');
 
-/** Last day a PROBATION termination is accepted: probationEndDate, capped at joinDate + 180 days. */
-export function probationLimitDate(joinDate: Date, probationEndDate: Date | null | undefined): Date {
-  const statutory = addDays(joinDate, PROBATION_MAX_DAYS);
+/** Last day a PROBATION termination is accepted: probationEndDate, capped at joinDate + the art. 53 maximum. */
+export function probationLimitDate(joinDate: Date, probationEndDate: Date | null | undefined, maxDays: number = PROBATION_MAX_DAYS): Date {
+  const statutory = addDays(joinDate, maxDays);
   if (!probationEndDate) return statutory;
   return probationEndDate.getTime() < statutory.getTime() ? probationEndDate : statutory;
 }
@@ -73,6 +82,8 @@ export interface TerminationReasonCheck {
   hasGuiltyInvestigation: boolean;
   /** Award the employee would get on a termination by the employer (what this reason drops). */
   forfeitedAward: number;
+  /** Art. 53 maximum of the employee's company (default: the catalogue's). */
+  probationMaxDays?: number;
 }
 
 export type TerminationReasonProblemCode = 'PROBATION_EXPIRED' | 'ARTICLE_80_CLAUSE_REQUIRED' | 'ARTICLE_80_NO_GUILTY_INVESTIGATION';
@@ -84,9 +95,10 @@ export type TerminationReasonProblemCode = 'PROBATION_EXPIRED' | 'ARTICLE_80_CLA
 export function terminationReasonProblem(i: TerminationReasonCheck): { code: TerminationReasonProblemCode; message: string } | null {
   const dropped = `هذا السبب يُسقط مكافأة نهاية الخدمة البالغة ${formatMoney(i.forfeitedAward)} ر.س.`;
   if (i.terminationReason === 'PROBATION') {
-    const limit = probationLimitDate(i.joinDate, i.probationEndDate);
+    const maxDays = i.probationMaxDays ?? PROBATION_MAX_DAYS;
+    const limit = probationLimitDate(i.joinDate, i.probationEndDate, maxDays);
     if (daysBetween(limit, i.lastWorkingDate) > 0) {
-      const basis = i.probationEndDate ? 'نهاية فترة التجربة المسجلة (بحد أقصى 180 يوماً من المباشرة)' : 'نهاية الحد الأقصى للتجربة (180 يوماً من تاريخ المباشرة)';
+      const basis = i.probationEndDate ? `نهاية فترة التجربة المسجلة (بحد أقصى ${maxDays} يوماً من المباشرة)` : `نهاية الحد الأقصى للتجربة (${maxDays} يوماً من تاريخ المباشرة)`;
       return {
         code: 'PROBATION_EXPIRED',
         message: `لا يمكن اختيار «إنهاء خلال فترة التجربة»: آخر يوم عمل (${dateKey(i.lastWorkingDate)}) يقع بعد ${basis} (${dateKey(limit)}). ${dropped}`,
@@ -246,8 +258,11 @@ async function guiltyInvestigationId(employeeId: string): Promise<string | null>
 
 export async function GET() {
   try {
-    await requireUser(READ_ROLES);
-    const settlements = await prisma.settlement.findMany({
+    const user = await requireUser(READ_ROLES);
+    // P1-SCOPE: settlements of the user's companies (the settlement follows its employee).
+    const ctx = scopedContext(await resolveActor(prisma, user));
+    authz.assert(ctx, 'settlement.read');
+    const settlements = await scopedPrisma(ctx).settlement.findMany({
       include: {
         employee: {
           select: {
@@ -366,6 +381,7 @@ async function computeForRequest(body: CreateSettlementBody) {
         nationality: true,
         isTerminated: true,
         leaveAccrualStartDate: true,
+        legalCompanyId: true,
         // Company cost setting: overtime hourly basis (legal company, else actual company).
         ...OVERTIME_BASIS_SELECT,
         allowances: { where: { isMonthly: true }, select: { name: true, amount: true, isMonthly: true } },
@@ -410,6 +426,8 @@ async function computeForRequest(body: CreateSettlementBody) {
     getNumericSetting(prisma, SETTING_KEYS.EXIT_REENTRY_VISA_FEE),
   ]);
   if (!employee) throw notFound('الموظف غير موجود');
+  // Labour-law values of the employee's company on the last working day (P1-RULE: registry + override).
+  const law = await laborLawFor(prisma, employee.legalCompanyId ?? null, lastDate);
   const [legacyCutoff, holders] = await Promise.all([
     overtimeLegacyCutoff(),
     overtimeHolders(prisma, employee.overtimeRequests.map((o) => o.paidInPayrollId)),
@@ -485,6 +503,7 @@ async function computeForRequest(body: CreateSettlementBody) {
     leaveOutsideKsa: body.leaveOutsideKsa === true,
     annualLeaveDaysSetting,
     visaBaseFee: visaBaseFee !== null && visaBaseFee >= 0 ? visaBaseFee : null,
+    law,
   });
 
   const overtimeIds = serverOvertime ? dueOvertime.map((ot) => ot.id) : [];
@@ -494,7 +513,7 @@ async function computeForRequest(body: CreateSettlementBody) {
   let forfeitedAward = 0;
   let investigationId: string | null = null;
   if (body.type === 'END_OF_SERVICE' && (body.terminationReason === 'PROBATION' || body.terminationReason === 'ARTICLE_80')) {
-    forfeitedAward = endOfServiceAward(calc.salaryUsed, yearsOfService(employee.joinDate, lastDate), 'COMPANY_TERMINATION');
+    forfeitedAward = endOfServiceAward(calc.salaryUsed, yearsOfService(employee.joinDate, lastDate), 'COMPANY_TERMINATION', law.eos);
     investigationId = body.terminationReason === 'ARTICLE_80' ? await guiltyInvestigationId(employee.id) : null;
     reasonProblem = terminationReasonProblem({
       terminationReason: body.terminationReason,
@@ -504,6 +523,7 @@ async function computeForRequest(body: CreateSettlementBody) {
       article80Clause: body.article80Clause,
       hasGuiltyInvestigation: !!investigationId,
       forfeitedAward,
+      probationMaxDays: law.probation.maxDays,
     });
   }
 
@@ -530,6 +550,12 @@ export async function POST(req: Request) {
     const body = await parseBody(req, CreateSettlementSchema);
 
     if (body.type === 'END_OF_SERVICE' && !body.lastWorkingDate) throw badRequest('آخر يوم عمل مطلوب لتصفية نهاية الخدمة');
+    // P1-SCOPE: HR settles only employees of its companies (another company's is "not found").
+    const scope = scopedContext(await resolveActor(prisma, user));
+    authz.assert(scope, 'settlement.create');
+    if (!(await scopedPrisma(scope).employee.findUnique({ where: { id: body.employeeId }, select: { id: true } }))) {
+      throw notFound('الموظف غير موجود');
+    }
 
     const { employee, existingSettlement, existingEndOfService, calc, overtimeIds, serverOvertime, reasonProblem, forfeitedAward, investigationId } =
       await computeForRequest(body);
@@ -611,8 +637,11 @@ export async function POST(req: Request) {
       });
       if (concurrent) throw conflict('يوجد معاملة تصفية قائمة حالياً للموظف. لا يمكن عمل تصفية أخرى.');
 
-      const created = await tx.settlement.create({
+      // settlement.create (money.gateway; the Settlement row is a listed legacy writer until P3-OFF).
+      const operationKey = `settlement.create:${req.headers.get('idempotency-key')?.trim() || randomUUID()}`;
+      const created = await runMoneyOperation(tx, SETTLEMENT_CREATE, { actor: moneyActorOf(user), input: { employeeId: body.employeeId }, operationKey }, (w) => w.settlement.create({
         data: {
+          createdById: user.id,
           employeeId: body.employeeId,
           type: body.type,
           terminationReason: body.terminationReason ?? null,
@@ -633,19 +662,16 @@ export async function POST(req: Request) {
           overtimeAmount: serverOvertime ? calc.overtime : null,
           status: SETTLEMENT_STATUS.PENDING_APPROVAL, // بانتظار تعميد صاحب العمل
         },
-      });
+      }));
 
-      // Reserve the overtime this settlement pays so payroll never pays it too. A payroll
-      // generation that took one of them since the calculation -> 409 (recompute).
-      if (overtimeIds.length) {
-        const reserved = await tx.overtimeRequest.updateMany({
-          where: { id: { in: overtimeIds }, status: 'APPROVED', paidInSettlementId: null },
-          data: { paidInSettlementId: created.id },
-        });
-        if (reserved.count !== overtimeIds.length) {
-          throw conflict('تغيّرت طلبات العمل الإضافي للموظف أثناء الحفظ، يرجى إعادة الاحتساب والمحاولة مجدداً');
-        }
-      }
+      // Reserve the overtime this settlement pays so payroll never pays it too (time's writer). A
+      // payroll generation that took one of them since the calculation -> 409 (recompute).
+      await linkOvertimeToSettlement(tx, {
+        settlementId: created.id,
+        overtimeIds,
+        operationKey,
+        conflictMessage: 'تغيّرت طلبات العمل الإضافي للموظف أثناء الحفظ، يرجى إعادة الاحتساب والمحاولة مجدداً',
+      });
 
       // إنشاء تأشيرة خروج نهائي إن وجد
       if (body.type === 'END_OF_SERVICE' && body.requestFinalExitVisa === true) {
@@ -738,12 +764,19 @@ export async function PUT(req: Request) {
     const user = await requireUser(UPDATE_ROLES);
     const body = await parseBody(req, UpdateSettlementSchema);
     const ctx = { ipAddress: getClientIp(req) };
+    // P1-SCOPE: a settlement of another company is "not found" (the transitions themselves also pass
+    // the actor's companies to the lifecycle, finance.approveSettlement).
+    const scope = scopedContext(await resolveActor(prisma, user));
+    authz.assert(scope, 'settlement.decide');
+    if (!(await scopedPrisma(scope).settlement.findUnique({ where: { id: body.id }, select: { id: true } }))) {
+      throw notFound('التصفية غير موجودة');
+    }
 
     const updated = await prisma.$transaction(
       async (tx) => {
         switch (body.status) {
           case SETTLEMENT_STATUS.OWNER_APPROVED:
-            return approveSettlement(tx, body.id, user, body.ownerNotes, ctx);
+            return approveSettlement(tx, body.id, user, body.ownerNotes, { ...ctx, recordEffects: recordSettlementEffects });
           case SETTLEMENT_STATUS.REJECTED:
             return rejectSettlement(tx, body.id, user, body.ownerNotes, ctx);
           case SETTLEMENT_STATUS.PAID:
@@ -761,7 +794,9 @@ export async function PUT(req: Request) {
             if (!Object.keys(data).length) throw badRequest('لا توجد بيانات للتحديث');
             const existing = await tx.settlement.findUnique({ where: { id: body.id }, select: { id: true } });
             if (!existing) throw notFound('التصفية غير موجودة');
-            const s = await tx.settlement.update({ where: { id: body.id }, data });
+            const s = await runMoneyOperation(tx, SETTLEMENT_NOTE, { actor: moneyActorOf(user), input: { settlementId: body.id }, operationKey: `settlement.note:${body.id}:${randomUUID()}` }, (w) =>
+              w.settlement.update({ where: { id: body.id }, data }),
+            );
             await logAudit(
               { userId: user.id, action: 'UPDATE', entityType: 'SETTLEMENT', entityId: body.id, details: data, ipAddress: ctx.ipAddress },
               tx,

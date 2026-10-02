@@ -66,6 +66,7 @@ type Contract = {
     effectiveDate: string; fromJobTitleAr: string; toJobTitleAr: string | null; toJobTitleEn: string | null;
     fromBasicSalary: string; toBasicSalary: string | null; reasonAr: string | null;
   };
+  transfer?: { effectiveDate: string; rows: { key: string; labelAr: string; fromAr: string; toAr: string }[]; reasonAr: string | null };
   commencement?: {
     kind: 'JOIN' | 'RETURN'; requested: boolean; date: string;
     leave: { id: string; typeAr: string | null; startDate: string; endDate: string; scheduledReturn: string; lateDays: number } | null;
@@ -311,6 +312,9 @@ export function buildRenderModel(data: Contract, brand: BrandSnapshot, meta: Ren
           acknowledge: data.circular.acknowledge,
           listed: data.circular.listed,
         }
+      : null,
+    transfer: data.transfer
+      ? { effectiveAr: formatGregorian(data.transfer.effectiveDate, 'ar', n), rows: data.transfer.rows, reasonAr: data.transfer.reasonAr }
       : null,
     commencement: data.commencement
       ? {

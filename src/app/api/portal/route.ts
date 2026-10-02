@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server';
 import { prisma } from '@/lib/prisma';
-import { requireEmployeeId, requireUser } from '@/lib/auth';
+import { requireUser } from '@/lib/auth';
 import { LEAVE_STATUS, LOAN_DEDUCTIBLE_STATUSES, LOAN_STATUS, PAYROLL_STATUS, ROLE_GROUPS } from '@/lib/constants';
 import { handleApiError, notFound } from '@/lib/http';
 import { formatDateShort } from '@/lib/dates';
@@ -14,6 +14,8 @@ import {
   type RequestStage,
 } from '@/lib/hr-workflows';
 import { leaveTypeLabel } from '@/lib/leave';
+import { resolveSelfContext } from '@/lib/employee-scope';
+import { authz, resolveActor, scopedPrisma } from '@/modules/iam';
 
 export const dynamic = 'force-dynamic';
 
@@ -80,10 +82,15 @@ export async function GET() {
     // Users without a linked employee file (e.g. pure admins) get 404: the page shows
     // "link your account to your employee file".
     if (!user.employeeId) throw notFound('حسابك غير مرتبط بملف موظف');
-    const employeeId = await requireEmployeeId(user);
+    // P1-SCOPE: SelfContext (the session employee, never a client value). Every row below is his own:
+    // the scoped client adds `id = <self>` to the Employee read, and the included lists hang off it.
+    const self = await resolveSelfContext(prisma, await resolveActor(prisma, user));
+    authz.assert(self, 'portal.self.read');
+    const employeeId = self.employeeId;
+    const db = scopedPrisma(self);
 
     const [employee, circulars, leaveBalance] = await Promise.all([
-      prisma.employee.findUnique({
+      db.employee.findUnique({
         where: { id: employeeId },
         include: {
           department: { select: { id: true, nameArabic: true } },
@@ -110,6 +117,8 @@ export async function GET() {
           },
         },
       }),
+      // Circular has no company column yet (EV-6027; §5.4.3 "communications": the issuing company's
+      // employees only): the legacy published circulars stay tenant-wide until Circular gets its company.
       prisma.circular.findMany({
         where: { status: 'PUBLISHED' },
         orderBy: { datePublished: 'desc' },

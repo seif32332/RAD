@@ -27,6 +27,7 @@ import { COMPANY_WORKFORCE_ROLES } from '@/app/api/companies/_workforce';
 import { assumptionsPutSchema } from '../_lib/schemas';
 import { ASSUMPTION_BOUNDS, assumptionAllowsRange, assumptionFormValue, validateAssumptionValue } from '../_lib/views';
 import { limitOrThrow } from '../_lib/server';
+import { assertTenantWide, companyScopeWhere, companyVisible, workforceScope } from '../_lib/scope';
 import { TOTAL_REWARDS_ASSUMPTION_KEY } from '@/lib/workforce/total-rewards';
 
 export const dynamic = 'force-dynamic';
@@ -76,9 +77,16 @@ export async function GET(req: Request) {
   try {
     const user = await requireUser(ROLE_GROUPS.WORKFORCE);
     const { companyId } = parseQuery(req, getSchema);
+    // P1-SCOPE: the tenant-wide defaults (companyId '') apply to every company, so every caller reads them;
+    // the overrides and settings of the caller's companies only. Editing the defaults: unrestricted callers.
+    const wf = await workforceScope(user);
     const [rows, companies, iqamaRule] = await Promise.all([
-      prisma.workforceAssumption.findMany({ select: { key: true, companyId: true, value: true, valueJson: true, note: true, updatedAt: true, updatedById: true }, orderBy: [{ key: 'asc' }, { companyId: 'asc' }] }),
-      prisma.company.findMany({ select: { id: true, nameArabic: true, overtimeHourlyBasis: true, medicalPremiumsJson: true, iqamaFeeYear: true }, orderBy: { nameArabic: 'asc' } }),
+      prisma.workforceAssumption.findMany({
+        where: wf.companyIds ? { companyId: { in: ['', ...wf.companyIds] } } : undefined,
+        select: { key: true, companyId: true, value: true, valueJson: true, note: true, updatedAt: true, updatedById: true },
+        orderBy: [{ key: 'asc' }, { companyId: 'asc' }],
+      }),
+      prisma.company.findMany({ where: companyScopeWhere(wf), select: { id: true, nameArabic: true, overtimeHourlyBasis: true, medicalPremiumsJson: true, iqamaFeeYear: true }, orderBy: { nameArabic: 'asc' } }),
       loadIqamaFeeRule(today()),
     ]);
     if (companyId && !companies.some((c) => c.id === companyId)) throw badRequest('الشركة غير موجودة');
@@ -96,6 +104,8 @@ export async function GET(req: Request) {
       disclaimer: ESTIMATE_DISCLAIMER,
       totalRewards,
       canEdit: EDIT_ROLES.includes(user.role),
+      /** The tenant-wide defaults (every company) are edited by an unrestricted caller only. */
+      canEditGlobal: EDIT_ROLES.includes(user.role) && !wf.companyIds,
       canEditCompanySettings: COMPANY_WORKFORCE_ROLES.includes(user.role),
       companyId,
       companies: companies.map((c) => ({ id: c.id, name: c.nameArabic, hasOverrides: overridden.has(c.id) })),
@@ -144,6 +154,11 @@ export async function PUT(req: Request) {
     const user = await requireUser(EDIT_ROLES);
     const b = await parseBody(req, assumptionsPutSchema);
     limitOrThrow(user, 'assumptions-put', 60, 10 * 60_000);
+    // P1-SCOPE: an override of one of the caller's companies (another company = "not found", the route's
+    // 400); the tenant-wide defaults (companyId '') change every company: unrestricted callers only (403).
+    const wf = await workforceScope(user, 'workforce.assumptions.manage');
+    if (!b.companyId) assertTenantWide(wf, 'الافتراضات العامة تسري على كل الشركات، وتعديلها خارج نطاق صلاحياتك: عدّل افتراضات شركتك');
+    else if (!companyVisible(wf, b.companyId)) throw badRequest('الشركة غير موجودة');
     if (b.companyId) {
       const company = await prisma.company.findUnique({ where: { id: b.companyId }, select: { id: true } });
       if (!company) throw badRequest('الشركة غير موجودة');

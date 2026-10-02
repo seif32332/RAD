@@ -17,16 +17,19 @@ import { loadNitaqatRegister } from '@/lib/workforce/load';
 import { ESTIMATE_DISCLAIMER } from '@/lib/workforce/version';
 import { nitaqatPostSchema } from '../_lib/saudization-schemas';
 import { limitOrThrow } from '../_lib/server';
+import { assertTenantWide, companyScopeWhere, workforceScope } from '../_lib/scope';
 
 export const dynamic = 'force-dynamic';
 
 export async function GET(req: Request) {
   try {
     const user = await requireUser(ROLE_GROUPS.WORKFORCE);
+    // The Nitaqat register is tenant-wide legal reference data; the usage counts cover the caller's companies only.
+    const wf = await workforceScope(user);
     const lite = new URL(req.url).searchParams.get('lite') === '1';
     const { activities, curves } = await loadNitaqatRegister();
     if (lite) return NextResponse.json({ activities: activities.map((a) => ({ key: a.key, nameAr: a.nameAr, code: a.code ?? null, sizeSegment: a.sizeSegment ?? null, status: a.status })) });
-    const usage = await prisma.company.groupBy({ by: ['nitaqatActivityKey'], where: { nitaqatActivityKey: { not: null } }, _count: { _all: true } });
+    const usage = await prisma.company.groupBy({ by: ['nitaqatActivityKey'], where: { nitaqatActivityKey: { not: null }, AND: [companyScopeWhere(wf)] }, _count: { _all: true } });
     const used = new Map(usage.map((u) => [u.nitaqatActivityKey as string, u._count._all]));
     const years = [...new Set(curves.map((c) => c.year))].sort((a, b) => a - b);
     return NextResponse.json({
@@ -51,6 +54,8 @@ export async function GET(req: Request) {
 export async function POST(req: Request) {
   try {
     const user = await requireUser(['SUPER_ADMIN']);
+    // A register row applies to every company: an unrestricted caller only.
+    assertTenantWide(await workforceScope(user, 'workforce.register.manage'));
     const b = await parseBody(req, nitaqatPostSchema);
     limitOrThrow(user, 'nitaqat-post', 60, 60 * 60_000);
     if (b.type === 'ACTIVITY') {

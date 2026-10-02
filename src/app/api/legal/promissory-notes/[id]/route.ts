@@ -7,6 +7,7 @@ import { ROLE_GROUPS } from '@/lib/constants';
 import { badRequest, conflict, handleApiError, notFound, parseBody } from '@/lib/http';
 import { zOptDate, zOptText } from '@/lib/validation';
 import { logAudit } from '@/lib/audit';
+import { authz, resolveActor, scopedContext, scopedPrisma } from '@/modules/iam';
 
 export const dynamic = 'force-dynamic';
 
@@ -31,6 +32,10 @@ const patchSchema = z.object({
 export async function PATCH(req: Request, { params }: { params: Promise<{ id: string }> }) {
   try {
     const user = await requireUser(ROLE_GROUPS.LEGAL);
+    const ctx = scopedContext(await resolveActor(prisma, user));
+    authz.assert(ctx, 'legal.manage');
+    // Scoped client (P1-SCOPE): a note of a company outside the user's scope is "not found" (404).
+    const db = scopedPrisma(ctx);
     const { id } = await params;
     const { status, paymentAttachment, paymentDate } = await parseBody(req, patchSchema);
 
@@ -43,17 +48,16 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ id: st
       data.paymentDate = paymentDate;
     }
 
-    await prisma.$transaction(async (tx) => {
-      const res = await tx.promissoryNote.updateMany({
-        where: { id, status: { in: ALLOWED_FROM[status] } },
-        data,
-      });
-      if (res.count === 0) {
-        const exists = await tx.promissoryNote.findUnique({ where: { id }, select: { id: true } });
-        if (!exists) throw notFound('السند غير موجود');
-        throw conflict('لا يمكن تغيير حالة السند من حالته الحالية');
-      }
+    // One conditional update (atomic): the status guard makes a replay a 409.
+    const res = await db.promissoryNote.updateMany({
+      where: { id, status: { in: ALLOWED_FROM[status] } },
+      data,
     });
+    if (res.count === 0) {
+      const exists = await db.promissoryNote.findUnique({ where: { id }, select: { id: true } });
+      if (!exists) throw notFound('السند غير موجود');
+      throw conflict('لا يمكن تغيير حالة السند من حالته الحالية');
+    }
 
     await logAudit({
       userId: user.id,

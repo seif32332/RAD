@@ -6,6 +6,7 @@ import { ROLE_GROUPS } from '@/lib/constants';
 import { sumAmounts, toAmountString } from './core';
 import { SETTLEMENT_PAYMENT_METHODS } from '@/lib/settlement-payment';
 import { validateSaudiIban } from '@/lib/iban';
+import { catalogueValueAt } from '@/modules/rules';
 
 export type DocumentLanguage = 'ar' | 'ar-en';
 
@@ -97,6 +98,15 @@ export const warningParamsSchema = z.object({
   incidentDate: isoDate.optional(),
 });
 
+/** TRANSFER_DECISION: the new branch / department / direct manager (only those given), from the effective date. */
+export const transferParamsSchema = z.object({
+  effectiveDate: isoDate,
+  newBranchId: z.string().trim().min(1).max(64).optional(),
+  newDepartmentId: z.string().trim().min(1).max(64).optional(),
+  newDirectManagerId: z.string().trim().min(1).max(64).optional(),
+  reasonAr: lineText(3, 200).optional(),
+}).refine((p) => p.newBranchId || p.newDepartmentId || p.newDirectManagerId, 'حدد الفرع أو الإدارة أو المدير المباشر الجديد');
+
 /** ADMIN_CIRCULAR: an administrative decision or a circular of the legal company to a group of employees. */
 export const circularParamsSchema = z.object({
   /** The issuing legal company (a company document: HR chooses, within its scope). */
@@ -164,8 +174,9 @@ export const offerParamsSchema = z.object({
   transportAllowance: money.optional(),
   otherAllowances: money.optional(),
   startDate: isoDate,
-  probationDays: z.number().int().min(0).max(180),
-  annualLeaveDays: z.number().int().min(21).max(60),
+  // Art. 53 maximum and art. 109 minimum from the rules catalogue (P1-RULE).
+  probationDays: z.number().int().min(0).max(catalogueValueAt('PROBATION_MAX_DAYS')),
+  annualLeaveDays: z.number().int().min(catalogueValueAt('ANNUAL_LEAVE_DAYS')).max(60),
   notesAr: lineText(3, 300).optional(),
 });
 
@@ -197,6 +208,8 @@ export const paramsSchema = z.object({
   noc: nocParamsSchema.optional(),
   /** PROMOTION_DECISION only: the change it orders. */
   promotion: promotionParamsSchema.optional(),
+  /** TRANSFER_DECISION only: where the employee moves. */
+  transfer: transferParamsSchema.optional(),
   /** ADMIN_CIRCULAR only: the decision / circular and its audience. */
   circular: circularParamsSchema.optional(),
   /** CONTRACT_ADDENDUM only: the terms it changes. */
@@ -448,6 +461,18 @@ export interface EvaluationFacts {
 }
 
 /** An approved leave as its letter needs it. */
+/** Where the employee is now and where a transfer moves him (null when an id matches nothing). */
+export interface TransferFacts {
+  branch: { id: string; nameAr: string; city: string | null } | null;
+  department: { id: string; nameAr: string } | null;
+  manager: { id: string; nameAr: string } | null;
+  newBranch: { id: string; nameAr: string; city: string | null } | null;
+  newDepartment: { id: string; nameAr: string; branchId: string } | null;
+  newManager: { id: string; nameAr: string; inService: boolean } | null;
+  /** Company option of the type (DocumentTypeSetting.optionsJson). */
+  allowCityChange: boolean;
+}
+
 /** Who a circular reaches: its recipients (active employees of the legal company) and the named groups. */
 export interface CircularFacts {
   recipients: Array<{ id: string; employeeNumber: string; nameAr: string }>;
@@ -509,6 +534,20 @@ export interface TypeDefaults {
   validityDays: number | null;
 }
 
+/** What a change order sets on the employee file (null / absent = unchanged). */
+export interface ChangeOrderTerms {
+  effectiveDate: string;
+  basicSalary?: number | null;
+  jobTitle?: string | null;
+  jobTitleEnglish?: string | null;
+  housingAllowance?: number | null;
+  transportAllowance?: number | null;
+  branchId?: string | null;
+  contractEndDate?: string | null;
+  departmentId?: string | null;
+  directManagerId?: string | null;
+}
+
 export interface DocumentTypeDefinition {
   key: string;
   /** Languages the template supports (a free Arabic text has no English version). */
@@ -528,7 +567,7 @@ export interface DocumentTypeDefinition {
   /** Addressed to the employee himself instead of "to whom it may concern". */
   addressedToEmployee?: boolean;
   /** Extra facts the builder needs (loaded by facts.ts). */
-  facts?: 'EXIT' | 'SETTLEMENT' | 'PAYROLL' | 'TERMINATION' | 'INVESTIGATION' | 'BANK' | 'LEAVE' | 'EVALUATION' | 'ADDENDUM' | 'COMMENCEMENT';
+  facts?: 'EXIT' | 'SETTLEMENT' | 'PAYROLL' | 'TERMINATION' | 'INVESTIGATION' | 'BANK' | 'LEAVE' | 'EVALUATION' | 'ADDENDUM' | 'COMMENCEMENT' | 'TRANSFER';
   /**
    * Always approved by a human (a financial commitment): settings cannot switch approval off and a
    * pre-authorization does not replace it; unlike approvalLocked it may be requested from the portal.
@@ -538,6 +577,10 @@ export interface DocumentTypeDefinition {
   executesChange?: boolean;
   /** The employee's acceptance (CONSENT) orders the change of the file, not the issuance. */
   executesOnConsent?: boolean;
+  /** executesChange: the change order a document's data orders (applied on its effective date). */
+  changeOrderOf?(data: unknown): ChangeOrderTerms;
+  /** Company options of this type (defaults the company may change, DEC-PO-116), stored in DocumentTypeSetting.optionsJson. */
+  options?: ReadonlyArray<{ key: string; labelAr: string; default: boolean }>;
   /**
    * CANDIDATE: the document belongs to a job applicant, not an employee (buildCandidate is used,
    * the legal company comes from the parameters, delivery is a private link).
@@ -582,6 +625,7 @@ export interface BuildInput {
   evaluation?: EvaluationFacts;
   addendum?: AddendumFacts;
   commencement?: CommencementFacts;
+  transfer?: TransferFacts;
 }
 
 const baseBuild = (employee: EmployeeRecord, company: CompanyRecord, params: DocumentParams) => {
@@ -1212,6 +1256,10 @@ export const PROMOTION_DECISION: DocumentTypeDefinition = {
       reasonAr: z.string().nullable(),
     }),
   }),
+  changeOrderOf(data) {
+    const ch = (data as { change: { effectiveDate: string; toBasicSalary: string | null; toJobTitleAr: string | null; toJobTitleEn: string | null } }).change;
+    return { effectiveDate: ch.effectiveDate, basicSalary: ch.toBasicSalary !== null ? Number(ch.toBasicSalary) : null, jobTitle: ch.toJobTitleAr, jobTitleEnglish: ch.toJobTitleEn };
+  },
   build({ employee, company, params }) {
     const b = baseBuild(employee, company, params);
     const errors = [...b.errors];
@@ -1357,6 +1405,88 @@ export const CONTRACT_ADDENDUM: DocumentTypeDefinition = {
       errors,
       data: { employee: b.employee, company: b.company, addendum: { effectiveDate: p.effectiveDate, rows, reasonAr: p.reasonAr ?? null, apply } },
     };
+  },
+};
+
+/**
+ * Employee transfer decision (2026-09-27, SPEC §15 item 38; rules are company defaults, DEC-PO-116):
+ * another branch, department and / or direct manager from an effective date. Issued by HR after
+ * approval (default), it orders the change of the file like a promotion (EmployeeChangeOrder). A move
+ * to a branch in another city changes where the employee lives: by default it is not decided here
+ * but through a contract addendum the employee accepts (option allowCityChange).
+ */
+export const TRANSFER_DECISION: DocumentTypeDefinition = {
+  key: 'TRANSFER_DECISION',
+  languages: ['ar'],
+  code: 'TRF',
+  contractVersion: 1,
+  labelAr: 'قرار نقل موظف',
+  labelEn: 'Employee Transfer Decision',
+  template: 'transfer-decision',
+  templateVersion: 1,
+  staffRoles: ROLE_GROUPS.HR,
+  executesChange: true,
+  addressedToEmployee: true,
+  facts: 'TRANSFER',
+  defaults: { selfService: false, requiresApproval: true, validityDays: null },
+  options: [{ key: 'allowCityChange', labelAr: 'يسمح بالنقل إلى فرع في مدينة أخرى بقرار (دون ملحق عقد يوافق عليه الموظف)', default: false }],
+  requiresActiveEmployee: true,
+  contract: z.object({
+    employee: employeeContract,
+    company: companyContract,
+    transfer: z.object({
+      effectiveDate: isoDate,
+      rows: z.array(z.object({ key: z.string(), labelAr: z.string(), fromAr: z.string(), toAr: z.string() })).min(1),
+      reasonAr: z.string().nullable(),
+      apply: z.object({ branchId: z.string().nullable(), departmentId: z.string().nullable(), directManagerId: z.string().nullable() }),
+    }),
+  }),
+  changeOrderOf(data) {
+    const t = (data as { transfer: { effectiveDate: string; apply: { branchId: string | null; departmentId: string | null; directManagerId: string | null } } }).transfer;
+    return { effectiveDate: t.effectiveDate, branchId: t.apply.branchId, departmentId: t.apply.departmentId, directManagerId: t.apply.directManagerId };
+  },
+  build({ employee, company, params, transfer: facts }) {
+    const b = baseBuild(employee, company, params);
+    const errors = [...b.errors];
+    const p = params.transfer;
+    if (!p || !facts) {
+      errors.push({ code: 'MISSING_TRANSFER', message: 'حدد الفرع أو الإدارة أو المدير المباشر الجديد وتاريخ السريان' });
+      return { errors, data: null };
+    }
+    const rows: Array<{ key: string; labelAr: string; fromAr: string; toAr: string }> = [];
+    const apply = { branchId: null as string | null, departmentId: null as string | null, directManagerId: null as string | null };
+    if (p.newBranchId) {
+      if (!facts.newBranch) errors.push({ code: 'UNKNOWN_BRANCH', message: 'الفرع المحدد غير موجود' });
+      else if (facts.newBranch.id !== facts.branch?.id) {
+        const from = facts.branch?.city?.trim();
+        const to = facts.newBranch.city?.trim();
+        if (from && to && from !== to && !facts.allowCityChange) {
+          errors.push({ code: 'CITY_CHANGE', message: `النقل من ${from} إلى ${to} يغيّر مدينة العمل: يتم بملحق عقد يوافق عليه الموظف، أو يسمح به المالك من إعدادات المستندات` });
+        }
+        rows.push({ key: 'BRANCH', labelAr: 'الفرع', fromAr: facts.branch?.nameAr ?? '-', toAr: facts.newBranch.nameAr });
+        apply.branchId = facts.newBranch.id;
+      }
+    }
+    if (p.newDepartmentId) {
+      const branchAfter = apply.branchId ?? facts.branch?.id ?? null;
+      if (!facts.newDepartment) errors.push({ code: 'UNKNOWN_DEPARTMENT', message: 'الإدارة المحددة غير موجودة' });
+      else if (branchAfter && facts.newDepartment.branchId !== branchAfter) errors.push({ code: 'DEPARTMENT_BRANCH', message: 'الإدارة المحددة لا تتبع الفرع الذي ينقل إليه الموظف' });
+      else if (facts.newDepartment.id !== facts.department?.id) {
+        rows.push({ key: 'DEPARTMENT', labelAr: 'الإدارة', fromAr: facts.department?.nameAr ?? '-', toAr: facts.newDepartment.nameAr });
+        apply.departmentId = facts.newDepartment.id;
+      }
+    }
+    if (p.newDirectManagerId) {
+      if (!facts.newManager) errors.push({ code: 'UNKNOWN_MANAGER', message: 'المدير المحدد غير موجود' });
+      else if (facts.newManager.id === employee.id) errors.push({ code: 'SELF_MANAGER', message: 'لا يكون الموظف مديراً مباشراً لنفسه' });
+      else if (!facts.newManager.inService) errors.push({ code: 'MANAGER_NOT_IN_SERVICE', message: 'المدير المحدد ليس على رأس العمل' });
+      else if (facts.newManager.id !== facts.manager?.id) {
+        rows.push({ key: 'MANAGER', labelAr: 'المدير المباشر', fromAr: facts.manager?.nameAr ?? '-', toAr: facts.newManager.nameAr });
+        apply.directManagerId = facts.newManager.id;
+      }
+    }
+    if (!rows.length && !errors.length) errors.push({ code: 'NO_CHANGE', message: 'القيم الجديدة مطابقة لملف الموظف الحالي' });
+    return { errors, data: { employee: b.employee, company: b.company, transfer: { effectiveDate: p.effectiveDate, rows, reasonAr: p.reasonAr ?? null, apply } } };
   },
 };
 
@@ -1822,6 +1952,7 @@ export const DOCUMENT_TYPES: Readonly<Record<string, DocumentTypeDefinition>> = 
   [WORK_COMMENCEMENT.key]: WORK_COMMENCEMENT,
   [WORK_COMMENCEMENT_LETTER.key]: WORK_COMMENCEMENT_LETTER,
   [ADMIN_CIRCULAR.key]: ADMIN_CIRCULAR,
+  [TRANSFER_DECISION.key]: TRANSFER_DECISION,
 });
 
 export function getDocumentType(key: string): DocumentTypeDefinition | null {

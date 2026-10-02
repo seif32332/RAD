@@ -5,7 +5,8 @@
 #
 # Usage:
 #   ops/run-jobs.sh [--mode pm2|docker] [--jitter SECONDS] <job> [tenant...]
-#     <job>: expiry-digest | deactivate-terminated | outbox-dispatch
+#     <job>: any name in JOB_NAMES of src/jobs/registry.ts (`node scripts/jobs.mjs --list`; one timer
+#            each in ops/systemd, ops/jobs-setup.sh)
 #     no tenant given = every tenant (below)
 #
 # Tenants:
@@ -19,8 +20,10 @@
 #            $RADEEF_ROOT/src: its node_modules holds the generated Prisma client, exactly like the
 #            deploy seed); for a jobs-extra.list tenant, from the directory of its .env.
 #   docker : docker run --rm --env-file <env> radeef:live-<tenant> node scripts/jobs.mjs <job>
-# jobs.mjs caps its pool at connection_limit=2, refuses to run twice at once per database and
-# records a JobRun row. One failing tenant does not stop the others; exit 1 if any failed.
+# scripts/jobs.mjs runs dist/jobs/jobs.cjs, the jobs built from the modules' TypeScript by
+# `npm run build` (deploy.sh builds it in $JOBS_APP_DIR; the Docker image ships it). It caps its pool
+# at connection_limit=2, refuses to run twice at once per database and records a JobRun row. One
+# failing tenant does not stop the others; exit 1 if any failed.
 # =============================================================================
 set -euo pipefail
 IFS=$'\n\t'
@@ -35,18 +38,18 @@ JOB=""
 TENANTS=()
 JOBS_APP_DIR="${JOBS_APP_DIR:-$RADEEF_ROOT/src}"
 JOB_TIMEOUT="${JOB_TIMEOUT:-30m}"
-JOB_RE='^(expiry-digest|deactivate-terminated|outbox-dispatch|purge-attendance-biometrics|documents-retention|documents-integrity|apply-employee-changes)$'
+JOB_RE='^(expiry-digest|deactivate-terminated|outbox-dispatch|purge-attendance-biometrics|documents-retention|documents-integrity|apply-employee-changes|domain-events|reconcile|employment-notice-end|employment-state-opening)$'
 
 while (($#)); do
   case "$1" in
     --mode) MODE="${2:?--mode needs a value}"; shift 2 ;;
     --jitter) JITTER="${2:?--jitter needs a value}"; shift 2 ;;
-    -h|--help) sed -n '2,26p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -h|--help) sed -n '3,26p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0 ;;
     -*) die "unknown option: $1" ;;
     *) if [[ -z "$JOB" ]]; then JOB="$1"; else TENANTS+=("$1"); fi; shift ;;
   esac
 done
-[[ "$JOB" =~ $JOB_RE ]] || die "usage: ops/run-jobs.sh [--mode pm2|docker] [--jitter SECONDS] <expiry-digest|deactivate-terminated|outbox-dispatch> [tenant...]"
+[[ "$JOB" =~ $JOB_RE ]] || die "usage: ops/run-jobs.sh [--mode pm2|docker] [--jitter SECONDS] <${JOB_RE:2:-2}> [tenant...]"
 [[ "$MODE" == "pm2" || "$MODE" == "docker" ]] || die "--mode must be pm2 or docker"
 [[ "$JITTER" =~ ^[0-9]+$ ]] || die "--jitter must be a number of seconds"
 require_cmd node timeout

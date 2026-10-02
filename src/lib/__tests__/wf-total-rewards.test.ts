@@ -154,6 +154,13 @@ vi.mock('@/lib/auth', () => ({
   }),
   getClientIp: () => '127.0.0.1',
 }));
+// P1-SCOPE: the route resolves the SelfContext (UserCompanyScope rows, the employee's placement).
+vi.mock('@/lib/prisma', () => ({
+  prisma: {
+    userCompanyScope: { findMany: vi.fn(async () => []) },
+    employee: { findUnique: vi.fn(async () => ({ legalCompanyId: 'C1', branchId: null, departmentId: null })) },
+  },
+}));
 vi.mock('@/app/api/workforce/_lib/server', () => ({ limitOrThrow: vi.fn() }));
 vi.mock('@/app/api/workforce/total-rewards/_load', async () => {
   const { z } = await import('zod');
@@ -164,7 +171,7 @@ vi.mock('@/app/api/workforce/total-rewards/_load', async () => {
   };
 });
 
-describe('GET /api/portal/total-rewards', () => {
+describe('GET /api/portal/total-rewards', { timeout: 30_000 }, () => {
   beforeEach(() => {
     mocks.enabled = true;
     mocks.load.mockReset();

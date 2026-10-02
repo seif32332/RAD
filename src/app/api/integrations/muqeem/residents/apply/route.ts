@@ -3,7 +3,7 @@ import { z } from 'zod';
 import { getClientIp, requireUser } from '@/lib/auth';
 import { ROLE_GROUPS } from '@/lib/constants';
 import { prisma } from '@/lib/prisma';
-import { HttpError, badRequest, handleApiError, parseBody } from '@/lib/http';
+import { HttpError, badRequest, handleApiError, notFound, parseBody } from '@/lib/http';
 import { zId } from '@/lib/validation';
 import { rateLimit } from '@/lib/rate-limit';
 import { logAudit } from '@/lib/audit';
@@ -11,6 +11,7 @@ import { isSaudiNationalityValue } from '@/lib/employee-shared';
 import { toApiError, type NormalizedResident } from '@/lib/muqeem';
 import { normalizeIqamaNumber, planEmployeeUpdate, SYNC_FIELDS, SYNC_FIELD_LABELS, type FieldChange } from '@/lib/muqeem-sync';
 import { EMPLOYEE_SELECT, fetchAllResidents, loadCompany, toSyncEmployee } from '../_shared';
+import { authz, resolveActor, scopedContext, scopedPrisma } from '@/modules/iam';
 
 export const dynamic = 'force-dynamic';
 
@@ -45,14 +46,19 @@ const SKIP_MESSAGES: Record<SkipReason, string> = {
  * the active residents report is read again (read-only on Muqeem) and only the selected fields that
  * still differ are written, in one database transaction, audited per employee with before/after.
  * Nothing is sent to Muqeem except the report read. Saudi / terminated / other-company employees are refused.
+ * P1-SCOPE: only a company of the user's scope (404 otherwise, before the report is read); every
+ * employee must be on that company, so every employee written is inside the scope too.
  * 200 { applied: [{ employeeId, employeeName, changes }], skipped: [{ employeeId, employeeName, reason, message }] }
  */
 export async function POST(req: Request) {
   try {
     const user = await requireUser(ROLE_GROUPS.GOV);
+    const ctx = scopedContext(await resolveActor(prisma, user));
+    authz.assert(ctx, 'gov.muqeem.operate');
     const limit = rateLimit(`muqeem-sync-apply:${user.id}`, 40, 10 * 60_000);
     if (!limit.ok) throw new HttpError(429, 'تم تجاوز عدد مرات التطبيق المسموح بها، حاول بعد بضع دقائق');
     const { companyId, updates } = await parseBody(req, BodySchema);
+    if (!(await scopedPrisma(ctx).company.findUnique({ where: { id: companyId }, select: { id: true } }))) throw notFound('الشركة غير موجودة');
     await loadCompany(companyId);
 
     const ids = updates.map((u) => u.employeeId);

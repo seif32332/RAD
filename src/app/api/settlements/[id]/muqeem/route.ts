@@ -25,6 +25,7 @@ import { dateKey } from '@/lib/dates';
 import { formatMoney } from '@/lib/money';
 import { leaveTypeLabel } from '@/lib/leave';
 import { zId } from '@/lib/validation';
+import { authz, resolveActor, scopedContext, scopedPrisma } from '@/modules/iam';
 import {
   MUQEEM_ERROR_HTTP_STATUS,
   MuqeemError,
@@ -82,8 +83,14 @@ const TX_SELECT = {
 // Loading
 // ---------------------------------------------------------------------------
 
-async function loadContext(id: string) {
-  const settlement = await prisma.settlement.findUnique({
+/**
+ * P1-SCOPE: the settlement is read through the user's ScopedContext (the settlement follows its
+ * employee's company); another company's settlement is "not found", and nothing else is loaded.
+ */
+async function loadContext(user: AuthUser, id: string, action: 'settlement.read' | 'settlement.muqeem.operate') {
+  const scope = scopedContext(await resolveActor(prisma, user));
+  authz.assert(scope, action);
+  const settlement = await scopedPrisma(scope).settlement.findUnique({
     where: { id },
     select: {
       id: true,
@@ -344,7 +351,7 @@ export async function GET(_req: Request, { params }: Ctx) {
   try {
     const user = await requireUser(READ_ROLES);
     const { id } = await params;
-    const ctx = await loadContext(id);
+    const ctx = await loadContext(user, id, 'settlement.read');
     const { settlement, employee, company, txs, state, muqeemUsable } = ctx;
     const now = new Date();
 
@@ -424,7 +431,7 @@ export async function POST(req: Request, { params }: Ctx) {
     const { id } = await params;
     const body = await parseBody(req, PostSchema);
     const ipAddress = getClientIp(req);
-    const ctx = await loadContext(id);
+    const ctx = await loadContext(user, id, 'settlement.muqeem.operate');
 
     switch (body.action) {
       case 'ISSUE_FINAL_EXIT':

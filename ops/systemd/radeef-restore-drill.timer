@@ -1,0 +1,12 @@
+# /etc/systemd/system/radeef-restore-drill.timer: the 2nd of every month at 05:30 (after the 02:15
+# backup and the 03:30-05:00 jobs).
+[Unit]
+Description=Radeef restore drill (monthly)
+
+[Timer]
+OnCalendar=*-*-02 05:30:00 Asia/Riyadh
+RandomizedDelaySec=15min
+Persistent=true
+
+[Install]
+WantedBy=timers.target

@@ -9,8 +9,6 @@ import {
 import { effectivePolicy } from '@/lib/documents/policy';
 import { buildRenderModel } from '@/lib/documents/render-model';
 import { noticeText } from '@/lib/documents/notify';
-import { allowanceLine } from '@/lib/payroll-core';
-import { allowanceLine as jobAllowanceLine } from '../../../scripts/jobs.mjs';
 
 const employee: EmployeeRecord = {
   id: 'e1', employeeId: 'E-00412', firstNameArabic: 'محمد', lastNameArabic: 'عبدالله الأحمد',
@@ -105,13 +103,5 @@ describe('contract addendum (AMD)', () => {
     expect(yes.body).toContain('وافق الموظف');
     expect(no.body).toContain('لا يتغير شيء');
     for (const t of [issued, yes, no]) expect(`${t.subject} ${t.body}`).not.toMatch(/محمد|9500|10500/);
-  });
-
-  it('the nightly job classifies allowances exactly like the payslip', () => {
-    const samples = [
-      { name: 'بدل سكن', allowanceType: null }, { name: 'x', allowanceType: 'HOUSING' }, { name: 'بدل مواصلات', allowanceType: null },
-      { name: 'Transport', allowanceType: null }, { name: 'بدل طعام', allowanceType: null }, { name: 'سكن', allowanceType: 'FOOD' }, { name: 'x', allowanceType: 'transport' },
-    ];
-    for (const a of samples) expect(jobAllowanceLine(a)).toBe(allowanceLine(a));
   });
 });

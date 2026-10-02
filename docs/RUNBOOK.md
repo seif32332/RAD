@@ -284,20 +284,30 @@ sudo crontab -e
 15 2 * * * /opt/radeef/src/ops/backup.sh --all >>/var/log/radeef/backup.log 2>&1
 ```
 - الاحتفاظ: 7 يومية، 4 أسبوعية (الأحد)، 6 شهرية (يوم 1)، ونسخ ما قبل النشر/الاستعادة 30 يومًا.
-- **خارج السيرفر (إلزامي عمليًا):** `apt install rclone`، ثم `rclone config` لإنشاء remote (Backblaze B2 / Hetzner Storage Box / S3) ثم remote من نوع `crypt` فوقه، وضع في `/etc/radeef/backup.conf`:
-  ```
-  RCLONE_REMOTE=radeef-crypt:
-  BACKUP_PING_URL=https://hc-ping.com/<uuid>
-  ```
-  (`chmod 600`، ومع `BACKUP_PING_URL` تنبيه تلقائي إن لم يعمل النسخ.)
-- **اختبار استعادة شهري** في قاعدة مؤقتة (لا يلمس الإنتاج):
+- **خارج السيرفر ومشفّر: إلزامي افتراضياً** (الخطة الرئيسية P0-04). بدون remote خارجي يكتمل النسخ المحلي ثم يخرج `backup.sh` بـ1 ويرسل `/fail`. والرفع لا يتم أبداً بلا تشفير، بأحد طريقين في `/etc/radeef/backup.conf` (`chmod 600`):
+  - remote من نوع `crypt` في rclone فوق التخزين (Backblaze B2 / Hetzner Storage Box / S3). السكربت يتحقق من النوع عبر `rclone listremotes --long`:
+    ```
+    RCLONE_REMOTE=radeef-crypt:
+    BACKUP_PING_URL=https://hc-ping.com/<uuid>
+    ```
+  - أو remote عادي مع تشفير age لكل ملف قبل الرفع. **المفتاح الخاص لا يبقى على السيرفر** (يُحفظ عند المالك وفي خزنة):
+    ```
+    RCLONE_REMOTE=b2:radeef-backups
+    BACKUP_AGE_RECIPIENTS=/etc/radeef/backup-age.pub
+    ```
+    (`apt install age`، و`age-keygen -o owner.key` على جهاز آخر، ثم انسخ سطر المفتاح العام إلى الملف.) فك التشفير عند الاستعادة: `age -d -i owner.key -o x.dump x.dump.age`.
+  - `ALLOW_LOCAL_ONLY=1` يقبل نسخاً محلياً فقط (بيئة تطوير، أو سيرفر له نسخ خارجي آخر). غير مستحسن للإنتاج.
+- **تمرين استعادة شهري آلي** (`ops/restore-drill.sh`): لكل مستأجر يتحقق من sha256 أحدث نسخة يومية، ويستعيدها في قاعدة مؤقتة `radeef_drill_<tenant>` (لا يلمس قاعدة المستأجر)، ويتحقق من الترحيلات مقارنةً بالقاعدة الحية، ثم يحذف المؤقتة، ويكتب النتيجة صفاً في `JobRun` للمستأجر (`job = 'restore-drill'`). يحتاج دوراً بصلاحية CREATEDB:
   ```bash
-  sudo -u postgres createdb restore_test
-  sudo -u postgres pg_restore --no-owner -d restore_test /var/backups/radeef/dar/daily/<latest>.dump
-  sudo -u postgres psql -d restore_test -c 'select count(*) from "Employee";'
-  sudo -u postgres dropdb restore_test
+  sudo -u postgres psql -c "CREATE ROLE radeef_drill LOGIN CREATEDB PASSWORD '<random>'"
+  # في /etc/radeef/backup.conf:
+  #   DRILL_PG_URL=postgresql://radeef_drill:<random>@127.0.0.1:5432/postgres
+  #   DRILL_PING_URL=https://hc-ping.com/<uuid>   (اختياري)
+  sudo install -m 0644 /opt/radeef/src/ops/systemd/radeef-restore-drill.{service,timer} /etc/systemd/system/
+  sudo systemctl daemon-reload && sudo systemctl enable --now radeef-restore-drill.timer   # يوم 2 من كل شهر 05:30
+  sudo /opt/radeef/src/ops/restore-drill.sh dar   # تشغيل يدوي
   ```
-  ودوّن التاريخ والنتيجة.
+  النتائج: `SELECT "startedAt", status, details FROM "JobRun" WHERE job = 'restore-drill' ORDER BY "startedAt" DESC;`
 
 ### 3.5 مستأجر جديد
 ```bash
@@ -317,7 +327,7 @@ sudo -u radeef node --env-file=/etc/radeef/acme.env /opt/radeef/src/scripts/crea
 | المهمة | الوتيرة |
 |---|---|
 | مراجعة `backup.log` ووصول النسخ للمخزن الخارجي | أسبوعيًا |
-| اختبار استعادة (3.4) | شهريًا |
+| مراجعة نتيجة تمرين الاستعادة الآلي في `JobRun` (3.4) | شهريًا |
 | `certbot renew --dry-run` | شهريًا (التجديد نفسه تلقائي عبر مؤقت certbot) |
 | `apt upgrade` وإعادة الإقلاع عند الحاجة (`unattended-upgrades` للأمنية) | أسبوعيًا |
 | `npm audit --omit=dev` في المستودع وتحديث التبعيات | شهريًا |
@@ -344,11 +354,20 @@ sudo -u radeef node --env-file=/etc/radeef/acme.env /opt/radeef/src/scripts/crea
 كان للمهمة نفسها تشغيل `RUNNING` على القاعدة نفسها (ويعلّم ما بقي `RUNNING` أكثر من ساعتين `FAILED`)،
 وحوض الاتصالات فيه `connection_limit=2`.
 
+**من أين يأتي الكود (P1-FND-JOBS، DEC-PO-121):** المهام هي كود TypeScript للوحدات نفسه، مسجلة في
+`src/jobs/registry.ts`، و`npm run build` (عبر `npm run build:jobs`) يجمعها في ملف واحد `dist/jobs/jobs.cjs`.
+`scripts/jobs.mjs` يشغّل هذا الملف فقط، فبعد أي تعديل على مهمة يلزم البناء (deploy.sh وصورة Docker يبنيانه).
+`node scripts/jobs.mjs --list` يعرض المهام ونطاقها: مهمة **لكل شركة** تمر على الشركات واحدة واحدة
+(`documents-retention`، `apply-employee-changes`، `reconcile`)، والمهام **العابرة للشركات** معلنة في
+`CROSS_COMPANY_JOBS` (`src/modules/iam/context.ts`)، و`expiry-digest` يحسب لكل مستلم ما يراه نطاقه فقط.
+
 | المهمة | ما تفعله | الافتراضي الآمن |
 |---|---|---|
 | `expiry-digest` | يحسب أعداد المستندات المنتهية والتي تقترب من الانتهاء لكل فئة (نفس العتبات ومفاتيح `alert_*` في `src/lib/alerts.ts`)، ويضيف **صفاً واحداً لكل مستخدم مدير في اليوم** إلى `NotificationOutbox` بمفتاح `expiry-digest:<userId>:<YYYY-MM-DD>`. النص **أعداد فقط + رابط تسجيل الدخول**: لا أسماء ولا أرقام هوية. لا يُرسل لمستخدم غير نشط أو مرتبط بموظف منتهية خدمته. لا شيء يُضاف في يوم بلا تنبيهات. | الأدوار من `SystemSetting.expiry_digest_roles` (افتراضي `SUPER_ADMIN,COMPANY_ADMIN`، ولا يُقبل `EMPLOYEE`). الرابط من `APP_URL`. |
 | `deactivate-terminated` | بعد مضي `terminated_access_days` يوماً من الإنهاء (دخول كامل) يحوّل الحساب إلى «المستندات فقط» لمدة `terminated_documents_access_days` يوماً (صفحة `/my-documents`)، ثم يعطّله (`isActive=false`، `sessionVersion+1` لإبطال الجلسات، وسطر تدقيق). | `terminated_access_days` غير مضبوط = 0 = فوراً، و`terminated_documents_access_days` غير مضبوط = 30 (0 = تعطيل مباشر؛ نفس `src/lib/access.ts`). |
-| `outbox-dispatch` | يرسل صفوف `NotificationOutbox` بالبريد: `PENDING` ← `SENDING` (مع lease) ← `SENT` / `FAILED` / `UNKNOWN`. انتهاء المهلة أو انقطاع الاتصال أثناء الإرسال = `UNKNOWN` ولا يُعاد تلقائياً (قد يكون وصل). `FAILED` (رفض مؤكد) يُعاد حتى `OUTBOX_MAX_ATTEMPTS` (3). يعيد التحقق من أن مستلم الملخص ما زال نشطاً قبل الإرسال. | **تشغيل تجريبي (dry run)** لا يغيّر أي صف، إلا إذا `OUTBOX_SEND="true"` **و** `SMTP_HOST/USER/PASS/FROM` مضبوطة. |
+| `outbox-dispatch` | يرسل صفوف `NotificationOutbox` بالبريد: `PENDING` ← `SENDING` (مع lease) ← `SENT` / `FAILED` / `UNKNOWN`. انتهاء المهلة أو انقطاع الاتصال أثناء الإرسال = `UNKNOWN` ولا يُعاد تلقائياً (قد يكون وصل). `FAILED` (رفض مؤكد) يُعاد حتى `OUTBOX_MAX_ATTEMPTS` (3). وأي رسالة لم تُرسل وعمرها أكثر من `OUTBOX_TTL_HOURS` (افتراضياً 72 ساعة) تصبح `EXPIRED` ولا تُرسل أبداً، فأول تشغيل فعلي لا يرسل رصيداً قديماً (P0-07). التشغيل التجريبي يعرض `wouldExpire`. يعيد التحقق من أن مستلم الملخص ما زال نشطاً قبل الإرسال. | **تشغيل تجريبي (dry run)** لا يغيّر أي صف، إلا إذا `OUTBOX_SEND="true"` **و** `SMTP_HOST/USER/PASS/FROM` مضبوطة. |
+| `domain-events` | كل 5 دقائق: يشغّل مستهلكي `DomainEvent` المسجلين (`runConsumers`) على الأحداث المستحقة، مرة واحدة على الأكثر لكل مستهلك وحدث، مع إعادة المحاولة والتأجيل. | لا مستهلك مسجل بعد: يعدّ الأحداث المعلقة فقط (`pendingWithoutConsumer`). |
+| `reconcile` | يشغّل الثوابت المقاسة في لقطة قراءة واحدة، ثم يسجل الفروقات (`Discrepancy`) شركة شركة، ثم ما لا شركة له. | `--dry-run` = اللقطة فقط بلا كتابة. فحص لم يعمل يجعل التشغيل `FAILED`. |
 
 ```bash
 # تجربة يدوية لمستأجر واحد (--dry-run لا يكتب شيئاً في expiry-digest و deactivate-terminated)
@@ -365,88 +384,54 @@ sudo -u radeef /opt/radeef/src/ops/run-jobs.sh --jitter 600 deactivate-terminate
 
 **الجدولة: بين 03:30 و05:00 بتوقيت الرياض مع تأخير عشوائي** (خارج نافذة النسخ الاحتياطي: `ops/backup.sh` 02:15،
 ونسخ اللوحة 02:30). systemd (مفضّل):
-```ini
-# /etc/systemd/system/radeef-jobs@.service
-[Unit]
-Description=Radeef background job %i (all tenants)
-After=network-online.target postgresql.service
 
-[Service]
-Type=oneshot
-User=radeef
-Group=radeef
-Environment=RADEEF_ROOT=/opt/radeef
-ExecStart=/opt/radeef/src/ops/run-jobs.sh %i
-Nice=10
-IOSchedulingClass=idle
-TimeoutStartSec=90min
-```
-```ini
-# /etc/systemd/system/radeef-jobs@deactivate-terminated.timer   (03:30 + حتى 20 دقيقة)
-[Timer]
-OnCalendar=*-*-* 03:30:00 Asia/Riyadh
-RandomizedDelaySec=20min
-Persistent=true
-[Install]
-WantedBy=timers.target
-
-# /etc/systemd/system/radeef-jobs@apply-employee-changes.timer  (00:15 + حتى 10 دقائق، يومياً)
-[Timer]
-OnCalendar=*-*-* 00:15:00 Asia/Riyadh
-RandomizedDelaySec=10min
-Persistent=true
-[Install]
-WantedBy=timers.target
-
-# /etc/systemd/system/radeef-jobs@documents-integrity.timer     (04:30 + حتى 30 دقيقة، يومياً)
-[Timer]
-OnCalendar=*-*-* 04:30:00 Asia/Riyadh
-RandomizedDelaySec=30min
-Persistent=true
-[Install]
-WantedBy=timers.target
-
-# /etc/systemd/system/radeef-jobs@documents-retention.timer     (أسبوعياً، الجمعة 05:00)
-[Timer]
-OnCalendar=Fri *-*-* 05:00:00 Asia/Riyadh
-RandomizedDelaySec=30min
-Persistent=true
-[Install]
-WantedBy=timers.target
-
-# /etc/systemd/system/radeef-jobs@expiry-digest.timer           (03:55 + حتى 30 دقيقة)
-[Timer]
-OnCalendar=*-*-* 03:55:00 Asia/Riyadh
-RandomizedDelaySec=30min
-Persistent=true
-[Install]
-WantedBy=timers.target
-
-# /etc/systemd/system/radeef-jobs@outbox-dispatch.timer         (04:30 + حتى 25 دقيقة، بعد الملخص)
-[Timer]
-OnCalendar=*-*-* 04:30:00 Asia/Riyadh
-RandomizedDelaySec=25min
-Persistent=true
-[Install]
-WantedBy=timers.target
-```
+ملفات الوحدات في المستودع: `ops/systemd/radeef-jobs@.service` ومؤقت لكل مهمة `ops/systemd/radeef-jobs@<job>.timer`
+(**المهام التسع كلها**: `apply-employee-changes` 00:15، `reconcile` 03:15، `deactivate-terminated` 03:30، `expiry-digest` 03:55،
+`outbox-dispatch` 04:30، `documents-integrity` 04:30، `purge-attendance-biometrics` 04:50، `documents-retention` الجمعة 05:00،
+و`domain-events` كل 5 دقائق).
+اختبار الوحدة `ops-job-timers.test.ts` (ARCH-018) يفشل في CI إن أُضيفت مهمة إلى `JOB_NAMES` بلا مؤقت.
 ```bash
-sudo systemctl daemon-reload
-sudo systemctl enable --now radeef-jobs@deactivate-terminated.timer radeef-jobs@expiry-digest.timer radeef-jobs@outbox-dispatch.timer
-systemctl list-timers 'radeef-jobs@*'; journalctl -u 'radeef-jobs@*' --since today
+sudo /opt/radeef/src/ops/jobs-setup.sh            # ينسخ الوحدات إلى /etc/systemd/system ويفعّل كل المؤقتات
+sudo /opt/radeef/src/ops/jobs-setup.sh --check    # يخرج بـ1 إن كان مؤقت غير مفعل (بعد كل نشر)
+systemctl list-timers "radeef-jobs@*"; journalctl -u "radeef-jobs@*" --since today
 ```
 (المنطقة الزمنية في `OnCalendar` تحتاج systemd 245 أو أحدث. نسخ اللوحة تحت `/root` لا يقرؤها المستخدم `radeef`:
-شغّل لها نسخة خدمة بـ `User=root`.) بديل cron في `/etc/cron.d/radeef-jobs` (cron في Debian/Ubuntu يتجاهل
-`CRON_TZ`، فحوّل الأوقات إلى توقيت السيرفر؛ المثال للسيرفر على توقيت الرياض):
-```
-30 3 * * * radeef /opt/radeef/src/ops/run-jobs.sh --jitter 1200 deactivate-terminated >>/var/log/radeef/jobs.log 2>&1
-55 3 * * * radeef /opt/radeef/src/ops/run-jobs.sh --jitter 1800 expiry-digest        >>/var/log/radeef/jobs.log 2>&1
-30 4 * * * radeef /opt/radeef/src/ops/run-jobs.sh --jitter 1500 outbox-dispatch      >>/var/log/radeef/jobs.log 2>&1
-```
+شغّل لها نسخة خدمة بـ `User=root`.) بديل cron: `ops/jobs-setup.sh --cron > /etc/cron.d/radeef-jobs` يولّد سطراً لكل
+مهمة من ملفات المؤقتات نفسها (cron في Debian/Ubuntu يتجاهل `CRON_TZ`، فالأوقات تفترض السيرفر على توقيت الرياض).
 
 **تفعيل الإرسال الفعلي (يحتاج موافقة المالك، DEC-009):** اختيار مزود بريد معاملات مع SPF وDKIM وDMARC، وإدراجه في
 `docs/processors.md`، ثم ملء `SMTP_*` في ملف المستأجر و`OUTBOX_SEND="true"`. قبل ذلك تبقى `outbox-dispatch`
-تجريبية وتكتفي بالتقرير.
+تجريبية وتكتفي بالتقرير. المزود المعتمد هو **Amazon SES** (DEC-PO-130، DEC-PO-040)، وخطوات إعداده في الفقرة التالية.
+
+**إعداد Amazon SES (DEC-PO-130):** حساب SES مملوك لرديف، والخطوات بالترتيب:
+1. **المنطقة:** `me-south-1` (البحرين) إن كانت SES متاحة فيها لهذا الحساب، وإلا `eu-central-1` (فرانكفورت).
+   **تحقق من الإتاحة في وحدة التحكم** (SES ← اختيار المنطقة) قبل البدء؛ هذا الملف لا يجزم بها. كل ما يلي يُنشأ في
+   المنطقة نفسها، وتُسجَّل في `docs/processors.md`.
+2. **هوية النطاق:** SES ← Identities ← Create identity ← Domain (نطاق الإرسال، مثل `mail.<نطاق رديف>`)، مع
+   **Easy DKIM** (RSA 2048). أضف سجلات CNAME الثلاثة التي تعرضها SES في DNS، وانتظر حالة `Verified` للنطاق وDKIM.
+3. **SPF:** سجل TXT للنطاق فيه `include:amazonses.com`، مثل `v=spf1 include:amazonses.com ~all` (إن كان للنطاق سجل
+   SPF فأضف `include` إليه ولا تنشئ سجلاً ثانياً).
+4. **MAIL FROM مخصص:** في صفحة الهوية ← Custom MAIL FROM domain (مثل `bounce.mail.<النطاق>`)، مع سجل MX الذي تعرضه
+   SES وسجل TXT `v=spf1 include:amazonses.com ~all` له. بهذا يتوافق SPF مع نطاق المرسل (DMARC alignment).
+5. **DMARC:** سجل TXT على `_dmarc.<النطاق>`، يبدأ بـ`v=DMARC1; p=none; rua=mailto:<بريد التقارير>` للمراقبة، ثم يُرفع
+   إلى `p=quarantine` بعد أن تظهر التقارير أن DKIM وSPF ناجحان.
+6. **الخروج من وضع الاختبار (sandbox):** SES ← Account dashboard ← Request production access (نوع البريد:
+   Transactional، مع وصف الرسائل: ملخصات أعداد وروابط دخول وتنبيهات للمالك). قبل الموافقة لا يُرسل إلا لعناوين موثقة.
+7. **بيانات SMTP:** SES ← SMTP settings ← Create SMTP credentials (ينشئ مستخدم IAM خاصاً بـSMTP بصلاحية
+   `ses:SendRawEmail` فقط). اسم المستخدم وكلمة المرور تظهران مرة واحدة: احفظهما في مخزن الأسرار لا في المستودع.
+8. **ملف المستأجر:**
+   ```bash
+   SMTP_HOST="email-smtp.<region>.amazonaws.com"   # المنطقة المختارة في الخطوة 1
+   SMTP_PORT="587"                                  # STARTTLS
+   SMTP_USER="<SMTP username من الخطوة 7>"
+   SMTP_PASS="<SMTP password من الخطوة 7>"
+   SMTP_FROM="Radeef <no-reply@mail.<النطاق>>"       # عنوان على النطاق الموثق
+   OWNER_ALERT_EMAIL="<بريد المالك المسجل لدى رديف>"  # قناة DEC-PO-022 (تنبيه القيمة دون الحد النظامي، DEC-PO-126)
+   ```
+   شغّل `outbox-dispatch` تجريبياً أولاً وراجع العدد، ثم اضبط `OUTBOX_SEND="true"`. بعد أول إرسال راجع في SES
+   (Reputation metrics) نسب الارتداد والشكاوى، وفعّل إشعارات الارتداد والشكاوى إن توفر مستهلك لها.
+
+محتوى الرسائل لا يتغير بتغيير المزود: أعداد وروابط دخول فقط، بلا أسماء ولا أرقام هوية ولا معرفات سجلات.
 
 **المتابعة:**
 ```sql
@@ -606,17 +591,8 @@ curl -sI https://<domain>/login | grep -i permissions-policy
 الكاميرا والموقع يعملان عبر HTTPS فقط.
 
 ### 5.3 حذف البيانات الحيوية دورياً
-```ini
-# /etc/systemd/system/radeef-jobs@purge-attendance-biometrics.timer   (04:50 + حتى 20 دقيقة)
-[Timer]
-OnCalendar=*-*-* 04:50:00 Asia/Riyadh
-RandomizedDelaySec=20min
-Persistent=true
-[Install]
-WantedBy=timers.target
-```
+المؤقت `ops/systemd/radeef-jobs@purge-attendance-biometrics.timer` (04:50 + حتى 20 دقيقة) يفعّله `ops/jobs-setup.sh` مع باقي المهام (4.1).
 ```bash
-sudo systemctl daemon-reload && sudo systemctl enable --now radeef-jobs@purge-attendance-biometrics.timer
 sudo -iu radeef /opt/radeef/src/ops/run-jobs.sh purge-attendance-biometrics <tenant>   # تجربة يدوية
 ```
 **ماذا تحذف:**
@@ -732,4 +708,4 @@ sudo -iu radeef /opt/radeef/src/ops/run-jobs.sh purge-attendance-biometrics <ten
 | `documents-integrity` | تتحقق من سلسلة بصمات `DocumentEvent` كاملة، وتعيد حساب SHA-256 لكل ملف مستند صادر وتقارنه بـ`pdfSha256` | أي خلل يجعل التشغيل `FAILED` مع رقم المستند وسبب الخلل، ويرسل بريداً واحداً يومياً للمديرين (أدوار `expiry_digest_roles`). الحد الأقصى للملفات في التشغيل الواحد `DOCUMENTS_INTEGRITY_MAX` (افتراضي 2000). يحتاج `UPLOAD_DIR` |
 | `documents-retention` | بعد `document_retention_years` (افتراضي 10، قرار المالك) من تاريخ انتهاء خدمة الموظف: يحذف ملف الـPDF ويمسح محتوى اللقطات، ويبقى سجل المستند (الرقم والنوع والشركة والتواريخ والبصمة). صفحة التحقق تعرض «انتهت مدة الاحتفاظ» | `--dry-run` يعدّ فقط. الحذف مسموح بـtrigger لمرة واحدة فقط ولا يُتراجع عنه. يؤكد المستشار المدة ضمن DEC-008 قبل تفعيل المؤقت |
 
-الحدث `PURGED` تكتبه المهمة في سلسلة الأحداث بنفس خوارزمية التطبيق. `scripts/lib/document-chain.mjs` نسخة JS منها، واختبار `documents-chain-parity` يمنع أي اختلاف بين النسختين.
+الحدث `PURGED` تكتبه المهمة بدالة التطبيق نفسها (`src/lib/documents/events.ts`، المهام في `src/lib/documents/jobs.ts`). `scripts/lib/document-chain.mjs` بقي نسخة JS للقراءة فقط يستعملها تقرير المطابقة، واختبار `documents-chain-parity` يمنع أي اختلاف في التجزئة.

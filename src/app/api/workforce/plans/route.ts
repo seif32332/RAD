@@ -11,6 +11,7 @@ import { handleApiError, notFound, parseBody, parseQuery } from '@/lib/http';
 import { logAudit } from '@/lib/audit';
 import { PLAN_STATUSES, PLAN_STATUS_LABELS } from '@/lib/workforce/planning';
 import { limitOrThrow } from '../_lib/server';
+import { assertCompanyVisible, assertTenantWide, planScopeWhere, workforceScope } from '../_lib/scope';
 import { planCreateSchema, planListSchema } from './_lib/schemas';
 import { PLAN_ENTITY, assertAllowed, companyNameMap, monthDate, planHeader, planHistories, userNames } from './_lib/server';
 
@@ -18,12 +19,15 @@ export const dynamic = 'force-dynamic';
 
 export async function GET(req: Request) {
   try {
-    await requireUser(ROLE_GROUPS.WORKFORCE);
+    const user = await requireUser(ROLE_GROUPS.WORKFORCE);
+    // P1-SCOPE: plans of the caller's companies (a plan of every company only for an unrestricted caller).
+    const wf = await workforceScope(user);
+    const inScope = planScopeWhere(wf);
     const q = parseQuery(req, planListSchema);
     if (q.summary) {
       const [groups, latest] = await Promise.all([
-        prisma.headcountPlan.groupBy({ by: ['status'], _count: { _all: true } }),
-        prisma.headcountPlan.findFirst({ where: { status: 'APPROVED' }, orderBy: [{ decidedAt: 'desc' }, { id: 'desc' }], select: { id: true, name: true, fromMonth: true, months: true, decidedAt: true } }),
+        prisma.headcountPlan.groupBy({ by: ['status'], where: inScope, _count: { _all: true } }),
+        prisma.headcountPlan.findFirst({ where: { status: 'APPROVED', AND: [inScope] }, orderBy: [{ decidedAt: 'desc' }, { id: 'desc' }], select: { id: true, name: true, fromMonth: true, months: true, decidedAt: true } }),
       ]);
       const counts = Object.fromEntries(PLAN_STATUSES.map((s) => [s, groups.find((g) => g.status === s)?._count._all ?? 0]));
       return NextResponse.json({
@@ -32,16 +36,16 @@ export async function GET(req: Request) {
         latestApproved: latest ? { id: latest.id, name: latest.name, fromMonth: latest.fromMonth.toISOString().slice(0, 7), months: latest.months, decidedAt: latest.decidedAt?.toISOString() ?? null } : null,
       });
     }
-    const where = { ...(q.status ? { status: q.status } : {}), ...(q.companyId ? { companyId: q.companyId } : {}) };
+    const where = { ...(q.status ? { status: q.status } : {}), ...(q.companyId ? { companyId: q.companyId } : {}), AND: [inScope] };
     const [rows, total, companies] = await Promise.all([
       prisma.headcountPlan.findMany({ where, include: { _count: { select: { positions: true, raises: true } } }, orderBy: [{ createdAt: 'desc' }, { id: 'desc' }], take: q.take, skip: q.skip }),
       prisma.headcountPlan.count({ where }),
-      companyNameMap(),
+      companyNameMap(wf),
     ]);
     const histories = await planHistories(rows.map((r) => r.id));
     const names = await userNames(rows.flatMap((r) => [r.createdById, r.decidedById, histories.get(r.id)?.archivedById]));
     const basedOn = rows.map((r) => r.basedOnId).filter((x): x is string => !!x);
-    const parents = basedOn.length ? await prisma.headcountPlan.findMany({ where: { id: { in: basedOn } }, select: { id: true, name: true } }) : [];
+    const parents = basedOn.length ? await prisma.headcountPlan.findMany({ where: { id: { in: basedOn }, AND: [inScope] }, select: { id: true, name: true } }) : [];
     const parentName = new Map(parents.map((p) => [p.id, p.name]));
     return NextResponse.json({
       total,
@@ -60,6 +64,10 @@ export async function POST(req: Request) {
     limitOrThrow(user, 'plan-write', 60, 60_000);
     const body = await parseBody(req, planCreateSchema);
     assertAllowed('COPY', { status: 'DRAFT', createdById: null }, user); // creating = the editing roles
+    // P1-SCOPE: a plan of one of the caller's companies (404 outside); a plan of every company needs an unrestricted caller.
+    const wf = await workforceScope(user, 'workforce.plan.manage');
+    if (body.companyId) assertCompanyVisible(wf, body.companyId);
+    else assertTenantWide(wf, 'اختر شركة للخطة: خطة كل الشركات خارج نطاق صلاحياتك');
     if (body.companyId && !(await prisma.company.findUnique({ where: { id: body.companyId }, select: { id: true } }))) throw notFound('الشركة غير موجودة');
     const row = await prisma.headcountPlan.create({
       data: {

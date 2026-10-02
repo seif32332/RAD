@@ -16,12 +16,15 @@ import { ESTIMATE_DISCLAIMER } from '@/lib/workforce/version';
 import { newDecisionSchema } from '../_lib/saudization-schemas';
 import { currentDecisions } from '../_lib/saudization';
 import { limitOrThrow } from '../_lib/server';
+import { assertTenantWide, workforceScope } from '../_lib/scope';
 
 export const dynamic = 'force-dynamic';
 
 export async function GET() {
   try {
     const user = await requireUser(ROLE_GROUPS.WORKFORCE);
+    // Localization decisions are tenant-wide legal reference data (no company): every workforce user reads them.
+    await workforceScope(user);
     const rows = await loadLocalizationDecisions();
     const current = new Set(currentDecisions(rows).map((r) => r.id));
     return NextResponse.json({
@@ -38,6 +41,8 @@ export async function GET() {
 export async function POST(req: Request) {
   try {
     const user = await requireUser(['SUPER_ADMIN']);
+    // A register row applies to every company: an unrestricted caller only.
+    assertTenantWide(await workforceScope(user, 'workforce.register.manage'));
     const b = await parseBody(req, newDecisionSchema);
     limitOrThrow(user, 'loc-post', 60, 60 * 60_000);
     let notes = b.notes ?? null;

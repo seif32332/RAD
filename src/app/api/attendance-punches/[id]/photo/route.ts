@@ -3,6 +3,7 @@ import { getClientIp, requireUser } from '@/lib/auth';
 import { ROLE_GROUPS } from '@/lib/constants';
 import { handleApiError, notFound } from '@/lib/http';
 import { logAudit } from '@/lib/audit';
+import { authz, resolveActor, scopedContext, scopedPrisma } from '@/modules/iam';
 import { biometricImageResponse, readBiometricImage } from '@/lib/biometric-storage';
 
 export const runtime = 'nodejs';
@@ -15,7 +16,10 @@ export async function GET(req: Request, { params }: Ctx) {
   try {
     const user = await requireUser(ROLE_GROUPS.HR);
     const { id } = await params;
-    const punch = await prisma.attendancePunch.findUnique({ where: { id }, select: { employeeId: true, selfieStoredName: true } });
+    // P1-SCOPE: a punch of another company is "not found".
+    const ctx = scopedContext(await resolveActor(prisma, user));
+    authz.assert(ctx, 'attendance.read');
+    const punch = await scopedPrisma(ctx).attendancePunch.findUnique({ where: { id }, select: { employeeId: true, selfieStoredName: true } });
     if (!punch?.selfieStoredName) throw notFound('لا توجد صورة لهذه الحركة (ربما حُذفت بعد انتهاء مدة الاحتفاظ)');
     const data = await readBiometricImage(punch.selfieStoredName);
     if (!data) throw notFound('الصورة غير موجودة');

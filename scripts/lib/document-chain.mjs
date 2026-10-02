@@ -1,13 +1,14 @@
-// Document engine helpers for scripts/jobs.mjs (plain JS: releases ship scripts/, not src/).
+// Read-only document-chain helpers for scripts/lib/reconciliation-checks.mjs (plain JS: the
+// reconciliation report scripts/reconcile-report.mjs runs with plain node).
 //
-// canonicalJson and eventHash MUST give byte-identical results to src/lib/documents/core.ts and
-// src/lib/documents/events.ts: src/lib/__tests__/documents-chain-parity.test.ts compares them on
-// many inputs, so any divergence fails the unit tests.
+// The background jobs no longer use this file: since P1-FND-JOBS they run the application's own code
+// (src/lib/documents/events.ts, src/lib/documents/jobs.ts). What stays here is read-only (hashing and
+// walking the chain), and canonicalJson / eventHash MUST give byte-identical results to
+// src/lib/documents/core.ts and src/lib/documents/events.ts: src/lib/__tests__/documents-chain-parity.test.ts
+// compares them. Retire this file when the reconciliation rules move behind the documents module.
 import { createHash } from 'node:crypto';
 
 export const GENESIS_HASH = '0'.repeat(64);
-/** Same key as src/lib/documents/events.ts (serializes writers of the chain). */
-export const CHAIN_LOCK = 7_314_001;
 
 export function canonicalJson(value) {
   if (value === null) return 'null';
@@ -33,15 +34,6 @@ export function eventHash(prevHash, e) {
   }));
 }
 
-/** Appends one event in the given interactive transaction (same algorithm as appendEvent in TS). */
-export async function appendEvent(tx, { type, requestId = null, documentId = null, meta = null }) {
-  await tx.$executeRawUnsafe(`SELECT pg_advisory_xact_lock(${CHAIN_LOCK})`);
-  const last = await tx.documentEvent.findFirst({ orderBy: { seq: 'desc' }, select: { hash: true } });
-  const prevHash = last ? last.hash : GENESIS_HASH;
-  const row = { type, requestId, documentId, actorId: null, ip: null, metaJson: meta ? canonicalJson(meta) : null, at: new Date() };
-  await tx.documentEvent.create({ data: { ...row, prevHash, hash: eventHash(prevHash, row) } });
-}
-
 /** Walks the whole chain; returns { checked, brokenAtSeq } (brokenAtSeq null when intact). */
 export async function verifyEventChain(db, batch = 1000) {
   let prev = GENESIS_HASH;
@@ -61,9 +53,3 @@ export async function verifyEventChain(db, batch = 1000) {
 
 const STORED_DOC_RE = /^\d{4}\/[0-9a-f-]{36}\.pdf$/;
 export const isStoredDocumentName = (name) => typeof name === 'string' && STORED_DOC_RE.test(name);
-
-/** Retention in years from SystemSetting `document_retention_years` (owner decision: 10; bounds 1..50). */
-export function parseRetentionYears(raw, fallback = 10) {
-  const n = Number(raw);
-  return Number.isInteger(n) && n >= 1 && n <= 50 ? n : fallback;
-}

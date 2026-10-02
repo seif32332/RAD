@@ -28,7 +28,14 @@ import {
   employeeDataWarnings,
   gosiRegimeSourceError,
 } from '@/lib/employee';
-import { deactivateEmployeeUser } from '@/lib/access';
+import { authz, resolveActor, scopeWhere, scopedContext, scopedPrisma } from '@/modules/iam';
+import { resolveTeamContext } from '@/lib/employee-scope';
+import { lifecycleCompanies, transitionEmploymentState } from '@/modules/lifecycle';
+import { projectExitReason } from '@/modules/offboarding';
+import { resolveWorkPatternId } from '@/modules/calendar';
+import { editEmployeePay, type EmployeePayChange, type RecurringAllowance } from '@/modules/compensation';
+import { setEmployeeGosiDeduction } from '@/modules/payroll';
+import { moneyActorOf } from '@/modules/platform';
 import {
   defaultExitVoluntary,
   employeeExitFieldsSchema,
@@ -46,23 +53,30 @@ type Ctx = { params: Promise<{ id: string }> };
 
 // GET - single employee. Same access levels as GET /api/employees (see employeeAccessLevel):
 // HR full record, payroll/finance without identity documents, managers only their team (basic).
+// P1-SCOPE: an employee of a company outside the user's scope is "not found" (404); a manager gets
+// 403 for an employee of his companies who is not in his team.
 export async function GET(_req: Request, { params }: Ctx) {
   try {
     const user = await requireUser(ROLE_GROUPS.STAFF);
     const { id } = await params;
     const level = employeeAccessLevel(user.role);
+    const actor = await resolveActor(prisma, user);
+    const staff = scopedContext(actor);
 
     if (level === 'full' || level === 'payroll') {
-      const employee = await prisma.employee.findUnique({ where: { id }, include: EMPLOYEE_DETAIL_INCLUDE });
+      authz.assert(staff, 'employee.read');
+      const employee = await scopedPrisma(staff).employee.findUnique({ where: { id }, include: EMPLOYEE_DETAIL_INCLUDE });
       if (!employee) throw notFound('الموظف غير موجود');
       // Payroll / finance: no identity documents and no disability data (redactWorkforceForPayroll).
       return NextResponse.json(level === 'payroll' ? redactWorkforceForPayroll(redactForPayroll(employee)) : employee);
     }
 
+    const ctx = level === 'team' ? await resolveTeamContext(prisma, actor) : staff;
+    authz.assert(ctx, 'employee.read');
     const scope = level === 'team' ? await managedEmployeesWhere(prisma, user) : null;
-    const employee = await prisma.employee.findFirst({ where: scope ? { AND: [{ id }, scope] } : { id }, select: EMPLOYEE_BASIC_SELECT });
+    const employee = await scopedPrisma(ctx).employee.findFirst({ where: scope ? { AND: [{ id }, scope] } : { id }, select: EMPLOYEE_BASIC_SELECT });
     if (!employee) {
-      if (scope && (await prisma.employee.findUnique({ where: { id }, select: { id: true } }))) {
+      if (scope && (await prisma.employee.findFirst({ where: { id, AND: [scopeWhere(staff, 'Employee') ?? {}] }, select: { id: true } }))) {
         throw forbidden('هذا الموظف ليس ضمن نطاق إدارتك');
       }
       throw notFound('الموظف غير موجود');
@@ -170,11 +184,40 @@ const WORKFORCE_STATE_SELECT = {
   exitVoluntary: true,
 } as const;
 
+/**
+ * Company scope of a write on one employee (DOMAIN_BOUNDARIES §5.4.3, legal company): 404 when the
+ * employee does not exist, 403 when it belongs to a company outside the actor's scope or the action
+ * is not the actor's (iam authz). `moveTo`: the legal / actual company the write gives the employee,
+ * which must also be inside the scope (P1-SCOPE).
+ */
+async function assertEmployeeWrite(
+  user: Awaited<ReturnType<typeof requireUser>>,
+  id: string,
+  action: 'employee.update' | 'employment.exit',
+  moveTo: ReadonlyArray<string | null | undefined> = [],
+) {
+  const target = await prisma.employee.findUnique({ where: { id }, select: { legalCompanyId: true } });
+  if (!target) throw notFound('الموظف غير موجود');
+  const ctx = scopedContext(await resolveActor(prisma, user));
+  authz.assert(ctx, action, { companyId: target.legalCompanyId });
+  for (const companyId of moveTo) if (companyId !== undefined) authz.assert(ctx, action, { companyId });
+  return ctx;
+}
+
+/** The same recurring allowances (as a multiset of name, amount, GOSI flag, type): an echo, not a change. */
+function sameAllowances(a: readonly RecurringAllowance[], b: readonly RecurringAllowance[]): boolean {
+  const key = (x: RecurringAllowance) => JSON.stringify([x.name, roundMoney(x.amount), !!x.countsTowardGosi, x.allowanceType ?? null]);
+  const left = a.map(key).sort();
+  const right = b.map(key).sort();
+  return left.length === right.length && left.every((k, i) => k === right[i]);
+}
+
 export async function PUT(req: Request, { params }: Ctx) {
   try {
     const user = await requireUser(ROLE_GROUPS.HR);
     const { id } = await params;
     const b = await parseBody(req, updateEmployeeSchema);
+    await assertEmployeeWrite(user, id, 'employee.update', [b.legalCompanyId, b.actualCompanyId]);
 
     const existing = await prisma.employee.findUnique({
       where: { id },
@@ -187,12 +230,30 @@ export async function PUT(req: Request, { params }: Ctx) {
         probationEndDate: true,
         joinDate: true,
         contractEndDate: true,
+        branchId: true,
+        workSchedule: true,
+        legalCompanyId: true,
+        // Pay columns (money.gateway): only CHANGED values are written, through compensation / payroll.
+        basicSalary: true,
+        gosiDeduction: true,
+        salaryPaymentMethod: true,
+        ibanNumber: true,
+        bankName: true,
+        allowances: { where: { isMonthly: true }, select: { name: true, amount: true, countsTowardGosi: true, allowanceType: true } },
       },
     });
     if (!existing) throw notFound('الموظف غير موجود');
     // Workforce fields: part-time hours only for PART_TIME, Muawama only when disabled, Qiwa date
     // auto-set when documented, exit reason only once terminated (Arabic errors, nothing written).
-    const workforce = resolveWorkforceFields(b, existing, b.contractType ?? existing.contractType);
+    // The exit reason is not edited here any more (BL-LCY-003, BR-LCY-006): it is recorded with the
+    // exit and corrected by a D1 (two people). The stored values echoed back by the form are ignored.
+    if (
+      (b.exitReason !== undefined && (b.exitReason ?? null) !== existing.exitReason) ||
+      (b.exitVoluntary !== undefined && (b.exitVoluntary ?? null) !== existing.exitVoluntary)
+    ) {
+      throw conflict('سبب الخروج يُسجَّل مع إنهاء الخدمة، وتصحيحه طلب تصحيح بشخصين (لا يُعدَّل من ملف الموظف)', { code: 'EXIT_FIELDS_READ_ONLY' });
+    }
+    const workforce = resolveWorkforceFields({ ...b, exitReason: undefined, exitVoluntary: undefined }, existing, b.contractType ?? existing.contractType);
     if (workforce.errors.length) throw badRequest(workforce.errors.join(' — '));
     // Same date gates as creation: no future birth date, no contract ending before the join date.
     const todayDate = today();
@@ -216,6 +277,11 @@ export async function PUT(req: Request, { params }: Ctx) {
     const dataReviewNote = b.dataReviewNote !== undefined ? b.dataReviewNote : reviewNoteAfterEdit(existing, b);
 
     if (b.directManagerId !== undefined) await assertValidDirectManager(prisma, id, b.directManagerId);
+    // P1-CAL: the work pattern is stored as a FK; the form still sends its name within the branch.
+    const workPatternId =
+      b.branchId !== undefined || b.workSchedule !== undefined
+        ? await resolveWorkPatternId(prisma, b.branchId !== undefined ? b.branchId : existing.branchId, b.workSchedule !== undefined ? b.workSchedule : existing.workSchedule)
+        : undefined;
 
     const data: Prisma.EmployeeUncheckedUpdateInput = definedOnly({
       firstNameArabic: b.firstNameArabic,
@@ -240,11 +306,6 @@ export async function PUT(req: Request, { params }: Ctx) {
       probationEndDate: b.probationEndDate,
       noticePeriodDays: b.noticePeriodDays,
       leaveAccrualStartDate: b.leaveAccrualStartDate ?? undefined,
-      basicSalary: b.basicSalary !== undefined ? roundMoney(b.basicSalary) : undefined,
-      gosiDeduction: b.gosiDeduction !== undefined ? roundMoney(b.gosiDeduction) : undefined,
-      salaryPaymentMethod: b.salaryPaymentMethod,
-      ibanNumber: b.ibanNumber,
-      bankName: b.bankName,
       legalCompanyId: b.legalCompanyId,
       actualCompanyId: b.actualCompanyId,
       administrationId: b.administrationId,
@@ -254,6 +315,7 @@ export async function PUT(req: Request, { params }: Ctx) {
       jobTitleEnglish: b.jobTitleEnglish,
       directManagerId: b.directManagerId,
       workSchedule: b.workSchedule,
+      workPatternId,
       accommodationType: b.accommodationType,
       workContractUrl: b.contractDocUrl,
       iqamaCopyUrl: b.idDocUrl,
@@ -267,10 +329,22 @@ export async function PUT(req: Request, { params }: Ctx) {
       ...workforce.data,
     });
 
+    // Pay (money.gateway, ARCH-004): the form echoes every value back; only the CHANGED ones are written,
+    // through compensation.editEmployeePay (and payroll's gosiDeduction), never on one's own file
+    // (BR-PAY-001; SINGLE_OPERATOR recorded). P1-PAY-B turns these edits into EmployeeFinancialChange requests.
+    const pay: EmployeePayChange = {};
+    if (b.basicSalary !== undefined && roundMoney(b.basicSalary) !== existing.basicSalary) pay.basicSalary = roundMoney(b.basicSalary);
+    if (b.salaryPaymentMethod !== undefined && b.salaryPaymentMethod !== existing.salaryPaymentMethod) pay.salaryPaymentMethod = b.salaryPaymentMethod;
+    if (b.ibanNumber !== undefined && (b.ibanNumber ?? null) !== existing.ibanNumber) pay.ibanNumber = b.ibanNumber ?? null;
+    if (b.bankName !== undefined && (b.bankName ?? null) !== existing.bankName) pay.bankName = b.bankName ?? null;
+    const gosiDeduction = b.gosiDeduction !== undefined && roundMoney(b.gosiDeduction) !== existing.gosiDeduction ? roundMoney(b.gosiDeduction) : undefined;
+    const idem = req.headers.get('idempotency-key')?.trim();
+    const payKey = `employee.pay:${id}:${user.id}:${idem ? `k:${idem.slice(0, 100)}` : Date.now()}`;
+
     let updated;
     try {
       updated = await prisma.$transaction(async (tx) => {
-        const emp = await tx.employee.update({ where: { id }, data });
+        await tx.employee.update({ where: { id }, data });
         await classifyEmployeeDocuments(tx, id, {
           workContractUrl: data.workContractUrl as string | null | undefined,
           iqamaCopyUrl: data.iqamaCopyUrl as string | null | undefined,
@@ -278,6 +352,7 @@ export async function PUT(req: Request, { params }: Ctx) {
           passportCopyUrl: data.passportCopyUrl as string | null | undefined,
         });
 
+        let allowances: RecurringAllowance[] | undefined;
         if (b.allowances) {
           // Only recurring allowances are replaced; one-off bonuses (isMonthly=false) are kept,
           // including when the form echoes them back.
@@ -287,21 +362,24 @@ export async function PUT(req: Request, { params }: Ctx) {
           const toCreate = b.allowances.flatMap((a) =>
             monthlyAllowanceRows([a], oneOffIds).map((row) => ({ ...row, allowanceType: a.allowanceType ?? null })),
           );
-          await tx.allowance.deleteMany({ where: { employeeId: id, isMonthly: true } });
-          if (toCreate.length) {
-            await tx.allowance.createMany({
-              data: toCreate.map((a) => ({
-                employeeId: id,
-                name: a.name,
-                amount: roundMoney(a.amount),
-                isMonthly: true,
-                countsTowardGosi: a.countsTowardGosi,
-                allowanceType: a.allowanceType,
-              })),
-            });
-          }
+          const next: RecurringAllowance[] = toCreate.map((a) => ({ name: a.name, amount: roundMoney(a.amount), countsTowardGosi: a.countsTowardGosi, allowanceType: a.allowanceType }));
+          allowances = sameAllowances(existing.allowances, next) ? undefined : next;
         }
-        return emp;
+        const actor = moneyActorOf(user);
+        await editEmployeePay(tx, {
+          actor,
+          employeeId: id,
+          companyId: existing.legalCompanyId,
+          pay,
+          allowances,
+          before: { basicSalary: existing.basicSalary, salaryPaymentMethod: existing.salaryPaymentMethod, bankName: existing.bankName, allowances: existing.allowances },
+          operationKey: payKey,
+          ipAddress: getClientIp(req),
+        });
+        if (gosiDeduction !== undefined) {
+          await setEmployeeGosiDeduction(tx, { actor, employeeId: id, gosiDeduction, before: existing.gosiDeduction, companyId: existing.legalCompanyId, operationKey: `${payKey}:gosi`, ipAddress: getClientIp(req) });
+        }
+        return tx.employee.findUniqueOrThrow({ where: { id } });
       });
     } catch (err) {
       if (isUniqueViolationOn(err, 'iqamaOrIdNumber')) throw conflict('رقم الهوية أو الإقامة مسجل مسبقاً لموظف آخر!');
@@ -407,6 +485,7 @@ export async function PATCH(req: Request, { params }: Ctx) {
     const { id } = await params;
     const b = await parseBody(req, patchSchema);
     const ip = getClientIp(req);
+    const scope = await assertEmployeeWrite(user, id, b.action === 'terminate' ? 'employment.exit' : 'employee.update');
 
     if (b.action === 'terminate') {
       const reason = b.reason?.trim() ?? '';
@@ -421,9 +500,14 @@ export async function PATCH(req: Request, { params }: Ctx) {
       if (b.overrideProtectedLeave === true && !canOverride) {
         throw forbidden('تجاوز حماية إجازة الوضع أو الإجازة المرضية متاح لمدير النظام أو الإدارة القانونية فقط');
       }
-      // Termination and the login deactivation commit together (src/lib/access.ts honours the
-      // terminated_access_days grace period; default 0 = the account stops working now).
-      const { terminated, access } = await prisma.$transaction(async (tx) => {
+      // The exit goes through lifecycle.transitionEmploymentState (the sole writer, BR-LCY-006): T3 for a
+      // last working day up to today (the login stops now, with the terminated_access_days grace), T1
+      // for a later one once NOTICE is released (ADR-0004), nothing for a repeat with the same date,
+      // refused (the way is a D1 correction) for another date. The protected-leave guard (DOM-004)
+      // stays here: lifecycle sits below leave and cannot read it (DOMAIN_BOUNDARIES §5.3).
+      const key = req.headers.get('idempotency-key')?.trim();
+      const operationKey = `employee.terminate:${id}:${key ? `k:${key.slice(0, 100)}` : `${user.id}:${dateKey(terminationDate)}`}`;
+      const { terminated, access, result } = await prisma.$transaction(async (tx) => {
         // DOM-004: no termination during an approved maternity / sick leave in effect, except by
         // SUPER_ADMIN / LEGAL_ADMIN with an explicit override (the reason is audited).
         const leaves = await tx.leave.findMany({
@@ -441,42 +525,52 @@ export async function PATCH(req: Request, { params }: Ctx) {
             { code: 'PROTECTED_LEAVE', leaveId: protectedLeave.id, leaveType: protectedLeave.leaveType, canOverride },
           );
         }
-        const res = await tx.employee.updateMany({
-          where: { id, isTerminated: false },
-          // Structured exit (workforce engine): stored with the termination, the free-text reason stays in the audit log.
-          data: { isTerminated: true, terminationDate, exitReason, exitVoluntary },
+        const result = await transitionEmploymentState(tx, {
+          employeeId: id,
+          command: 'EXIT',
+          date: terminationDate,
+          exitReason,
+          exitVoluntary,
+          reason,
+          source: { type: 'EMPLOYEE_FILE', id },
+          actor: { type: 'USER', id: user.id },
+          operationKey,
+          companyIds: lifecycleCompanies(scope),
+          access: { ipAddress: ip },
         });
-        if (res.count === 0) {
-          const exists = await tx.employee.findUnique({ where: { id }, select: { id: true } });
-          if (!exists) throw notFound('الموظف غير موجود');
-          throw conflict('تم إنهاء خدمات هذا الموظف مسبقاً');
-        }
-        const access = await deactivateEmployeeUser(tx, id, { reason: 'employee_terminated', actorId: user.id, ipAddress: ip });
-        await logAudit(
-          {
-            userId: user.id,
-            action: 'UPDATE',
-            entityType: 'Employee',
-            entityId: id,
-            details: {
-              action: 'terminate',
-              terminationDate: dateKey(terminationDate),
-              reason,
-              exitReason,
-              exitVoluntary,
-              ...(protectedLeave
-                ? { protectedLeaveOverride: true, protectedLeaveId: protectedLeave.id, protectedLeaveType: protectedLeave.leaveType, overriddenByRole: user.role }
-                : {}),
-              accountDeactivated: access.deactivated,
-              graceDays: access.graceDays,
+        if (!result.changed) throw conflict('تم إنهاء خدمات هذا الموظف مسبقاً');
+        // The exit-reason projection (offboarding) in the same transaction; its event consumer converges too.
+        await projectExitReason(tx, id, { key: `${operationKey}:exitReason`, actor: { type: 'USER', id: user.id } });
+        const access = result.access ?? { hasUser: false, deactivated: false, graceDays: 0 };
+        if (!result.replayed) {
+          await logAudit(
+            {
+              userId: user.id,
+              action: 'UPDATE',
+              entityType: 'Employee',
+              entityId: id,
+              details: {
+                action: 'terminate',
+                transition: result.transition,
+                stateChangeId: result.stateChangeId,
+                terminationDate: dateKey(terminationDate),
+                reason,
+                exitReason,
+                exitVoluntary,
+                ...(protectedLeave
+                  ? { protectedLeaveOverride: true, protectedLeaveId: protectedLeave.id, protectedLeaveType: protectedLeave.leaveType, overriddenByRole: user.role }
+                  : {}),
+                accountDeactivated: access.deactivated,
+                graceDays: access.graceDays,
+              },
+              ipAddress: ip,
             },
-            ipAddress: ip,
-          },
-          tx,
-        );
+            tx,
+          );
+        }
         const terminated = await tx.employee.findUnique({ where: { id } });
-        return { terminated, access };
-      });
+        return { terminated, access, result };
+      }, { timeout: 20_000, maxWait: 10_000 });
       const accessNote = !access.hasUser
         ? ''
         : access.deactivated
@@ -484,7 +578,12 @@ export async function PATCH(req: Request, { params }: Ctx) {
           : access.graceDays > 0
             ? ` ويبقى حساب الدخول فعالاً ${access.graceDays} يوماً حسب الإعدادات`
             : '';
-      return NextResponse.json({ message: `تم إنهاء خدمات الموظف${accessNote}`, employee: terminated, access });
+      return NextResponse.json({
+        message: `تم إنهاء خدمات الموظف${accessNote}`,
+        employee: terminated,
+        access,
+        employment: { transition: result.transition, state: result.toState, stateChangeId: result.stateChangeId, replayed: result.replayed },
+      });
     }
 
     // Document updates stay HR-only (the legal department may only use action=terminate).

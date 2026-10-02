@@ -2,19 +2,26 @@ import { NextResponse } from 'next/server';
 import { prisma } from '@/lib/prisma';
 import { getClientIp, requireUser } from '@/lib/auth';
 import { ROLE_GROUPS } from '@/lib/constants';
-import { conflict, definedOnly, handleApiError, notFound, parseBody } from '@/lib/http';
+import { conflict, definedOnly, forbidden, handleApiError, notFound, parseBody } from '@/lib/http';
 import { logAudit } from '@/lib/audit';
 import { roundMoney } from '@/lib/money';
 import { ensureRefsExist } from '@/app/api/services/_lib';
 import { findPlateDuplicate, normalizePlate, vehicleArchiveSchema, vehicleUpdateSchema } from '../_lib';
+import { authz, companiesAllowed, resolveActor, scopedContext, scopedPrisma } from '@/modules/iam';
+
+// P1-SCOPE: a vehicle is scoped by its legal (owning) company (Vehicle.legalCompanyId). Every handler
+// reads it through the scoped client first: a vehicle of a company outside the user's scope is "not
+// found" (404). A new owning / user company or driver must be inside the scope too.
 
 type Ctx = { params: Promise<{ id: string }> };
 
 export async function GET(_req: Request, { params }: Ctx) {
   try {
-    await requireUser(ROLE_GROUPS.STAFF);
+    const user = await requireUser(ROLE_GROUPS.STAFF);
+    const ctx = scopedContext(await resolveActor(prisma, user));
+    authz.assert(ctx, 'logistics.read');
     const { id } = await params;
-    const vehicle = await prisma.vehicle.findUnique({ where: { id } });
+    const vehicle = await scopedPrisma(ctx).vehicle.findUnique({ where: { id } });
     if (!vehicle) throw notFound('المركبة غير موجودة');
     return NextResponse.json({ message: 'تم جلب بيانات السيارة بنجاح', data: vehicle });
   } catch (err) {
@@ -26,7 +33,15 @@ export async function PUT(req: Request, { params }: Ctx) {
   try {
     const user = await requireUser(ROLE_GROUPS.LOGISTICS);
     const { id } = await params;
+    const ctx = scopedContext(await resolveActor(prisma, user));
+    authz.assert(ctx, 'logistics.manage');
+    const db = scopedPrisma(ctx);
     const body = await parseBody(req, vehicleUpdateSchema);
+    if (!(await db.vehicle.findUnique({ where: { id }, select: { id: true } }))) throw notFound('المركبة غير موجودة');
+    // Moving the vehicle to a company outside the scope (or to no owner, for a scoped user) is refused.
+    if (body.legalCompanyId !== undefined && !companiesAllowed(ctx.companies, [body.legalCompanyId])) throw forbidden('هذه الشركة خارج نطاق صلاحياتك');
+    if (body.actualCompanyId && !companiesAllowed(ctx.companies, [body.actualCompanyId])) throw forbidden('هذه الشركة خارج نطاق صلاحياتك');
+    if (body.driverId && !(await db.employee.findUnique({ where: { id: body.driverId }, select: { id: true } }))) throw notFound('الموظف المحدد غير موجود');
 
     const updated = await prisma.$transaction(async (tx) => {
       const existing = await tx.vehicle.findUnique({
@@ -48,11 +63,13 @@ export async function PUT(req: Request, { params }: Ctx) {
           { activeOnly: true },
         ),
         plateChanged
-          ? tx.vehicle.findMany({ where: { isArchived: false }, select: { id: true, plateNumber: true, vehicleCode: true } })
+          ? tx.vehicle.findMany({ where: { isArchived: false }, select: { id: true, plateNumber: true, vehicleCode: true, legalCompanyId: true } })
           : Promise.resolve([]),
       ]);
       const duplicate = plateChanged && body.plateNumber ? findPlateDuplicate(body.plateNumber, activePlates, id) : undefined;
       if (duplicate) {
+        // The plate is unique in the tenant; another company's vehicle is not described (INV-SCOPE-01).
+        if (!companiesAllowed(ctx.companies, [duplicate.legalCompanyId])) throw conflict('توجد مركبة أخرى مسجلة بنفس رقم اللوحة');
         throw conflict(`توجد مركبة أخرى مسجلة بنفس رقم اللوحة (${duplicate.vehicleCode ?? '-'}: ${duplicate.plateNumber})`);
       }
 
@@ -87,9 +104,13 @@ export async function PATCH(req: Request, { params }: Ctx) {
   try {
     const user = await requireUser(ROLE_GROUPS.LOGISTICS);
     const { id } = await params;
+    const ctx = scopedContext(await resolveActor(prisma, user));
+    authz.assert(ctx, 'logistics.manage');
+    const db = scopedPrisma(ctx);
     const { isArchived } = await parseBody(req, vehicleArchiveSchema);
 
-    const updated = await prisma.vehicle.update({ where: { id }, data: { isArchived } });
+    if (!(await db.vehicle.findUnique({ where: { id }, select: { id: true } }))) throw notFound('المركبة غير موجودة');
+    const updated = await db.vehicle.update({ where: { id }, data: { isArchived } });
     await logAudit({
       userId: user.id,
       action: 'UPDATE',
@@ -116,6 +137,10 @@ export async function DELETE(req: Request, { params }: Ctx) {
   try {
     const user = await requireUser(ROLE_GROUPS.LOGISTICS);
     const { id } = await params;
+    const ctx = scopedContext(await resolveActor(prisma, user));
+    authz.assert(ctx, 'logistics.manage');
+    const db = scopedPrisma(ctx);
+    if (!(await db.vehicle.findUnique({ where: { id }, select: { id: true } }))) throw notFound('المركبة غير موجودة');
 
     const result = await prisma.$transaction(async (tx) => {
       const vehicle = await tx.vehicle.findUnique({

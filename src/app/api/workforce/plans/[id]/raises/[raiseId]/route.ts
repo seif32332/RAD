@@ -11,17 +11,18 @@ import { planMonthKey } from '@/lib/workforce/planning';
 import { limitOrThrow } from '../../../../_lib/server';
 import { raiseIssues, raiseUpdateSchema } from '../../../_lib/schemas';
 import { assertAllowed, loadPlanOr404, lockEditable, monthDate, validateRaise, type RaiseData } from '../../../_lib/server';
+import { workforceScope, type WfScope } from '../../../../_lib/scope';
 
 export const dynamic = 'force-dynamic';
 
 type Ctx = { params: Promise<{ id: string; raiseId: string }> };
 
-async function target(ctx: Ctx) {
+async function target(ctx: Ctx, wf: WfScope) {
   const p = await ctx.params;
   const id = zId.safeParse(p.id);
   const rid = zId.safeParse(p.raiseId);
   if (!id.success || !rid.success) throw notFound('الزيادة غير موجودة');
-  const row = await loadPlanOr404(id.data);
+  const row = await loadPlanOr404(id.data, wf);
   const raise = row.raises.find((x) => x.id === rid.data);
   if (!raise) throw notFound('الزيادة غير موجودة');
   return { row, raise };
@@ -31,7 +32,9 @@ export async function PATCH(req: Request, ctx: Ctx) {
   try {
     const user = await requireUser(ROLE_GROUPS.WORKFORCE);
     limitOrThrow(user, 'plan-write', 60, 60_000);
-    const { row, raise } = await target(ctx);
+    // P1-SCOPE: the plan and the raise's company / department / employee must be in the caller's companies (404).
+    const wf = await workforceScope(user, 'workforce.plan.manage');
+    const { row, raise } = await target(ctx, wf);
     assertAllowed('EDIT', row, user);
     const body = await parseBody(req, raiseUpdateSchema);
     const before: RaiseData & { notes: string | null } = { scope: raise.scope, scopeId: raise.scopeId, pct: raise.pct, amount: raise.amount, effectiveMonth: planMonthKey(raise.effectiveMonth)!, notes: raise.notes };
@@ -43,7 +46,7 @@ export async function PATCH(req: Request, ctx: Ctx) {
     if (merged.scope === 'ALL') merged.scopeId = null;
     const issues = raiseIssues(merged as Parameters<typeof raiseIssues>[0]);
     if (issues.length) throw badRequest(issues.map((i) => i.message).join(' — '), issues);
-    await validateRaise(row, merged);
+    await validateRaise(row, merged, wf);
     await prisma.$transaction(async (tx) => {
       await lockEditable(tx, row.id);
       await tx.planRaise.update({
@@ -62,7 +65,8 @@ export async function DELETE(req: Request, ctx: Ctx) {
   try {
     const user = await requireUser(ROLE_GROUPS.WORKFORCE);
     limitOrThrow(user, 'plan-write', 60, 60_000);
-    const { row, raise } = await target(ctx);
+    const wf = await workforceScope(user, 'workforce.plan.manage');
+    const { row, raise } = await target(ctx, wf);
     assertAllowed('EDIT', row, user);
     await prisma.$transaction(async (tx) => {
       await lockEditable(tx, row.id);

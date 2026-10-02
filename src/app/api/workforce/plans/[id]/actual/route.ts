@@ -14,6 +14,7 @@ import { planVsActual } from '@/lib/workforce/planning';
 import { auditViewOnce, limitOrThrow } from '../../../_lib/server';
 import { actualQuerySchema } from '../../_lib/schemas';
 import { loadPlanOr404, projectionFor, todayDate, toDefinition } from '../../_lib/server';
+import { workforceScope } from '../../../_lib/scope';
 
 export const dynamic = 'force-dynamic';
 
@@ -24,7 +25,10 @@ export async function GET(req: Request, ctx: { params: Promise<{ id: string }> }
     if (!idp.success) throw notFound('الخطة غير موجودة');
     const q = parseQuery(req, actualQuerySchema);
     limitOrThrow(user, 'plan-calc', 30, 60_000);
-    const row = await loadPlanOr404(idp.data);
+    // P1-SCOPE: a plan outside the caller's companies is "not found"; a visible plan of one company reads
+    // that company's payrolls and employees only (a plan of every company: unrestricted callers only).
+    const wf = await workforceScope(user);
+    const row = await loadPlanOr404(idp.data, wf);
     const { projection, frozen } = await projectionFor(row, q.live);
     const asOf = q.asOf ? new Date(`${q.asOf}T00:00:00.000Z`) : todayDate();
     const asOfKey = asOf.toISOString().slice(0, 7);
@@ -34,14 +38,14 @@ export async function GET(req: Request, ctx: { params: Promise<{ id: string }> }
       const [y, m] = k.split('-').map(Number);
       byYear.set(y, [...(byYear.get(y) ?? []), m]);
     }
-    const scope = row.companyId ? { legalCompanyId: row.companyId } : {};
+    const scope = row.companyId ? { legalCompanyId: row.companyId } : wf.companyIds ? { legalCompanyId: { in: [...wf.companyIds] } } : {};
     const [rows, employees] = byYear.size
       ? await Promise.all([
           prisma.payroll.findMany({
             where: {
               status: { in: [PAYROLL_STATUS.APPROVED, PAYROLL_STATUS.PAID] as PayrollStatus[] },
               OR: [...byYear.entries()].map(([year, months]) => ({ year, month: { in: months } })),
-              ...(row.companyId ? { employee: scope } : {}),
+              ...(row.companyId || wf.companyIds ? { employee: scope } : {}),
             },
             select: { employeeId: true, year: true, month: true, status: true, basicSalary: true, totalAllowances: true, overtimeCost: true, gosiEmployer: true, bonusAmount: true },
             orderBy: [{ year: 'asc' }, { month: 'asc' }, { employeeId: 'asc' }],

@@ -7,6 +7,7 @@ import { ROLE_GROUPS, roleIn } from '@/lib/constants';
 import { HttpError, badRequest, handleApiError } from '@/lib/http';
 import { rateLimit } from '@/lib/rate-limit';
 import { logAudit } from '@/lib/audit';
+import { authz, resolveActor, scopedContext, scopedPrisma } from '@/modules/iam';
 import {
   ANONYMOUS_UPLOAD_POLICY,
   AUTHENTICATED_UPLOAD_POLICY,
@@ -83,14 +84,17 @@ export async function POST(req: Request) {
     if (!entry || typeof entry === 'string') throw badRequest('لم يتم إرسال أي ملف');
     const file = entry;
 
-    // Owner employee of the document: staff may upload on behalf of an employee (validated);
+    // Owner employee of the document: staff may upload on behalf of an employee of their companies
+    // (P1-SCOPE: read through the scoped client, so another company's employee is "not found");
     // everyone else's uploads belong to their own employee file.
     let ownerEmployeeId: string | null = user?.employeeId ?? null;
     const requestedEmployee = formData.get('employeeId');
     if (user && roleIn(user.role, ROLE_GROUPS.STAFF) && typeof requestedEmployee === 'string' && requestedEmployee.trim()) {
       const id = requestedEmployee.trim();
       if (id.length > 100) throw badRequest('معرّف الموظف غير صالح');
-      const exists = await prisma.employee.findUnique({ where: { id }, select: { id: true } });
+      const ctx = scopedContext(await resolveActor(prisma, user));
+      authz.assert(ctx, 'files.upload');
+      const exists = await scopedPrisma(ctx).employee.findUnique({ where: { id }, select: { id: true } });
       if (!exists) throw badRequest('الموظف المحدد غير موجود');
       ownerEmployeeId = exists.id;
     }

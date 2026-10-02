@@ -1,0 +1,11 @@
+# /etc/systemd/system/radeef-jobs@deactivate-terminated.timer: daily 03:30 + up to 20 min
+[Unit]
+Description=Radeef background job deactivate-terminated (schedule)
+
+[Timer]
+OnCalendar=*-*-* 03:30:00 Asia/Riyadh
+RandomizedDelaySec=20min
+Persistent=true
+
+[Install]
+WantedBy=timers.target

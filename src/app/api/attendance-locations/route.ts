@@ -9,6 +9,7 @@ import { logAudit } from '@/lib/audit';
 import { GEOFENCE_RADIUS_LIMITS } from '@/lib/geo';
 import { LOCATION_WRITERS, latitudeSchema, locationSelect, longitudeSchema, radiusSchema } from '@/lib/attendance-locations';
 import { loadSelfAttendanceSettings } from '@/lib/self-attendance-server';
+import { authz, resolveActor, scopeWhere, scopedContext, scopedPrisma, type ScopeContext } from '@/modules/iam';
 
 export const dynamic = 'force-dynamic';
 
@@ -23,13 +24,24 @@ const createSchema = z
   })
   .refine((b) => !(b.latitude === 0 && b.longitude === 0), { message: 'الإحداثيات غير صالحة', path: ['latitude'] });
 
+/**
+ * AttendanceLocation has no company column: its scope key is its branch's company (P1-SCOPE). A branch
+ * of another company is "not found" (the scoped client filters Branch by companyId).
+ */
+export function locationScopeWhere(ctx: ScopeContext) {
+  const branch = scopeWhere(ctx, 'Branch');
+  return branch ? { branch: { is: branch } } : {};
+}
+
 /** GET /api/attendance-locations?branchId=... — the branch's attendance locations (staff). */
 export async function GET(req: Request) {
   try {
-    await requireUser(ROLE_GROUPS.STAFF);
+    const user = await requireUser(ROLE_GROUPS.STAFF);
     const { branchId } = parseQuery(req, z.object({ branchId: zId }));
+    const ctx = scopedContext(await resolveActor(prisma, user));
+    authz.assert(ctx, 'attendance.location.read');
     const [locations, settings] = await Promise.all([
-      prisma.attendanceLocation.findMany({ where: { branchId }, select: locationSelect, orderBy: { createdAt: 'asc' } }),
+      prisma.attendanceLocation.findMany({ where: { branchId, ...locationScopeWhere(ctx) }, select: locationSelect, orderBy: { createdAt: 'asc' } }),
       loadSelfAttendanceSettings(prisma),
     ]);
     return NextResponse.json({ locations, defaultRadiusM: settings.defaultRadiusM, radiusLimits: GEOFENCE_RADIUS_LIMITS });
@@ -43,7 +55,9 @@ export async function POST(req: Request) {
   try {
     const user = await requireUser(LOCATION_WRITERS);
     const body = await parseBody(req, createSchema);
-    const branch = await prisma.branch.findUnique({ where: { id: body.branchId }, select: { id: true } });
+    const ctx = scopedContext(await resolveActor(prisma, user));
+    authz.assert(ctx, 'attendance.location.manage');
+    const branch = await scopedPrisma(ctx).branch.findUnique({ where: { id: body.branchId }, select: { id: true } });
     if (!branch) throw notFound('الفرع غير موجود');
     const radiusM = body.radiusM ?? (await loadSelfAttendanceSettings(prisma)).defaultRadiusM;
 

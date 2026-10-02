@@ -14,12 +14,16 @@ import { ESTIMATE_DISCLAIMER } from '@/lib/workforce/version';
 import { newRuleVersionSchema } from '../_lib/schemas';
 import { buildRulesView } from '../_lib/views';
 import { limitOrThrow } from '../_lib/server';
+import { assertTenantWide, workforceScope } from '../_lib/scope';
 
 export const dynamic = 'force-dynamic';
 
 export async function GET() {
   try {
     const user = await requireUser(ROLE_GROUPS.WORKFORCE);
+    // The legal rule register (RuleParameter, GosiRate) is tenant-wide reference data (no company): every
+    // workforce user reads it (P1-SCOPE: authorization through the scope layer, nothing to filter).
+    await workforceScope(user);
     const [rules, gosiRates] = await Promise.all([
       prisma.ruleParameter.findMany({
         select: { key: true, domain: true, label: true, value: true, valueJson: true, unit: true, effectiveFrom: true, effectiveTo: true, status: true, sourceUrl: true, sourceQuote: true, notes: true, createdAt: true },
@@ -40,6 +44,8 @@ export async function GET() {
 export async function POST(req: Request) {
   try {
     const user = await requireUser(['SUPER_ADMIN']);
+    // A register version applies to every company: an unrestricted caller only.
+    assertTenantWide(await workforceScope(user, 'workforce.register.manage'));
     const b = await parseBody(req, newRuleVersionSchema);
     limitOrThrow(user, 'rules-post', 30, 60 * 60_000);
 

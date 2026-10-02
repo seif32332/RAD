@@ -9,6 +9,7 @@ import { rateLimit } from '@/lib/rate-limit';
 import { logAudit } from '@/lib/audit';
 import { daysBetween } from '@/lib/dates';
 import { createMuqeemClient, toApiError } from '@/lib/muqeem';
+import { authz, resolveActor, scopedContext, scopedPrisma } from '@/modules/iam';
 
 export const dynamic = 'force-dynamic';
 
@@ -28,17 +29,20 @@ const BodySchema = z.object({
  * (ROLE_GROUPS.GOV). READ-ONLY: Muqeem's interactive services report (every request made on Muqeem
  * for the establishment) for up to 31 days, to decide how to reconcile UNKNOWN transactions.
  * Audited as VIEW. 200 { rows: InteractiveServicesReportRow[], count }
+ * P1-SCOPE: only a company of the user's scope (404 otherwise, before any call to Muqeem).
  */
 export async function POST(req: Request) {
   try {
     const user = await requireUser(ROLE_GROUPS.GOV);
+    const ctx = scopedContext(await resolveActor(prisma, user));
+    authz.assert(ctx, 'gov.muqeem.operate');
     const limit = rateLimit(`muqeem-interactive-report:${user.id}`, 20, 10 * 60_000);
     if (!limit.ok) throw new HttpError(429, 'تم تجاوز عدد مرات عرض التقرير المسموح بها، حاول بعد بضع دقائق');
     const body = await parseBody(req, BodySchema);
     const span = daysBetween(body.fromDate, body.toDate);
     if (Number.isNaN(span) || span < 0) throw badRequest('تاريخ البداية يجب أن يسبق تاريخ النهاية');
     if (span > MAX_RANGE_DAYS - 1) throw badRequest(`الحد الأقصى للفترة ${MAX_RANGE_DAYS} يوماً`);
-    const company = await prisma.company.findUnique({ where: { id: body.companyId }, select: { id: true } });
+    const company = await scopedPrisma(ctx).company.findUnique({ where: { id: body.companyId }, select: { id: true } });
     if (!company) throw notFound('الشركة غير موجودة');
 
     const client = await createMuqeemClient({ companyId: body.companyId });

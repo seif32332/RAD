@@ -23,6 +23,8 @@ export type AssetAction = (typeof ASSET_ACTIONS)[number];
 
 export const assetItemSchema = z.object({
   employeeId: zOptRef,
+  /** Owning company (P1-SCOPE) of a VACANT asset; an assigned asset takes its holder's legal company. */
+  companyId: zOptRef,
   assetType: zText(200),
   description: zOptText(2000),
   receiveDate: zOptDate,

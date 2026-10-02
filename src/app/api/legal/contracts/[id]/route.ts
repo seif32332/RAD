@@ -6,6 +6,7 @@ import { ROLE_GROUPS } from '@/lib/constants';
 import { badRequest, definedOnly, handleApiError, notFound, parseBody } from '@/lib/http';
 import { zDate, zOptDate, zOptText, zText } from '@/lib/validation';
 import { logAudit } from '@/lib/audit';
+import { authz, resolveActor, scopedContext, scopedPrisma } from '@/modules/iam';
 
 export const dynamic = 'force-dynamic';
 
@@ -26,15 +27,20 @@ const patchSchema = z.object({
   status: z.preprocess(blankToUndefined, z.enum(CONTRACT_STATUSES).optional()),
 });
 
+// P1-SCOPE: every read and write goes through the scoped client, so a contract of a company outside
+// the user's scope is "not found" (404), like a missing one.
 type Params = { params: Promise<{ id: string }> };
 
 export async function PATCH(req: Request, { params }: Params) {
   try {
     const user = await requireUser(ROLE_GROUPS.LEGAL);
+    const ctx = scopedContext(await resolveActor(prisma, user));
+    authz.assert(ctx, 'legal.manage');
+    const db = scopedPrisma(ctx);
     const { id } = await params;
     const data = await parseBody(req, patchSchema);
 
-    const existing = await prisma.legalContract.findUnique({
+    const existing = await db.legalContract.findUnique({
       where: { id },
       select: { id: true, startDate: true, endDate: true },
     });
@@ -45,7 +51,7 @@ export async function PATCH(req: Request, { params }: Params) {
     const end = update.endDate !== undefined ? update.endDate : existing.endDate;
     if (end && end < start) throw badRequest('تاريخ نهاية العقد يجب أن يكون بعد تاريخ بدايته');
 
-    await prisma.legalContract.update({ where: { id }, data: update });
+    await db.legalContract.update({ where: { id }, data: update });
 
     await logAudit({
       userId: user.id,
@@ -65,13 +71,16 @@ export async function PATCH(req: Request, { params }: Params) {
 export async function DELETE(req: Request, { params }: Params) {
   try {
     const user = await requireUser(ROLE_GROUPS.LEGAL);
+    const ctx = scopedContext(await resolveActor(prisma, user));
+    authz.assert(ctx, 'legal.manage');
+    const db = scopedPrisma(ctx);
     const { id } = await params;
 
     // find + deleteMany (instead of delete) so a missing/already-deleted row is a clean 404
     // without a Prisma error log line.
-    const deleted = await prisma.legalContract.findUnique({ where: { id }, select: { id: true, title: true, secondParty: true } });
+    const deleted = await db.legalContract.findUnique({ where: { id }, select: { id: true, title: true, secondParty: true } });
     if (!deleted) throw notFound('العقد غير موجود');
-    const res = await prisma.legalContract.deleteMany({ where: { id } });
+    const res = await db.legalContract.deleteMany({ where: { id } });
     if (res.count === 0) throw notFound('العقد غير موجود');
 
     await logAudit({

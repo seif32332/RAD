@@ -7,6 +7,7 @@ import { ROLE_GROUPS } from '@/lib/constants';
 import { handleApiError, parseQuery } from '@/lib/http';
 import { overviewQuerySchema } from '../_lib/schemas';
 import { auditViewOnce, limitOrThrow, runOverview } from '../_lib/server';
+import { workforceScope } from '../_lib/scope';
 
 export const dynamic = 'force-dynamic';
 
@@ -15,7 +16,8 @@ export async function GET(req: Request) {
     const user = await requireUser(ROLE_GROUPS.WORKFORCE);
     const q = parseQuery(req, overviewQuerySchema);
     limitOrThrow(user, 'heavy', 30, 60_000);
-    const { response } = await runOverview(q);
+    // P1-SCOPE: the decision board aggregates the caller's companies only (§5.4.3).
+    const { response } = await runOverview(q, await workforceScope(user));
     await auditViewOnce(user, 'WorkforceOverview', { months: q.months, scenario: q.scenario }, getClientIp(req));
     return NextResponse.json(response);
   } catch (err) {

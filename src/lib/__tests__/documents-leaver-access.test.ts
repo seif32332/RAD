@@ -2,8 +2,7 @@
 // opens his official documents only, for terminated_documents_access_days (default 30), then the
 // nightly job deactivates it. Everything else treats the session as logged out (fail closed).
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { parseDocumentsDays as tsParse } from '@/lib/access';
-import { parseDocumentsDays as jsParse, terminatedLoginAction } from '../../../scripts/jobs.mjs';
+import { parseDocumentsDays as tsParse, terminatedLoginAction } from '@/lib/access';
 
 const mocks = vi.hoisted(() => ({ user: null as Record<string, unknown> | null }));
 vi.mock('next/headers', () => ({ cookies: async () => ({ get: () => ({ value: 'signed' }) }) }));
@@ -60,10 +59,8 @@ describe('deactivate-terminated job with the documents window', () => {
   const now = new Date('2026-09-26T09:00:00Z');
   const on = (d: string) => new Date(`${d}T00:00:00.000Z`);
 
-  it('window days: default 30, 0 = none, bounded; the job and the app parse alike', () => {
-    for (const v of [undefined, null, '', 'abc', '-1', '0', '7', '7.9', '500']) {
-      expect(jsParse(v)).toBe(tsParse(v as string | null | undefined));
-    }
+  it('window days: default 30, 0 = none, bounded (one parser for the app and the job)', () => {
+    expect([tsParse(undefined), tsParse(null), tsParse(''), tsParse('abc'), tsParse('-1')]).toEqual([30, 30, 30, 30, 30]);
     expect([tsParse(undefined), tsParse('0'), tsParse('7.9'), tsParse('500')]).toEqual([30, 0, 7, 90]);
   });
 

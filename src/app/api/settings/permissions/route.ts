@@ -5,8 +5,13 @@ import { getClientIp, requireUser } from '@/lib/auth';
 import { ALL_ROLES, ROLE_GROUPS } from '@/lib/constants';
 import { handleApiError, parseBody } from '@/lib/http';
 import { logAudit } from '@/lib/audit';
+import { ALL_COMPANIES, authz, resolveActor, scopedContext } from '@/modules/iam';
 
 export const dynamic = 'force-dynamic';
+
+// P1-SCOPE: tenant-wide (SystemSetting / User / RolePermission / AuditLog have no company): an admin
+// who sees EVERY company only. scopedContext(actor, ALL_COMPANIES) refuses (403) an actor restricted
+// to some companies by UserCompanyScope, whatever his role.
 
 const PermissionSchema = z.object({
   role: z.enum(ALL_ROLES),
@@ -22,7 +27,9 @@ const PermissionSchema = z.object({
  */
 export async function GET() {
   try {
-    await requireUser(ROLE_GROUPS.ADMIN);
+    const user = await requireUser(ROLE_GROUPS.ADMIN);
+    const ctx = scopedContext(await resolveActor(prisma, user), ALL_COMPANIES);
+    authz.assert(ctx, 'platform.settings.manage');
     const permissions = await prisma.rolePermission.findMany({
       select: { id: true, role: true, allowedPages: true, createdAt: true, updatedAt: true },
       orderBy: { role: 'asc' },
@@ -37,6 +44,8 @@ export async function GET() {
 export async function POST(req: Request) {
   try {
     const user = await requireUser(ROLE_GROUPS.ADMIN);
+    const ctx = scopedContext(await resolveActor(prisma, user), ALL_COMPANIES);
+    authz.assert(ctx, 'platform.settings.manage');
     const { role, allowedPages } = await parseBody(req, PermissionSchema);
 
     const before = await prisma.rolePermission.findUnique({ where: { role }, select: { allowedPages: true } });

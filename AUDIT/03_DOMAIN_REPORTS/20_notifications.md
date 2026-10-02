@@ -1,0 +1,6 @@
+# 20 Notifications
+
+Group H audited specialists 19, 20 and 23 in one report: [19_workflow_notifications_ai.md](19_workflow_notifications_ai.md).
+The capability blocks for this domain are the sections whose headings start with "Notifications:" (email delivery pipeline, business-event triggers, in-app `/api/notifications`, SMS/Push/WhatsApp, templates and preferences, Arabic/RTL email). The scorecard row "20 Notifications" and the adversarial verification (findings H-1 to H-4) are in the same file.
+
+Summary (after verification): the transactional outbox and SMTP dispatcher are well built (EV-8017, EV-8018) but deliver nothing today, because no SMTP provider is chosen and `OUTBOX_SEND` is not `true` (EV-8019, EV-0014). Business events notify only indirectly through documents the engine issues on its own (leave letters, payslips, evaluation reports). Leave rejection and cancellation, payment decisions, legacy transfers, attendance corrections, asset and owner requests, claims and loans notify no one (EV-8020, EV-8021). The in-app bell is a live 5-item query with no persistence or read state (EV-8023). SMS, WhatsApp and push exist only as a schema comment (EV-8024, EV-8025). The work-commencement notice after onboarding approval is always skipped (EV-0026, EV-0027).

@@ -165,6 +165,7 @@ export function buildSchedulesPayload(branchId: string, schedules: ScheduleDraft
     schedules: schedules
       .filter((s) => s.name.trim())
       .map((s) => ({
+        id: s.id, // an existing pattern keeps its id (employees point to it); a new draft's random id is ignored
         name: s.name.trim(),
         shiftType: s.shiftType,
         startTime: s.shiftType === 'FLEXIBLE' ? null : s.startTime || null,

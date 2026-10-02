@@ -1,11 +1,13 @@
 import { NextResponse } from 'next/server';
 import { prisma } from '@/lib/prisma';
-import { requireEmployeeId, requireUser } from '@/lib/auth';
+import { requireUser } from '@/lib/auth';
 import { ROLE_GROUPS } from '@/lib/constants';
 import { handleApiError } from '@/lib/http';
 import { faceServiceConfigured } from '@/lib/face';
 import { DAY_COMPLETE_WITHOUT_CHECK_IN_MESSAGE, FACE_CONSENT_VERSION, SELF_ATTENDANCE_BLOCKER_MESSAGES } from '@/lib/self-attendance';
 import { loadSelfAttendanceContext } from '@/lib/self-attendance-server';
+import { resolveSelfContext } from '@/lib/employee-scope';
+import { authz, resolveActor } from '@/modules/iam';
 
 export const dynamic = 'force-dynamic';
 
@@ -17,8 +19,10 @@ export const dynamic = 'force-dynamic';
 export async function GET() {
   try {
     const user = await requireUser(ROLE_GROUPS.ALL);
-    const employeeId = await requireEmployeeId(user);
-    const ctx = await loadSelfAttendanceContext(prisma, employeeId);
+    // P1-SCOPE: SelfContext; the loader reads the session employee's own rows (and his branch's locations).
+    const self = await resolveSelfContext(prisma, await resolveActor(prisma, user));
+    authz.assert(self, 'portal.self.read');
+    const ctx = await loadSelfAttendanceContext(prisma, self.employeeId);
 
     return NextResponse.json(
       {

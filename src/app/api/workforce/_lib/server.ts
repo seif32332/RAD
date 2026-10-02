@@ -20,6 +20,7 @@ import type { AssumptionRow, ExitCostInput, TrueCostResult, WfCompanyInput } fro
 import { COMPUTE_MONTHS, type Horizon } from './shared';
 import { assumptionEvidence, buildOverviewResponse, companySettingsEvidence, settingsOf, summarizeEmployee, withAssumptionOverrides, type CompanySettingsView } from './views';
 import type { ExitCostParams, OverviewParams, TrueCostParams } from './schemas';
+import { assertEmployeeVisible, assertUnitsVisible, scopeCompanies, type WfScope } from './scope';
 
 /** Current month in Riyadh ('YYYY-MM'): the first projected month. */
 export function currentMonth(): string {
@@ -76,8 +77,14 @@ export interface TrueCostRun {
   input: Awaited<ReturnType<typeof loadTrueCostInput>>['input'];
 }
 
-/** Computes the full 36-month horizon for the scope (the horizon parameter only selects the window shown). */
-export async function runTrueCost(p: Pick<TrueCostParams, 'companyId' | 'branchId' | 'departmentId' | 'employeeId' | 'scenario' | 'startMonth'>): Promise<TrueCostRun> {
+/**
+ * Computes the full 36-month horizon for the scope (the horizon parameter only selects the window shown).
+ * `s` = the caller's company scope: only employees of those legal companies are loaded, and a filter
+ * (company / branch / department / employee) outside it is a 404. A named company narrows the load to it
+ * (the levy tiers are per legal company, so the reported employees' numbers are the same).
+ */
+export async function runTrueCost(p: Pick<TrueCostParams, 'companyId' | 'branchId' | 'departmentId' | 'employeeId' | 'scenario' | 'startMonth'>, s: WfScope): Promise<TrueCostRun> {
+  await assertUnitsVisible(s, p);
   const startMonth = p.startMonth ?? currentMonth();
   const scope = {
     companyId: p.companyId ?? null,
@@ -85,7 +92,7 @@ export async function runTrueCost(p: Pick<TrueCostParams, 'companyId' | 'branchI
     departmentId: p.departmentId ?? null,
     employeeIds: p.employeeId ? [p.employeeId] : null,
   };
-  const loaded = await loadTrueCostInput({ startMonth, months: COMPUTE_MONTHS, scope });
+  const loaded = await loadTrueCostInput({ startMonth, months: COMPUTE_MONTHS, scope: { ...scope, companyIds: scopeCompanies(s, p.companyId) } });
   const tc = computeTrueCost(loaded.input, { startMonth, months: COMPUTE_MONTHS, scenario: p.scenario, employeeIds: loaded.reportEmployeeIds });
   return {
     tc,
@@ -97,8 +104,8 @@ export async function runTrueCost(p: Pick<TrueCostParams, 'companyId' | 'branchI
   };
 }
 
-export async function runOverview(p: OverviewParams & { startMonth?: string }) {
-  const run = await runTrueCost({ scenario: p.scenario, startMonth: p.startMonth });
+export async function runOverview(p: OverviewParams & { startMonth?: string }, s: WfScope) {
+  const run = await runTrueCost({ scenario: p.scenario, startMonth: p.startMonth }, s);
   const ov = computeOverview(run.tc, { rules: run.input.rules, gosiRates: run.input.gosiRates });
   return { run, response: buildOverviewResponse(run.tc, ov, p.months as Horizon, p.scenario) };
 }
@@ -140,7 +147,8 @@ export function employeeDetail(run: TrueCostRun, employeeId: string, viewerRole:
 /** Reasons where the worker ended the contract: the protected-leave rule does not apply (settlements). */
 const WORKER_ENDED = ['RESIGNATION', 'ARTICLE_81'];
 
-export async function runExitCost(p: ExitCostParams) {
+export async function runExitCost(p: ExitCostParams, s: WfScope) {
+  await assertEmployeeVisible(s, p.employeeId);
   const mapping = EXIT_REASON_TO_TERMINATION[p.exitReason as EmployeeExitReason];
   const reason = p.settlementReason ?? p.exitReason;
   const input = await loadExitCostInput({
@@ -150,6 +158,7 @@ export async function runExitCost(p: ExitCostParams) {
     noticeServed: p.noticeServed,
     replacementIsSaudi: p.replacementIsSaudi ?? null,
     scenario: p.scenario,
+    companyIds: s.companyIds,
   });
   if (!input) throw notFound('الموظف غير موجود');
   const companyId = input.employee.legalCompanyId || null;

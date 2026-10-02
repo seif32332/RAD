@@ -94,7 +94,12 @@ export async function myDocumentRequests(employeeId: string) {
   });
   // Locked documents (warning, termination notice, minutes, decisions) are HR's act: the employee
   // sees them only once issued, whoever created the request (HR or the system).
-  const own = rows.filter((r) => r.status === 'ISSUED' || !getDocumentType(r.typeKey)?.approvalLocked).map((r) => ({
+  // Also HR's decisions that change the file (transfer): seen once issued.
+  const hidden = (r: { typeKey: string; source: string }) => {
+    const d = getDocumentType(r.typeKey);
+    return !!d?.approvalLocked || (!!d?.executesChange && r.source !== 'PORTAL');
+  };
+  const own = rows.filter((r) => r.status === 'ISSUED' || !hidden(r)).map((r) => ({
     id: r.id,
     typeKey: r.typeKey,
     typeLabel: typeLabel(r.typeKey),
@@ -162,7 +167,7 @@ export async function staffDocumentOverview(actor: Actor, opts: { q?: string; em
       // What the issue form asks for: a warning's text, and the languages the template supports.
       return {
         key: k, labelAr: d.labelAr, languages: d.languages, warningText: k === 'WARNING_LETTER', settlement: d.facts === 'SETTLEMENT',
-        terminationNotice: k === 'TERMINATION_NOTICE', noc: k === 'NO_OBJECTION', promotion: k === 'PROMOTION_DECISION', addendum: k === 'CONTRACT_ADDENDUM', circular: d.subject === 'COMPANY', commencement: d.facts === 'COMMENCEMENT', candidate: d.subject === 'CANDIDATE', addressable: !d.addressedToEmployee && d.facts !== 'SETTLEMENT', auto: d.issuance === 'AUTO',
+        terminationNotice: k === 'TERMINATION_NOTICE', noc: k === 'NO_OBJECTION', promotion: k === 'PROMOTION_DECISION', addendum: k === 'CONTRACT_ADDENDUM', circular: d.subject === 'COMPANY', transfer: k === 'TRANSFER_DECISION', commencement: d.facts === 'COMMENCEMENT', candidate: d.subject === 'CANDIDATE', addressable: !d.addressedToEmployee && d.facts !== 'SETTLEMENT', auto: d.issuance === 'AUTO',
         // Requests that answer a record (resignation) are created by the system, not from this form.
         fromRecord: d.facts === 'TERMINATION',
       };

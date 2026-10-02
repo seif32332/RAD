@@ -1,7 +1,7 @@
 import { NextResponse } from 'next/server';
 import { z } from 'zod';
 import { prisma } from '@/lib/prisma';
-import { getClientIp, requireEmployeeId, requireUser } from '@/lib/auth';
+import { getClientIp, requireUser, type AuthUser } from '@/lib/auth';
 import { ROLE_GROUPS } from '@/lib/constants';
 import { HttpError, badRequest, conflict, forbidden, handleApiError, jsonError, parseBody } from '@/lib/http';
 import { zNumber } from '@/lib/validation';
@@ -13,9 +13,22 @@ import { deleteBiometricImage, discardBiometricImage, saveBiometricImage, valida
 import { FACE_CONSENT_VERSION, FACE_PROFILE_WITHDRAWN, PUNCH_REASON_MESSAGES, SELF_ATTENDANCE_BLOCKER_MESSAGES, checkLocation, cosineSimilarity, rejectionMessage } from '@/lib/self-attendance';
 import { loadSelfAttendanceContext } from '@/lib/self-attendance-server';
 import { lockEmployeeForUpdate } from '@/lib/hr-workflows';
+import { resolveSelfContext } from '@/lib/employee-scope';
+import { authz, resolveActor, scopedPrisma } from '@/modules/iam';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
+
+/**
+ * P1-SCOPE: SelfContext of the session employee (never a client value) and its scoped client: every
+ * FaceProfile read or write below is his own. The transaction of POST stays on the root client (its row
+ * lock is raw SQL) and writes only the row of `employeeId`, which comes from the context.
+ */
+async function selfScope(user: AuthUser) {
+  const self = await resolveSelfContext(prisma, await resolveActor(prisma, user));
+  authz.assert(self, 'portal.self.request');
+  return { employeeId: self.employeeId, db: scopedPrisma(self) };
+}
 
 const MAX_BODY_BYTES = 4 * 1024 * 1024;
 /** Face analyses per employee per hour. Attempts refused earlier (location, consent...) do not count. */
@@ -46,7 +59,7 @@ export async function POST(req: Request) {
   let photoName: string | null = null;
   try {
     const user = await requireUser(ROLE_GROUPS.ALL);
-    const employeeId = await requireEmployeeId(user);
+    const { employeeId, db } = await selfScope(user);
     const ipAddress = getClientIp(req);
 
     if (Number(req.headers.get('content-length') ?? 0) > MAX_BODY_BYTES) throw new HttpError(413, 'حجم البيانات المرسلة كبير. أعد التقاط الصورة.');
@@ -73,7 +86,7 @@ export async function POST(req: Request) {
     }
     if (!ctx.faceRequired) throw badRequest('أنت مستثنى من التحقق من الوجه ولا تحتاج إلى تسجيله.');
 
-    const existing = await prisma.faceProfile.findUnique({ where: { employeeId }, select: { id: true, model: true, photoStoredName: true } });
+    const existing = await db.faceProfile.findUnique({ where: { employeeId }, select: { id: true, model: true, photoStoredName: true } });
     if (existing && existing.model === FACE_MODEL) {
       throw conflict('صورة وجهك مسجلة بالفعل. لتغييرها تواصل مع الموارد البشرية.', { code: 'ALREADY_ENROLLED' });
     }
@@ -114,6 +127,9 @@ export async function POST(req: Request) {
     // The same face must not already belong to someone else. Blocking starts at the ACCEPT level
     // (a lower bar would refuse look-alikes among many employees with no HR override); a match
     // between the reject and accept levels is recorded in the audit entry for HR review.
+    // Deliberately tenant-wide (root client): the same face must not be enrolled for two employees of ANY
+    // company. Only a yes / no leaves this route (the matched employee id goes to the audit log, not to
+    // the caller).
     const others = await prisma.faceProfile.findMany({ where: { employeeId: { not: employeeId }, model: FACE_MODEL }, select: { employeeId: true, embedding: true } });
     let best: { employeeId: string; similarity: number } | null = null;
     for (const o of others) {
@@ -184,12 +200,12 @@ const renewSchema = z.object({
 export async function PATCH(req: Request) {
   try {
     const user = await requireUser(ROLE_GROUPS.ALL);
-    const employeeId = await requireEmployeeId(user);
+    const { employeeId, db } = await selfScope(user);
     const body = await parseBody(req, renewSchema);
     if (body.consentVersion !== FACE_CONSENT_VERSION) throw conflict('تم تحديث إشعار الخصوصية. حدّث الصفحة واقرأه ثم وافق من جديد.', { code: 'CONSENT_OUTDATED' });
-    const profile = await prisma.faceProfile.findUnique({ where: { employeeId }, select: { id: true, model: true, consentVersion: true } });
+    const profile = await db.faceProfile.findUnique({ where: { employeeId }, select: { id: true, model: true, consentVersion: true } });
     if (!profile || profile.model === FACE_PROFILE_WITHDRAWN) throw conflict('لا توجد صورة وجه مسجلة لك', { code: 'NOT_ENROLLED' });
-    await prisma.faceProfile.update({ where: { id: profile.id }, data: { consentAt: new Date(), consentVersion: FACE_CONSENT_VERSION } });
+    await db.faceProfile.update({ where: { id: profile.id }, data: { consentAt: new Date(), consentVersion: FACE_CONSENT_VERSION } });
     await logAudit({
       userId: user.id,
       action: 'UPDATE',
@@ -212,10 +228,10 @@ export async function PATCH(req: Request) {
 export async function DELETE(req: Request) {
   try {
     const user = await requireUser(ROLE_GROUPS.ALL);
-    const employeeId = await requireEmployeeId(user);
-    const profile = await prisma.faceProfile.findUnique({ where: { employeeId }, select: { id: true, model: true, photoStoredName: true } });
+    const { employeeId, db } = await selfScope(user);
+    const profile = await db.faceProfile.findUnique({ where: { employeeId }, select: { id: true, model: true, photoStoredName: true } });
     if (!profile || profile.model === FACE_PROFILE_WITHDRAWN) throw conflict('لا توجد صورة وجه مسجلة لك');
-    await prisma.faceProfile.update({
+    await db.faceProfile.update({
       where: { id: profile.id },
       // consentAt / consentVersion now record the withdrawal.
       data: { embedding: '', model: FACE_PROFILE_WITHDRAWN, photoStoredName: null, consentAt: new Date(), consentVersion: FACE_PROFILE_WITHDRAWN },

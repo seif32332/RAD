@@ -11,6 +11,7 @@ import { logAudit } from '@/lib/audit';
 import { zId } from '@/lib/validation';
 import { planMonthKey } from '@/lib/workforce/planning';
 import { auditViewOnce, limitOrThrow } from '../../_lib/server';
+import { assertCompanyVisible, assertTenantWide, planScopeWhere, workforceScope } from '../../_lib/scope';
 import { detailQuerySchema, planUpdateSchema } from '../_lib/schemas';
 import {
   PLAN_ENTITY,
@@ -44,15 +45,17 @@ export async function GET(req: Request, ctx: { params: Promise<{ id: string }> }
     const id = await planId(ctx);
     const q = parseQuery(req, detailQuerySchema);
     limitOrThrow(user, 'plan-calc', 30, 60_000);
-    const row = await loadPlanOr404(id);
+    // P1-SCOPE: a plan outside the caller's companies is "not found".
+    const wf = await workforceScope(user);
+    const row = await loadPlanOr404(id, wf);
     const [{ projection, frozen }, submittedById, authorIds, histories, names, companies, parent] = await Promise.all([
       projectionFor(row, q.live),
       row.submittedAt ? submitterOf(id) : Promise.resolve(null),
       row.status === 'SUBMITTED' ? authorsOf(id) : Promise.resolve(null),
       planHistories([id]),
-      displayNames(row),
-      companyNameMap(),
-      row.basedOnId ? prisma.headcountPlan.findUnique({ where: { id: row.basedOnId }, select: { id: true, name: true, status: true } }) : Promise.resolve(null),
+      displayNames(row, wf),
+      companyNameMap(wf),
+      row.basedOnId ? prisma.headcountPlan.findFirst({ where: { id: row.basedOnId, AND: [planScopeWhere(wf)] }, select: { id: true, name: true, status: true } }) : Promise.resolve(null),
     ]);
     const history = histories.get(id) ?? null;
     const users = await userNames([row.createdById, row.decidedById, submittedById, history?.archivedById]);
@@ -77,11 +80,14 @@ export async function PATCH(req: Request, ctx: { params: Promise<{ id: string }>
     const user = await requireUser(ROLE_GROUPS.WORKFORCE);
     limitOrThrow(user, 'plan-write', 60, 60_000);
     const id = await planId(ctx);
-    const row = await loadPlanOr404(id);
+    const wf = await workforceScope(user, 'workforce.plan.manage');
+    const row = await loadPlanOr404(id, wf);
     assertAllowed('EDIT', row, user);
     const body = await parseBody(req, planUpdateSchema);
     if (body.companyId !== undefined && (body.companyId ?? null) !== row.companyId) {
       if (row.positions.length || row.raises.length) throw conflict('لا يتغير نطاق الخطة بعد إضافة البنود: انسخ الخطة أو احذف البنود أولاً');
+      if (body.companyId) assertCompanyVisible(wf, body.companyId);
+      else assertTenantWide(wf, 'خطة كل الشركات خارج نطاق صلاحياتك: اختر شركة من شركاتك');
       if (body.companyId && !(await prisma.company.findUnique({ where: { id: body.companyId }, select: { id: true } }))) throw notFound('الشركة غير موجودة');
     }
     const data = {

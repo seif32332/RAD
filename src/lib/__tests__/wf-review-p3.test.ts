@@ -56,7 +56,7 @@ vi.mock('@/lib/prisma', () => {
   return {
     prisma: {
       auditLog,
-      headcountPlan: { findUnique: vi.fn(async () => mocks.plan) },
+      headcountPlan: { findUnique: vi.fn(async () => mocks.plan), findFirst: vi.fn(async () => mocks.plan) },
       $transaction: vi.fn(async (fn: (t: typeof tx) => Promise<unknown>) => fn(tx)),
     },
   };

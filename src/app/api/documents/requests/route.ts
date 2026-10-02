@@ -6,7 +6,7 @@ import { zId } from '@/lib/validation';
 import { concludedInvestigationsFor, offerCandidatesFor, paidSettlementsFor, portalTypesFor, myDocumentRequests, staffDocumentOverview } from '@/lib/documents/queries';
 import { createDocumentRequest, issueDueCommencementNotices, issueDueEvaluationReports, issueDuePayslips, processDueRenderJobs, suggestDueExitDocuments, syncDueLeaveLetters } from '@/lib/documents/service';
 import { applyDueChangeOrders } from '@/lib/documents/change-orders';
-import { addendumParamsSchema, circularParamsSchema, nocParamsSchema, offerParamsSchema, promotionParamsSchema, terminationNoticeParamsSchema, warningParamsSchema } from '@/lib/documents/types';
+import { addendumParamsSchema, circularParamsSchema, nocParamsSchema, offerParamsSchema, promotionParamsSchema, terminationNoticeParamsSchema, transferParamsSchema, warningParamsSchema } from '@/lib/documents/types';
 import { rateLimit } from '@/lib/rate-limit';
 import { actorFrom } from '../_shared';
 
@@ -94,6 +94,8 @@ const createSchema = z.object({
   /** PROMOTION_DECISION: the change it orders. */
   promotion: promotionParamsSchema.optional(),
   addendum: addendumParamsSchema.optional(),
+  /** TRANSFER_DECISION: where the employee moves. */
+  transfer: transferParamsSchema.optional(),
   commencement: z.object({ kind: z.enum(['JOIN', 'RETURN']), leaveId: z.string().trim().min(1).max(64).optional() }).optional(),
   /** ADMIN_CIRCULAR: a company document to a group of employees (no employeeId). */
   circular: circularParamsSchema.optional(),
@@ -137,7 +139,7 @@ export async function POST(req: Request) {
       {
         typeKey: body.typeKey,
         employeeId,
-        params: { language: body.language, addresseeAr: body.addresseeAr || undefined, addresseeEn: body.addresseeEn || undefined, warning: body.warning, settlementId: body.settlementId, terminationNotice: body.terminationNotice, noc: body.noc, promotion: body.promotion, addendum: body.addendum, commencement: body.commencement },
+        params: { language: body.language, addresseeAr: body.addresseeAr || undefined, addresseeEn: body.addresseeEn || undefined, warning: body.warning, settlementId: body.settlementId, terminationNotice: body.terminationNotice, noc: body.noc, promotion: body.promotion, addendum: body.addendum, commencement: body.commencement, transfer: body.transfer },
         source: forSelf ? 'PORTAL' : 'HR',
       },
       actorFrom(user, req),

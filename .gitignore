@@ -19,6 +19,8 @@
 
 # production
 /build
+# background jobs bundle (npm run build:jobs)
+/dist/
 
 # misc
 .DS_Store

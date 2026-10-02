@@ -52,52 +52,46 @@ export function paymentDeleteBlockReason(p: { status: string; entityType?: strin
 }
 
 // ---------------------------------------------------------------------------
-// Maker-checker (DEC-001 / DEC-002 / DEC-008, risk R-005).
+// Maker-checker (DEC-001 / DEC-002 / DEC-008, risk R-005; pay-to-be BR-PAY-002, BL-PAY-008).
 // ---------------------------------------------------------------------------
-
-/** SystemSetting key: 'true' lets the requester approve / pay their own request (single-admin companies). */
-export const ALLOW_SELF_APPROVAL_SETTING = 'allow_self_approval';
-
-/** AuditLog.action written when a requester approves / pays their own payment request. */
-export const SELF_APPROVAL_AUDIT_ACTION = 'SELF_APPROVAL_OVERRIDE';
 
 export type MakerCheckerStep = 'APPROVE' | 'PAY';
 
 export interface MakerCheckerInput {
   step: MakerCheckerStep;
   actorId: string;
-  actorRole: string;
+  /** Kept for the callers' shape; no role is an exception any more (BL-PAY-008). */
+  actorRole?: string;
   /** PaymentRequest.requestedById; null for legacy / system-generated requests. */
   requestedById: string | null | undefined;
-  /** Value of the allow_self_approval SystemSetting (false when unset). */
-  allowSelfApproval: boolean;
+  /** PaymentRequest.approvedById (the owner's approval), for the PAY step. */
+  approvedById?: string | null;
 }
 
-export type MakerCheckerDecision =
-  | { ok: true; basis: 'DIFFERENT_USER' }
-  /** Legacy row without a requester: allowed, recorded in the audit details. */
-  | { ok: true; basis: 'UNKNOWN_REQUESTER' }
-  /** Same user, allowed by SUPER_ADMIN override or by the company setting: always audited separately. */
-  | { ok: true; basis: 'SUPER_ADMIN_OVERRIDE' | 'SETTING_ALLOW_SELF_APPROVAL' }
-  | { ok: false; message: string };
+export type MakerCheckerDecision = { ok: true; basis: 'DIFFERENT_USER' } | { ok: false; message: string };
 
 /**
- * Pure maker-checker rule: the user who created a payment request may not approve it (owner portal)
- * nor record it as paid (payments screen), unless they are SUPER_ADMIN (allowed, audited) or the
- * company opted in with SystemSetting allow_self_approval='true' (allowed, audited).
+ * Pure maker-checker rule of a payment request, as the screens show it (the server decision is
+ * finance's, through money.gateway): the user who created a request may not approve it (owner portal);
+ * the user who created or approved it may not record it as paid (payments screen); a request with
+ * neither a recorded requester nor approver is not paid before a second person attests it
+ * (BR-PAY-015). BL-PAY-008 removed the SUPER_ADMIN, allow_self_approval and UNKNOWN_REQUESTER passes;
+ * a single-operator tenant acts through the gateway's recorded SELF_ACT instead (BR-PAY-020).
  */
 export function decideMakerChecker(input: MakerCheckerInput): MakerCheckerDecision {
-  if (!input.requestedById) return { ok: true, basis: 'UNKNOWN_REQUESTER' };
-  if (input.requestedById !== input.actorId) return { ok: true, basis: 'DIFFERENT_USER' };
-  if (input.actorRole === 'SUPER_ADMIN') return { ok: true, basis: 'SUPER_ADMIN_OVERRIDE' };
-  if (input.allowSelfApproval) return { ok: true, basis: 'SETTING_ALLOW_SELF_APPROVAL' };
-  return {
-    ok: false,
-    message:
-      input.step === 'APPROVE'
-        ? 'لا يمكنك اعتماد طلب صرف أنشأته بنفسك؛ يجب أن يعتمده مستخدم آخر (فصل الصلاحيات)'
-        : 'لا يمكنك تسجيل سداد طلب صرف أنشأته بنفسك؛ يجب أن يسجله مستخدم آخر (فصل الصلاحيات)',
-  };
+  if (input.step === 'APPROVE') {
+    if (input.requestedById && input.requestedById === input.actorId) {
+      return { ok: false, message: 'لا يمكنك اعتماد طلب صرف أنشأته بنفسك؛ يجب أن يعتمده مستخدم آخر (فصل الصلاحيات)' };
+    }
+    return { ok: true, basis: 'DIFFERENT_USER' };
+  }
+  if (!input.requestedById && !input.approvedById) {
+    return { ok: false, message: 'لا يوجد منشئ ولا معتمد مسجَّل لطلب الصرف؛ يلزم إقرار شخص ثانٍ قبل الصرف' };
+  }
+  if ((input.requestedById && input.requestedById === input.actorId) || (input.approvedById && input.approvedById === input.actorId)) {
+    return { ok: false, message: 'لا يمكنك تسجيل سداد طلب صرف أنشأته أو اعتمدته بنفسك؛ يجب أن يسجله مستخدم آخر (فصل الصلاحيات)' };
+  }
+  return { ok: true, basis: 'DIFFERENT_USER' };
 }
 
 /** Parses a SystemSetting value ('true', '"true"', 'TRUE') as a boolean flag; anything else is false. */

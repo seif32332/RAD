@@ -252,9 +252,9 @@ export function leaveLiabilityMonthly(opts: {
 }): { days: number; amount: number; entitlement: number } {
   const days = leaveDaysAccrued(opts.joinDate, opts.from, opts.to, opts.annualLeaveDaysSetting);
   const j = opts.joinDate;
-  const fiveYears = Date.UTC(j.getUTCFullYear() + 5, j.getUTCMonth(), j.getUTCDate());
-  const s = typeof opts.annualLeaveDaysSetting === 'number' ? opts.annualLeaveDaysSetting : 0;
-  const entitlement = opts.to.getTime() >= fiveYears ? Math.max(30, s) : Math.max(21, s);
+  const fiveYears = Date.UTC(j.getUTCFullYear() + SERVICE_YEARS_FOR_HIGHER_ACCRUAL, j.getUTCMonth(), j.getUTCDate());
+  const rates = annualEntitlementRates(opts.annualLeaveDaysSetting);
+  const entitlement = opts.to.getTime() >= fiveYears ? rates.from5 : rates.under5;
   return { days, amount: roundMoney(days * opts.dailyWage), entitlement };
 }
 

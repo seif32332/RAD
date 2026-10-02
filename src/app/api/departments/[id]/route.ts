@@ -7,16 +7,25 @@ import { handleApiError, parseBody, notFound, conflict, badRequest, definedOnly 
 import { zText, zOptText } from '@/lib/validation';
 import { logAudit } from '@/lib/audit';
 import { deletionBlockers } from '@/lib/employee';
+import { authz, resolveActor, scopedContext, scopedPrisma } from '@/modules/iam';
 
 export const dynamic = 'force-dynamic';
 
 type Ctx = { params: Promise<{ id: string }> };
 
+/** P1-SCOPE: the user's company context; a department of another company is "not found" (404). */
+async function orgScope(user: Awaited<ReturnType<typeof requireUser>>, action: 'org.read' | 'org.manage') {
+  const ctx = scopedContext(await resolveActor(prisma, user));
+  authz.assert(ctx, action);
+  return { ctx, db: scopedPrisma(ctx) };
+}
+
 export async function GET(_req: Request, { params }: Ctx) {
   try {
-    await requireUser(ROLE_GROUPS.STAFF);
+    const user = await requireUser(ROLE_GROUPS.STAFF);
     const { id } = await params;
-    const department = await prisma.department.findUnique({ where: { id }, include: { branch: true } });
+    const { db } = await orgScope(user, 'org.read');
+    const department = await db.department.findUnique({ where: { id }, include: { branch: true } });
     if (!department) throw notFound('القسم غير موجود');
     return NextResponse.json(department);
   } catch (err) {
@@ -35,14 +44,17 @@ export async function PUT(req: Request, { params }: Ctx) {
     const user = await requireUser(ROLE_GROUPS.HR);
     const { id } = await params;
     const b = await parseBody(req, updateSchema);
+    const { db } = await orgScope(user, 'org.manage');
+    if (!(await db.department.findUnique({ where: { id }, select: { id: true } }))) throw notFound('القسم غير موجود');
 
     if (b.branchId) {
-      const branch = await prisma.branch.findUnique({ where: { id: b.branchId }, select: { id: true } });
+      // A branch of another company is "not found": a department never moves out of the user's companies.
+      const branch = await db.branch.findUnique({ where: { id: b.branchId }, select: { id: true } });
       if (!branch) throw badRequest('الفرع المحدد غير موجود');
     }
 
     const data = definedOnly(b);
-    const updated = await prisma.department.update({ where: { id }, data });
+    const updated = await db.department.update({ where: { id }, data });
 
     await logAudit({
       userId: user.id,
@@ -64,8 +76,9 @@ export async function DELETE(req: Request, { params }: Ctx) {
   try {
     const user = await requireUser(ROLE_GROUPS.HR);
     const { id } = await params;
+    const { db } = await orgScope(user, 'org.manage');
 
-    const department = await prisma.department.findUnique({
+    const department = await db.department.findUnique({
       where: { id },
       select: { id: true, nameArabic: true, _count: { select: { employees: true, jobRequests: true } } },
     });
@@ -81,7 +94,7 @@ export async function DELETE(req: Request, { params }: Ctx) {
     );
     if (blocked) throw conflict(blocked, { counts: department._count });
 
-    await prisma.department.delete({ where: { id } });
+    await db.department.delete({ where: { id } });
 
     await logAudit({
       userId: user.id,

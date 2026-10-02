@@ -3,10 +3,13 @@ import type { Prisma } from '@prisma/client';
 import { prisma } from '@/lib/prisma';
 import { getClientIp, hasRole, requireEmployeeId, requireUser } from '@/lib/auth';
 import { ROLE_GROUPS } from '@/lib/constants';
-import { handleApiError, parseBody, parseQuery } from '@/lib/http';
+import { badRequest, handleApiError, notFound, parseBody, parseQuery } from '@/lib/http';
 import { logAudit } from '@/lib/audit';
 import { today } from '@/lib/dates';
 import { ensureRefsExist } from '@/app/api/services/_lib';
+import { recordCompanyId } from '@/lib/record-company';
+import { resolveSelfContext } from '@/lib/employee-scope';
+import { authz, resolveActor, scopedContext, scopedPrisma } from '@/modules/iam';
 import {
   ASSET_STATUS,
   assetCreateSchema,
@@ -34,12 +37,18 @@ const holderSelect = {
  * by employees are included as custody items (isTelecomSim: true).
  * heldByTerminated=1 (back-office only): items still in the custody of employees whose service has
  * ended, i.e. what must be recovered before the final settlement.
+ * P1-SCOPE: back-office users read through their ScopedContext (Asset.companyId, TelecomSim.companyId),
+ * a plain employee through his SelfContext.
  */
 export async function GET(req: Request) {
   try {
     const user = await requireUser(ROLE_GROUPS.ALL);
     const query = parseQuery(req, assetListQuerySchema);
     const isStaff = hasRole(user, ROLE_GROUPS.STAFF);
+    const actor = await resolveActor(prisma, user);
+    const ctx = isStaff ? scopedContext(actor) : await resolveSelfContext(prisma, actor);
+    authz.assert(ctx, 'assets.read');
+    const db = scopedPrisma(ctx);
     const employeeId = isStaff ? query.employeeId || undefined : await requireEmployeeId(user);
     const activeOnly = query.active === 'true';
     const heldByTerminated = isStaff && (query.heldByTerminated === '1' || query.heldByTerminated === 'true');
@@ -57,13 +66,13 @@ export async function GET(req: Request) {
 
     const includeSims = !!employeeId || activeOnly || heldByTerminated;
     const [assets, sims] = await Promise.all([
-      prisma.asset.findMany({
+      db.asset.findMany({
         where,
         include: { employee: { select: holderSelect } },
         orderBy: { createdAt: 'desc' },
       }),
       includeSims
-        ? prisma.telecomSim.findMany({
+        ? db.telecomSim.findMany({
             where: simWhere,
             select: {
               id: true,
@@ -89,17 +98,38 @@ export async function GET(req: Request) {
 export async function POST(req: Request) {
   try {
     const user = await requireUser(ROLE_GROUPS.LOGISTICS);
+    const ctx = scopedContext(await resolveActor(prisma, user));
+    authz.assert(ctx, 'assets.manage');
+    const db = scopedPrisma(ctx);
     const items = await parseBody(req, assetCreateSchema);
+
+    // P1-SCOPE: the holder must be an employee of the user's companies (404 otherwise); an assigned
+    // asset belongs to its holder's legal company, a vacant one to the chosen (or only) company.
+    const holderIds = [...new Set(items.map((i) => i.employeeId).filter((v): v is string => !!v))];
+    const holders = holderIds.length ? await db.employee.findMany({ where: { id: { in: holderIds } }, select: { id: true, legalCompanyId: true } }) : [];
+    if (holders.length !== holderIds.length) throw notFound('الموظف المحدد غير موجود');
+    const holderCompany = new Map(holders.map((h) => [h.id, h.legalCompanyId]));
+    const companyIds: (string | null)[] = [];
+    for (const item of items) {
+      if (item.employeeId) {
+        const company = holderCompany.get(item.employeeId) ?? null;
+        if (item.companyId && item.companyId !== company) throw badRequest('العهدة المسندة تتبع شركة الموظف المستلم');
+        companyIds.push(company);
+      } else {
+        companyIds.push(await recordCompanyId(prisma, ctx, item.companyId));
+      }
+    }
 
     const createdAssets = await prisma.$transaction(async (tx) => {
       await ensureRefsExist(tx, { employeeIds: items.map((i) => i.employeeId) }, { activeOnly: true });
       const created = [];
-      for (const item of items) {
+      for (const [i, item] of items.entries()) {
         const assigned = !!item.employeeId;
         created.push(
           await tx.asset.create({
             data: {
               employeeId: item.employeeId ?? null,
+              companyId: companyIds[i],
               assetType: item.assetType,
               description: item.description ?? null,
               receiveDate: assigned ? (item.receiveDate ?? today()) : (item.receiveDate ?? null),
@@ -115,7 +145,7 @@ export async function POST(req: Request) {
           action: 'CREATE',
           entityType: 'Asset',
           entityId: created.length === 1 ? created[0].id : null,
-          details: created.map((a) => ({ id: a.id, assetType: a.assetType, employeeId: a.employeeId, status: a.status })),
+          details: created.map((a) => ({ id: a.id, assetType: a.assetType, employeeId: a.employeeId, companyId: a.companyId, status: a.status })),
           ipAddress: getClientIp(req),
         },
         tx,

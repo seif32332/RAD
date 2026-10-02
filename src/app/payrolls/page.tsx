@@ -7,7 +7,8 @@ import SearchableSelect from '@/components/SearchableSelect';
 import { toast, confirmDialog, readApiError } from '@/components/ui/feedback';
 import { DEDUCTION_STATUS, PAYROLL_STATUS, ROLE_GROUPS, roleIn } from '@/lib/constants';
 import { useRole } from '@/context/RoleContext';
-import { formatDate, riyadhDateKey } from '@/lib/dates';
+import { formatDate, riyadhDateKey, todayKey } from '@/lib/dates';
+import { isOnLeaveFromRows, type LeaveCoverageRow } from '@/lib/leave';
 import { formatMoney, roundMoney, sumMoney } from '@/lib/money';
 import {
   countPayrollReviewKeys,
@@ -34,6 +35,8 @@ interface Employee extends EmployeeRef {
   id: string;
   isTerminated?: boolean | null;
   employmentStatus?: string | null;
+  /** Approved + completed leaves (full employee list only): read by the "on leave" tile. */
+  leaves?: LeaveCoverageRow[];
   joinDate?: string | null;
   createdAt?: string | null;
   terminationDate?: string | null;
@@ -325,6 +328,44 @@ export default function PayrollsPage() {
     return true;
   };
 
+  /**
+   * A month-level act (approve / record paid): a payroll month belongs to one company (ARC-PAY-A7). When
+   * the server answers COMPANY_REQUIRED, each company is confirmed and sent on its own.
+   */
+  const postMonthAct = async (actionType: 'APPROVE_DRAFTS' | 'MARK_PAYROLL_PAID', payload: Record<string, unknown>, successFallback: string): Promise<boolean> => {
+    const send = (body: Record<string, unknown>) =>
+      fetch('/api/payroll-hub', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ actionType, payload: body }) });
+    const res = await send(payload);
+    if (res.status === 401) {
+      redirectToLogin();
+      return false;
+    }
+    if (res.ok) {
+      const json = await res.json().catch(() => null);
+      toast.success(typeof json?.message === 'string' ? json.message : successFallback);
+      return true;
+    }
+    const err = await res.clone().json().catch(() => null);
+    const companies: Array<{ companyId: string; companyName: string }> = err?.details?.code === 'COMPANY_REQUIRED' && Array.isArray(err.details.companies) ? err.details.companies : [];
+    if (!companies.length) {
+      toast.error(await readApiError(res));
+      return false;
+    }
+    let done = false;
+    for (const c of companies) {
+      if (!(await confirmDialog(`المسير لكل شركة على حدة: متابعة لشركة «${c.companyName}»؟`))) continue;
+      const one = await send({ ...payload, companyId: c.companyId });
+      if (one.ok) {
+        const json = await one.json().catch(() => null);
+        toast.success(`${c.companyName}: ${typeof json?.message === 'string' ? json.message : successFallback}`);
+        done = true;
+      } else {
+        toast.error(`${c.companyName}: ${await readApiError(one)}`);
+      }
+    }
+    return done;
+  };
+
   const handleOvertimeAction = async (id: string, status: 'APPROVED' | 'REJECTED') => {
     if (!(await confirmDialog(`هل أنت متأكد من ${status === 'APPROVED' ? 'اعتماد' : 'رفض'} طلب العمل الإضافي؟`, { danger: status === 'REJECTED' }))) return;
     setBusyId(id);
@@ -452,7 +493,7 @@ export default function PayrollsPage() {
     setIsGenerating(true);
     try {
       // DEC-010: the month is always sent explicitly (never inferred from the loaded rows).
-      if (await postHub({ actionType: 'APPROVE_DRAFTS', payload: { month: period.month, year: period.year } }, 'تم اعتماد مسير الرواتب بنجاح!')) {
+      if (await postMonthAct('APPROVE_DRAFTS', { month: period.month, year: period.year }, 'تم اعتماد مسير الرواتب بنجاح!')) {
         await refresh();
       }
     } catch {
@@ -471,7 +512,7 @@ export default function PayrollsPage() {
     if (!(await confirmDialog(`تأكيد صرف مسير رواتب شهر ${month}/${year}؟ سيتم تسجيل جميع الرواتب المعتمدة لهذا الشهر كمسددة.`))) return;
     setPayingMonth(`${year}-${month}`);
     try {
-      if (await postHub({ actionType: 'MARK_PAYROLL_PAID', payload: { month, year } }, 'تم تسجيل صرف مسير الرواتب')) {
+      if (await postMonthAct('MARK_PAYROLL_PAID', { month, year }, 'تم تسجيل صرف مسير الرواتب')) {
         await refresh();
       }
     } catch {
@@ -512,9 +553,13 @@ export default function PayrollsPage() {
     const ym = ymOf(d);
     return !!ym && ym.m === target.month && ym.y === target.year;
   };
-  const activeCount = employees.filter(e => !e.isTerminated && e.employmentStatus === 'ACTIVE').length;
-  const onLeaveCount = employees.filter(e => e.employmentStatus === 'ON_LEAVE').length;
-  const suspendedCount = employees.filter(e => e.employmentStatus === 'EXCLUDED' || e.employmentStatus === 'SUSPENDED').length;
+  // "On leave" = an approved leave covers today (BR-LCY-008, the one rule in src/lib/leave.ts), never a
+  // stored status. SUSPENDED was never written and is no longer read (DEC-PO-032).
+  const todayK = todayKey();
+  const inService = employees.filter(e => !e.isTerminated && e.employmentStatus !== 'EXCLUDED');
+  const onLeaveCount = inService.filter(e => isOnLeaveFromRows(e.leaves, todayK)).length;
+  const activeCount = inService.length - onLeaveCount;
+  const suspendedCount = employees.filter(e => e.employmentStatus === 'EXCLUDED').length;
   const addedThisMonthCount = employees.filter(e => isInPeriod(e.joinDate || e.createdAt)).length;
   const terminatedThisMonthCount = employees.filter(e => !!e.isTerminated && isInPeriod(e.terminationDate)).length;
 
@@ -805,7 +850,7 @@ export default function PayrollsPage() {
                 <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
                    <StatTile label="على رأس العمل" value={String(activeCount)} />
                    <StatTile label="في إجازة" value={String(onLeaveCount)} tone="amber" />
-                   <StatTile label="موقوفين / مستبعدين" value={String(suspendedCount)} tone="rose" />
+                   <StatTile label="مستبعدين" value={String(suspendedCount)} tone="rose" />
                    <StatTile label="مضافين خلال الشهر" value={`+${addedThisMonthCount}`} tone="emerald" />
                    <StatTile label="إنهاء خدمة خلال الشهر" value={String(terminatedThisMonthCount)} />
                 </div>

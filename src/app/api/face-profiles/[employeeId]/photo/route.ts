@@ -4,6 +4,7 @@ import { ROLE_GROUPS } from '@/lib/constants';
 import { handleApiError, notFound } from '@/lib/http';
 import { logAudit } from '@/lib/audit';
 import { biometricImageResponse, readBiometricImage } from '@/lib/biometric-storage';
+import { authz, resolveActor, scopedContext, scopedPrisma } from '@/modules/iam';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -13,12 +14,15 @@ type Ctx = { params: Promise<{ employeeId: string }> };
 /**
  * GET /api/face-profiles/[employeeId]/photo — reference selfie the employee enrolled (HR only,
  * audited, never cached). Enrollment needs no approval, so HR can check who enrolled which face.
+ * P1-SCOPE: only for an employee of the user's companies (another company's is "not found").
  */
 export async function GET(req: Request, { params }: Ctx) {
   try {
     const user = await requireUser(ROLE_GROUPS.HR);
     const { employeeId } = await params;
-    const profile = await prisma.faceProfile.findUnique({ where: { employeeId }, select: { id: true, photoStoredName: true } });
+    const ctx = scopedContext(await resolveActor(prisma, user));
+    authz.assert(ctx, 'faceProfile.photo.read');
+    const profile = await scopedPrisma(ctx).faceProfile.findUnique({ where: { employeeId }, select: { id: true, photoStoredName: true } });
     if (!profile?.photoStoredName) throw notFound('لا توجد صورة وجه مسجلة لهذا الموظف');
     const data = await readBiometricImage(profile.photoStoredName);
     if (!data) throw notFound('الصورة غير موجودة');

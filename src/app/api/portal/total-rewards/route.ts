@@ -4,7 +4,10 @@
 // 200 { enabled: false } with no data, and the portal hides the card.
 import { NextResponse } from 'next/server';
 import { z } from 'zod';
-import { requireEmployeeId, requireUser } from '@/lib/auth';
+import { requireUser } from '@/lib/auth';
+import { prisma } from '@/lib/prisma';
+import { resolveSelfContext } from '@/lib/employee-scope';
+import { authz, resolveActor } from '@/modules/iam';
 import { ROLE_GROUPS } from '@/lib/constants';
 import { badRequest, handleApiError, notFound, parseQuery } from '@/lib/http';
 import { limitOrThrow } from '@/app/api/workforce/_lib/server';
@@ -20,7 +23,10 @@ export async function GET(req: Request) {
   try {
     const user = await requireUser(ROLE_GROUPS.ALL);
     const q = parseQuery(req, querySchema);
-    const employeeId = await requireEmployeeId(user);
+    // P1-SCOPE: SelfContext: the statement of the session employee only (the loader reads his own rows).
+    const self = await resolveSelfContext(prisma, await resolveActor(prisma, user));
+    authz.assert(self, 'portal.self.read');
+    const employeeId = self.employeeId;
     limitOrThrow(user, 'portal-total-rewards', 30, 60_000);
     if (!(await totalRewardsEnabled())) {
       return NextResponse.json({ enabled: false, message: 'بيان المكافآت الشاملة غير مفعّل في منشأتك' });

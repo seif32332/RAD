@@ -5,6 +5,7 @@ import { getClientIp, requireUser, type AuthUser } from '@/lib/auth';
 import { forbidden, handleApiError, notFound } from '@/lib/http';
 import { logAudit } from '@/lib/audit';
 import { managedEmployeesWhere } from '@/lib/hr-workflows';
+import { companiesInScope, userCompanyScope } from '@/lib/company-scope';
 import {
   decideScopedFileAccess,
   fileUrlCandidates,
@@ -94,6 +95,32 @@ async function isInManagersTeam(user: AuthUser, employeeId: string): Promise<boo
 }
 
 /**
+ * P1-SCOPE (INV-SCOPE-01): a file a role may read is further limited to the user's companies
+ * (UserCompanyScope). The company of a file is its employee's legal company (UploadedFile.employeeId);
+ * a file without an employee takes the company scope of its uploader, when that uploader is himself
+ * restricted to companies all inside the reader's. Otherwise the company is unknown and a restricted
+ * reader is refused (fail closed); an unrestricted reader (owner, no scope rows) is not affected, and
+ * one's own uploads and own employee files stay readable.
+ */
+async function fileInCompanyScope(
+  user: AuthUser,
+  entry: { uploadedById: string | null; employeeId: string | null } | null,
+): Promise<boolean> {
+  const scope = await userCompanyScope(prisma, user);
+  if (scope === null) return true;
+  if (!entry) return false; // legacy unregistered file: company unknown
+  if (entry.uploadedById === user.id || (!!user.employeeId && entry.employeeId === user.employeeId)) return true;
+  if (entry.employeeId) {
+    const e = await prisma.employee.findUnique({ where: { id: entry.employeeId }, select: { legalCompanyId: true } });
+    return companiesInScope(scope, [e?.legalCompanyId]);
+  }
+  if (!entry.uploadedById) return false;
+  const uploader = await prisma.user.findUnique({ where: { id: entry.uploadedById }, select: { id: true, role: true } });
+  const uploaderScope = uploader ? await userCompanyScope(prisma, uploader) : null;
+  return !!uploaderScope && uploaderScope.length > 0 && companiesInScope(scope, uploaderScope);
+}
+
+/**
  * GET /api/files/<name> — authenticated download of an uploaded file.
  * Looks in UPLOAD_DIR first, then the legacy public/uploads folder (old /uploads/* URLs are
  * rewritten here by next.config.ts).
@@ -121,12 +148,15 @@ export async function GET(req: Request, { params }: { params: Promise<{ path: st
     });
     const decision = decideScopedFileAccess({ id: user.id, role: user.role, employeeId: user.employeeId }, entry);
     const byReferences = async () => !!user.employeeId && (await referencedByOwnRecords(user.employeeId, storedName));
-    const allowed =
+    const byRole =
       decision === 'allow' ||
       (decision === 'check-team' && !!entry?.employeeId && (await isInManagersTeam(user, entry.employeeId))) ||
-      ((decision === 'check-references' || decision === 'check-team') && (await byReferences())) ||
       // GOV_RELATIONS: the visa / Muqeem PDFs they issue (IDENTITY), and nothing else of that category.
       (mayReadAsMuqeemDocument(user, entry) && (await isMuqeemDocument(storedName)));
+    const allowed =
+      (byRole && (await fileInCompanyScope(user, entry))) ||
+      // The user's own records (self-service): no company check needed.
+      ((decision === 'check-references' || decision === 'check-team') && (await byReferences()));
     // Same answer whether the file exists or not, so names cannot be probed.
     if (!allowed) throw forbidden('لا تملك صلاحية الوصول إلى هذا الملف');
 

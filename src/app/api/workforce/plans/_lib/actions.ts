@@ -12,6 +12,7 @@ import { badRequest, conflict, handleApiError, notFound, parseBody } from '@/lib
 import { zId } from '@/lib/validation';
 import { PLAN_STATUS_LABELS, type PlanStatus } from '@/lib/workforce/planning';
 import { limitOrThrow } from '../../_lib/server';
+import { workforceScope } from '../../_lib/scope';
 import { copySchema, transitionSchema } from './schemas';
 import { PLAN_ENTITY, assertAllowed, authorsOf, computePlan, loadPlanOr404, planSnapshotRecord, submitterOf } from './server';
 
@@ -26,8 +27,10 @@ export async function transitionHandler(req: Request, rawId: string, action: Tra
     if (!pid.success) throw notFound('الخطة غير موجودة');
     const id = pid.data;
     limitOrThrow(user, 'plan-write', 60, 60_000);
+    // P1-SCOPE: the plan must be in the caller's companies (another company's plan is "not found").
+    const s = await workforceScope(user, 'workforce.plan.manage');
     const body = await parseBody(req, transitionSchema);
-    const row = await loadPlanOr404(id);
+    const row = await loadPlanOr404(id, s);
     const deciding = row.status === 'SUBMITTED' && (action === 'APPROVE' || action === 'REJECT');
     const [submittedById, authorIds] = row.status === 'SUBMITTED' ? await Promise.all([submitterOf(id), deciding ? authorsOf(id) : Promise.resolve(null)]) : [null, null];
     // Maker-checker: the submitter, the creator and every author of the content are refused (403).
@@ -74,8 +77,9 @@ export async function copyHandler(req: Request, rawId: string) {
     if (!pid.success) throw notFound('الخطة غير موجودة');
     const id = pid.data;
     limitOrThrow(user, 'plan-write', 60, 60_000);
+    const s = await workforceScope(user, 'workforce.plan.manage');
     const body = await parseBody(req, copySchema);
-    const row = await loadPlanOr404(id);
+    const row = await loadPlanOr404(id, s);
     assertAllowed('COPY', row, user);
     const created = await prisma.$transaction(async (tx) => {
       const plan = await tx.headcountPlan.create({

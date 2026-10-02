@@ -2,11 +2,14 @@ import { NextResponse } from 'next/server';
 import type { Prisma } from '@prisma/client';
 import { prisma } from '@/lib/prisma';
 import { requireUser } from '@/lib/auth';
-import { LEAVE_STATUS, PAYROLL_STATUS, ROLE_GROUPS, roleIn } from '@/lib/constants';
+import { PAYROLL_STATUS, ROLE_GROUPS, roleIn } from '@/lib/constants';
 import { handleApiError } from '@/lib/http';
 import { addDays, today } from '@/lib/dates';
 import { roundMoney } from '@/lib/money';
+import { onLeaveWhere } from '@/lib/leave';
 import { managedEmployeesWhere } from '@/lib/hr-workflows';
+import { resolveTeamContext } from '@/lib/employee-scope';
+import { authz, resolveActor, scopeWhere, scopedContext, scopedPrisma } from '@/modules/iam';
 import { currentPayrollMonth, payrollMonthLabel } from '@/lib/payroll-core';
 import {
   buildAdminAlerts,
@@ -21,6 +24,7 @@ import {
   loadClaimAlertSources,
   loadLegalAlertSources,
   loadVehicleAlertSources,
+  type AlertsDb,
 } from '@/lib/alerts';
 import { buildOnboarding } from './onboarding';
 
@@ -36,6 +40,11 @@ export const dynamic = 'force-dynamic';
  * company/vehicle alert totals — those keys are sent as null and the page hides them.
  * Admins (SUPER_ADMIN / COMPANY_ADMIN) also get an onboarding checklist computed from counts.
  *
+ * P1-SCOPE: every count, sum and alert source goes through the scoped client of the user's context
+ * (TeamContext for the two manager roles, ScopedContext otherwise), so a scoped user's numbers cover
+ * his companies only (legal records follow their companyId, migration 9zb; a row without one is
+ * visible to unrestricted users only).
+ *
  * Council DOM-009:
  * - The payroll tile is the REFERENCE payroll: the latest APPROVED / PAID month that is not after
  *   the current Riyadh month (drafts and months stored in the future never take it over).
@@ -48,6 +57,14 @@ export async function GET() {
   try {
     const user = await requireUser(ROLE_GROUPS.STAFF);
     const teamScoped = user.role === 'BRANCH_MANAGER' || user.role === 'DEPT_MANAGER';
+    const actor = await resolveActor(prisma, user);
+    const ctx = teamScoped ? await resolveTeamContext(prisma, actor) : scopedContext(actor);
+    authz.assert(ctx, 'dashboard.read');
+    const db = scopedPrisma(ctx);
+    // The alert loaders take a Prisma client; the scoped client runs the same calls.
+    const adb = db as unknown as AlertsDb;
+    const jobRequestScope = scopeWhere(ctx, 'JobRequest') as Prisma.JobRequestWhereInput | null;
+    const byJobRequest = jobRequestScope ? { jobRequest: { is: jobRequestScope } } : {};
     const scope: Prisma.EmployeeWhereInput | null = teamScoped ? await managedEmployeesWhere(prisma, user) : null;
     const emp = (where: Prisma.EmployeeWhereInput): Prisma.EmployeeWhereInput => (scope ? { AND: [where, scope] } : where);
     const byEmployee = scope ? { employee: scope } : {};
@@ -63,7 +80,7 @@ export async function GET() {
     const [thresholds, latestPayroll] = await Promise.all([
       getAlertThresholds(prisma),
       canSeePayroll
-        ? prisma.payroll.findFirst({
+        ? db.payroll.findFirst({
             where: {
               status: { in: [PAYROLL_STATUS.APPROVED, PAYROLL_STATUS.PAID] },
               OR: [{ year: { lt: cur.year } }, { year: cur.year, month: { lte: cur.month } }],
@@ -73,20 +90,20 @@ export async function GET() {
           })
         : Promise.resolve(null),
     ]);
-    // Employees expected at work today: active, already started, not on an approved leave today.
-    const onLeaveToday: Prisma.EmployeeWhereInput = {
-      leaves: { some: { status: LEAVE_STATUS.APPROVED, startDate: { lt: tomorrow }, endDate: { gte: todayDate } } },
-    };
+    // Employees expected at work today: active, already started, not on leave today. "On leave" is
+    // the one rule onLeaveWhere (BR-LCY-008): a recorded return ends the leave the day before.
+    const onLeaveToday: Prisma.EmployeeWhereInput = { leaves: { some: onLeaveWhere(todayDate) } };
     const expectedWhere = emp({ isTerminated: false, joinDate: { lt: tomorrow }, NOT: onLeaveToday });
 
     const [totalEmployees, terminatedEmployees, activeLeaves, todayAttendance, attendanceEver, employeeSources, leaves, expectedToday, presentExpected] = await Promise.all([
-      prisma.employee.count({ where: emp({ isTerminated: false }) }),
-      prisma.employee.count({ where: emp({ isTerminated: true }) }),
-      prisma.leave.count({ where: { status: LEAVE_STATUS.APPROVED, startDate: { lt: tomorrow }, endDate: { gte: todayDate }, ...byEmployee } }),
-      prisma.attendance.count({ where: { date: { gte: todayDate, lt: tomorrow }, ...byEmployee } }),
-      prisma.attendance.count({ where: byEmployee, take: 1 }),
-      prisma.employee.findMany({ where: emp({ isTerminated: false }), select: employeeAlertSelect }),
-      prisma.leave.findMany({
+      db.employee.count({ where: emp({ isTerminated: false }) }),
+      db.employee.count({ where: emp({ isTerminated: true }) }),
+      // Terminated employees are never counted on leave (EX-LCY-001).
+      db.leave.count({ where: { ...onLeaveWhere(todayDate), employee: emp({ isTerminated: false }) } }),
+      db.attendance.count({ where: { date: { gte: todayDate, lt: tomorrow }, ...byEmployee } }),
+      db.attendance.count({ where: byEmployee, take: 1 }),
+      db.employee.findMany({ where: emp({ isTerminated: false }), select: employeeAlertSelect }),
+      db.leave.findMany({
         take: 5,
         where: byEmployee,
         orderBy: { createdAt: 'desc' },
@@ -105,8 +122,8 @@ export async function GET() {
           },
         },
       }),
-      prisma.employee.count({ where: expectedWhere }),
-      prisma.attendance.count({ where: { date: { gte: todayDate, lt: tomorrow }, employee: expectedWhere } }),
+      db.employee.count({ where: expectedWhere }),
+      db.attendance.count({ where: { date: { gte: todayDate, lt: tomorrow }, employee: expectedWhere } }),
     ]);
 
     const hrAlerts = buildEmployeeDocumentAlerts(employeeSources, thresholds, now);
@@ -184,39 +201,52 @@ export async function GET() {
       onboardingCounts,
     ] = await Promise.all([
       latestPayroll
-        ? prisma.payroll.aggregate({
+        ? db.payroll.aggregate({
             where: { year: latestPayroll.year, month: latestPayroll.month, status: { in: [PAYROLL_STATUS.APPROVED, PAYROLL_STATUS.PAID] } },
             _sum: { netSalary: true },
           })
         : Promise.resolve(null),
-      loadAdminAlertSources(prisma, thresholds, now),
-      loadVehicleAlertSources(prisma, thresholds, now),
-      loadClaimAlertSources(prisma),
-      loadLegalAlertSources(prisma, thresholds, now),
-      prisma.complianceViolation.count({ where: { status: 'PENDING_PAYMENT' } }),
-      prisma.complianceViolation.aggregate({ where: { status: 'PENDING_PAYMENT' }, _sum: { amount: true } }),
-      prisma.jobRequest.count({ where: { status: 'APPROVED' } }),
-      prisma.jobRequest.count({ where: { status: 'PENDING' } }),
-      prisma.jobApplication.count({ where: { status: 'APPLIED' } }),
-      prisma.jobApplication.count({ where: { status: 'INTERVIEW' } }),
-      prisma.lawsuit.count({ where: { status: 'REFERRED' } }),
-      prisma.legalContract.count({ where: { status: 'ACTIVE' } }),
-      prisma.vehicle.count(),
-      prisma.branch.count(),
-      prisma.company.count(),
-      prisma.department.count(),
-      Promise.all([prisma.promissoryNote.count(), prisma.legalContract.count(), prisma.lawsuit.count(), prisma.certifiedAgency.count()]),
+      loadAdminAlertSources(adb, thresholds, now),
+      loadVehicleAlertSources(adb, thresholds, now),
+      loadClaimAlertSources(adb),
+      loadLegalAlertSources(adb, thresholds, now),
+      db.complianceViolation.count({ where: { status: 'PENDING_PAYMENT' } }),
+      db.complianceViolation.aggregate({ where: { status: 'PENDING_PAYMENT' }, _sum: { amount: true } }),
+      db.jobRequest.count({ where: { status: 'APPROVED' } }),
+      db.jobRequest.count({ where: { status: 'PENDING' } }),
+      db.jobApplication.count({ where: { status: 'APPLIED', ...byJobRequest } }),
+      db.jobApplication.count({ where: { status: 'INTERVIEW', ...byJobRequest } }),
+      db.lawsuit.count({ where: { status: 'REFERRED' } }),
+      db.legalContract.count({ where: { status: 'ACTIVE' } }),
+      db.vehicle.count(),
+      db.branch.count(),
+      db.company.count(),
+      db.department.count(),
+      Promise.all([db.promissoryNote.count(), db.legalContract.count(), db.lawsuit.count(), db.certifiedAgency.count()]),
       isAdmin
         ? Promise.all([
-            prisma.employee.count({ where: { userId: { not: null } } }),
-            prisma.workSchedule.count(),
-            prisma.payroll.count(),
+            db.employee.count({ where: { userId: { not: null } } }),
+            db.workSchedule.count(),
+            db.payroll.count(),
           ])
         : Promise.resolve(null),
     ]);
 
     const adminAlerts = buildAdminAlerts(adminSources, thresholds, now);
-    const logisticsAlerts = [...buildVehicleAlerts(vehicleSources, thresholds, now), ...buildClaimAlerts(claimSources, now)];
+    // AccidentClaim has no company key: a claim counts for the user when its vehicle is in his scope.
+    const vehicleScope = scopeWhere(ctx, 'Vehicle') as Prisma.VehicleWhereInput | null;
+    const claimIdsInScope = vehicleScope
+      ? new Set(
+          (
+            await prisma.accidentClaim.findMany({
+              where: { id: { in: claimSources.map((c) => c.id) }, vehicle: { is: vehicleScope } },
+              select: { id: true },
+            })
+          ).map((c) => c.id),
+        )
+      : null;
+    const scopedClaims = claimIdsInScope ? claimSources.filter((c) => claimIdsInScope.has(c.id)) : claimSources;
+    const logisticsAlerts = [...buildVehicleAlerts(vehicleSources, thresholds, now), ...buildClaimAlerts(scopedClaims, now)];
     const legalAlerts = buildLegalAlerts(legalSources, thresholds, now);
     const hrAlertCount = hrAlerts.length;
     const adminAlertCount = adminAlerts.length;

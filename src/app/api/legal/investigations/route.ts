@@ -10,7 +10,10 @@ import { zBool, zDate, zId, zOptDate, zOptInt, zOptMoney, zOptText, zText } from
 import { dateKey, today, todayKey } from '@/lib/dates';
 import { roundMoney } from '@/lib/money';
 import { logAudit, type AuditEntry } from '@/lib/audit';
-import { dailyRate, releaseDeductionFromDraft } from '@/lib/payroll';
+import { dailyRate } from '@/lib/payroll';
+import { concludeInvestigationDeductions, referDeductionToInvestigation } from '@/modules/payroll';
+import { moneyActorOf } from '@/modules/platform';
+import { authz, resolveActor, scopedContext, scopedPrisma, type ScopedPrismaClient } from '@/modules/iam';
 
 export const dynamic = 'force-dynamic';
 
@@ -136,10 +139,13 @@ const attachSchema = z.object({
   attachmentUrl: zText(2000),
 });
 
+/** Investigations of the employees of the user's companies (P1-SCOPE: via the employee, scoped client). */
 export async function GET() {
   try {
-    await requireUser(INVESTIGATION_ROLES);
-    const investigations = await prisma.investigation.findMany({
+    const user = await requireUser(INVESTIGATION_ROLES);
+    const ctx = scopedContext(await resolveActor(prisma, user));
+    authz.assert(ctx, 'legal.investigation.read');
+    const investigations = await scopedPrisma(ctx).investigation.findMany({
       include: {
         employee: {
           select: {
@@ -167,6 +173,11 @@ export async function GET() {
 export async function POST(req: Request) {
   try {
     const user = await requireUser(INVESTIGATION_ROLES);
+    const ctx = scopedContext(await resolveActor(prisma, user));
+    authz.assert(ctx, 'legal.investigation.manage');
+    // P1-SCOPE: the employee (CREATE) or the investigation (other actions) must be inside the user's
+    // companies, otherwise "not found" (404); checked with the scoped client before the transaction.
+    const db = scopedPrisma(ctx);
     const { action, payload } = await parseBody(req, envelopeSchema);
     const ipAddress = getClientIp(req);
 
@@ -174,6 +185,7 @@ export async function POST(req: Request) {
       const data = createSchema.parse(payload ?? {});
       const noticeProblem = manualNoticeProblem(data);
       if (noticeProblem) throw badRequest(noticeProblem);
+      if (!(await db.employee.findUnique({ where: { id: data.employeeId }, select: { id: true } }))) throw notFound('الموظف غير موجود');
       const { investigation, audits } = await prisma.$transaction((tx) => createInvestigation(tx, data, user, ipAddress));
       await Promise.all(audits.map((a) => logAudit(a)));
       return NextResponse.json({ message: 'تم فتح ملف التحقيق بنجاح', data: investigation });
@@ -181,6 +193,7 @@ export async function POST(req: Request) {
 
     if (action === 'UPDATE_STATUS') {
       const data = updateStatusSchema.parse(payload ?? {});
+      await assertVisible(db, data.id);
       const { investigation, audits } = await prisma.$transaction((tx) => updateInvestigationStatus(tx, data, user, ipAddress));
       await Promise.all(audits.map((a) => logAudit(a)));
       // A concluded investigation suggests its minutes (after commit; waits for a second person's approval).
@@ -190,6 +203,7 @@ export async function POST(req: Request) {
 
     if (action === 'SUSPEND') {
       const data = suspendSchema.parse(payload ?? {});
+      await assertVisible(db, data.id);
       if (data.suspensionEndDate && data.suspensionEndDate < data.suspensionStartDate) {
         throw badRequest('تاريخ نهاية الإيقاف يجب أن يكون بعد تاريخ بدايته');
       }
@@ -224,6 +238,7 @@ export async function POST(req: Request) {
 
     // ATTACH
     const data = attachSchema.parse(payload ?? {});
+    await assertVisible(db, data.id);
     const updated = await prisma.investigation.update({
       where: { id: data.id },
       data: { attachmentUrl: data.attachmentUrl },
@@ -240,6 +255,12 @@ export async function POST(req: Request) {
   } catch (err) {
     return handleApiError(err, 'legal/investigations:POST');
   }
+}
+
+/** 404 unless the investigation exists inside the context (scoped client). */
+async function assertVisible(db: ScopedPrismaClient, id: string): Promise<void> {
+  const row = await db.investigation.findUnique({ where: { id }, select: { id: true } });
+  if (!row) throw notFound('ملف التحقيق غير موجود');
 }
 
 // ---------------------------------------------------------------------------
@@ -403,22 +424,17 @@ async function createInvestigation(tx: Tx, data: z.infer<typeof createSchema>, u
     if (!deduction) throw notFound('المخالفة المرتبطة غير موجودة');
     if (deduction.employeeId !== data.employeeId) throw badRequest('المخالفة المرتبطة لا تخص الموظف المحال للتحقيق');
 
-    const res = await tx.deduction.updateMany({
-      where: {
-        id: deduction.id,
-        investigationId: null,
-        isLinkedToPayroll: false,
-        status: { notIn: NOT_REFERABLE },
-      },
-      data: {
-        isReferredToInvestigation: true,
-        investigationId: investigation.id,
-        status: DEDUCTION_STATUS.UNDER_INVESTIGATION,
-      },
+    // payroll.referDeductionToInvestigation behind money.gateway (a suspension, never of one's own
+    // penalty): no longer payable, freed from any draft payroll that reserved it.
+    await referDeductionToInvestigation(tx, {
+      actor: { ...moneyActorOf(user), name: user.name },
+      deductionId: deduction.id,
+      investigationId: investigation.id,
+      notIn: NOT_REFERABLE,
+      message: 'لا يمكن إحالة هذه المخالفة للتحقيق (محالة مسبقاً أو مُعالجة أو مخصومة في مسير معتمد)',
+      operationKey: `legal.investigation:${investigation.id}:refer:${deduction.id}`,
+      ipAddress,
     });
-    if (res.count === 0) throw conflict('لا يمكن إحالة هذه المخالفة للتحقيق (محالة مسبقاً أو مُعالجة أو مخصومة في مسير معتمد)');
-    // A referred violation is no longer payable: free it from any draft payroll that reserved it.
-    await releaseDeductionFromDraft(tx, deduction);
     audits.push({
       userId: user.id,
       action: 'UPDATE',
@@ -548,70 +564,34 @@ async function updateInvestigationStatus(tx: Tx, data: z.infer<typeof updateStat
   ];
 
   if (concluding) {
-    const linked = await tx.deduction.findMany({
-      where: { investigationId: data.id, status: { in: AWAITING_INVESTIGATION }, isLinkedToPayroll: false },
-      select: { id: true },
-      orderBy: { createdAt: 'asc' },
-    });
-    const linkedIds = linked.map((d) => d.id);
-
-    if (target === INV_STATUS.COMPLETED_INNOCENT) {
-      // Innocent: the referred violations are dropped.
-      if (linkedIds.length) {
-        await tx.deduction.updateMany({
-          where: { id: { in: linkedIds }, status: { in: AWAITING_INVESTIGATION }, isLinkedToPayroll: false },
-          data: { status: DEDUCTION_STATUS.WAIVED, approvedBy: user.name, approvedAt: new Date() },
-        });
-      }
-      for (const id of linkedIds) {
-        audits.push({ userId: user.id, action: 'UPDATE', entityType: 'Deduction', entityId: id, details: { status: DEDUCTION_STATUS.WAIVED, investigationId: data.id }, ipAddress });
-      }
-    } else {
-      // Guilty (or closed without a verdict): the violations go back to HR for amount approval.
-      let remaining = linkedIds;
-      const hasPenalty = target === INV_STATUS.COMPLETED_GUILTY && (penaltyAmount > 0 || penaltyDays > 0);
-      if (hasPenalty) {
-        const penaltyData = {
-          amount: penaltyAmount,
-          deductionDays: penaltyDays,
-          dailySalary: perDay > 0 ? perDay : null,
-          hasFinancialImpact: penaltyAmount > 0,
-          status: DEDUCTION_STATUS.PENDING_AMOUNT_APPROVAL,
-        };
-        if (linkedIds.length) {
-          // The investigation's penalty replaces the amount of the violation that triggered it.
-          const [first, ...rest] = linkedIds;
-          await tx.deduction.update({ where: { id: first }, data: penaltyData });
-          audits.push({ userId: user.id, action: 'UPDATE', entityType: 'Deduction', entityId: first, details: { ...penaltyData, investigationId: data.id }, ipAddress });
-          remaining = rest;
-        } else {
-          const created = await tx.deduction.create({
-            data: {
-              ...penaltyData,
-              employeeId: current.employeeId,
-              date: today(),
-              reason: `جزاء تحقيق إداري: ${current.subject}`.slice(0, 500),
+    // payroll.concludeInvestigationDeductions behind money.gateway: innocent = the referred violations
+    // are waived (never one's own); guilty / closed = back to HR for amount approval (the investigation's
+    // penalty replaces the first violation's amount, or becomes a new one).
+    const outcome = await concludeInvestigationDeductions(tx, {
+      actor: { ...moneyActorOf(user), name: user.name },
+      investigationId: data.id,
+      employeeId: current.employeeId,
+      verdict: target === INV_STATUS.COMPLETED_INNOCENT ? 'INNOCENT' : target === INV_STATUS.COMPLETED_GUILTY ? 'GUILTY' : 'CLOSED',
+      awaiting: AWAITING_INVESTIGATION,
+      penalty:
+        target === INV_STATUS.COMPLETED_GUILTY
+          ? {
+              amount: penaltyAmount,
+              days: penaltyDays,
+              dailySalary: perDay > 0 ? perDay : null,
+              reason: `جزاء تحقيق إداري: ${current.subject}`,
               category: current.category ?? 'SERIOUS',
               severity: current.severity,
-              isReferredToInvestigation: true,
-              investigationId: data.id,
-              issuedBy: user.name,
-            },
-            select: { id: true },
-          });
-          audits.push({ userId: user.id, action: 'CREATE', entityType: 'Deduction', entityId: created.id, details: { ...penaltyData, investigationId: data.id }, ipAddress });
-        }
-      }
-      if (remaining.length) {
-        await tx.deduction.updateMany({
-          where: { id: { in: remaining }, status: { in: AWAITING_INVESTIGATION }, isLinkedToPayroll: false },
-          data: { status: DEDUCTION_STATUS.PENDING_AMOUNT_APPROVAL },
-        });
-        for (const id of remaining) {
-          audits.push({ userId: user.id, action: 'UPDATE', entityType: 'Deduction', entityId: id, details: { status: DEDUCTION_STATUS.PENDING_AMOUNT_APPROVAL, investigationId: data.id }, ipAddress });
-        }
-      }
-    }
+            }
+          : null,
+      operationKey: `legal.investigation:${data.id}:conclude:${current.status}`,
+      ipAddress,
+    });
+    const penaltyDetails = { amount: penaltyAmount, deductionDays: penaltyDays, dailySalary: perDay > 0 ? perDay : null, hasFinancialImpact: penaltyAmount > 0, status: DEDUCTION_STATUS.PENDING_AMOUNT_APPROVAL, investigationId: data.id };
+    for (const id of outcome.waived) audits.push({ userId: user.id, action: 'UPDATE', entityType: 'Deduction', entityId: id, details: { status: DEDUCTION_STATUS.WAIVED, investigationId: data.id }, ipAddress });
+    if (outcome.penalized) audits.push({ userId: user.id, action: 'UPDATE', entityType: 'Deduction', entityId: outcome.penalized, details: penaltyDetails, ipAddress });
+    if (outcome.created) audits.push({ userId: user.id, action: 'CREATE', entityType: 'Deduction', entityId: outcome.created, details: penaltyDetails, ipAddress });
+    for (const id of outcome.pendingAmount) audits.push({ userId: user.id, action: 'UPDATE', entityType: 'Deduction', entityId: id, details: { status: DEDUCTION_STATUS.PENDING_AMOUNT_APPROVAL, investigationId: data.id }, ipAddress });
   }
 
   const investigation = await tx.investigation.findUniqueOrThrow({ where: { id: data.id } });

@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server';
 import ExcelJS from 'exceljs';
 import { prisma } from '@/lib/prisma';
 import { requireUser } from '@/lib/auth';
+import { authz, resolveActor, scopedContext, scopedPrisma, type ScopedContext } from '@/modules/iam';
 import { ROLE_GROUPS } from '@/lib/constants';
 import { handleApiError } from '@/lib/http';
 import { daysBetween, parseDateOnly } from '@/lib/dates';
@@ -72,8 +73,9 @@ const EXPORT_SELECT = {
 
 type ExportEmployee = Awaited<ReturnType<typeof loadEmployees>>[number];
 
-function loadEmployees() {
-  return prisma.employee.findMany({ where: { isTerminated: false }, select: EXPORT_SELECT, orderBy: { employeeId: 'asc' } });
+/** P1-SCOPE: the export lists the employees of the user's companies only. */
+function loadEmployees(ctx: ScopedContext) {
+  return scopedPrisma(ctx).employee.findMany({ where: { isTerminated: false }, select: EXPORT_SELECT, orderBy: { employeeId: 'asc' } });
 }
 
 /** One template row per employee, in IMPORT_TEMPLATE order, with the labels the import understands. */
@@ -139,8 +141,10 @@ function employeeRow(emp: ExportEmployee): CellValue[] {
  */
 export async function GET(req: Request) {
   try {
-    await requireUser(ROLE_GROUPS.HR);
+    const user = await requireUser(ROLE_GROUPS.HR);
     const withEmployees = ['1', 'true'].includes(new URL(req.url).searchParams.get('withEmployees') ?? '');
+    const ctx = scopedContext(await resolveActor(prisma, user));
+    authz.assert(ctx, 'employee.read');
 
     const workbook = new ExcelJS.Workbook();
     workbook.creator = 'Radeef HRMS';
@@ -167,7 +171,7 @@ export async function GET(req: Request) {
     });
 
     const rows: CellValue[][] = withEmployees
-      ? (await loadEmployees()).map(employeeRow)
+      ? (await loadEmployees(ctx)).map(employeeRow)
       : [IMPORT_EXAMPLE_ROW.map((v, i) => (IMPORT_TEMPLATE[i].format === 'date' && v ? (parseDateOnly(v) ?? v) : v))];
 
     for (const values of rows) {

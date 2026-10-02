@@ -7,6 +7,8 @@ import { getClientIp, requireEmployeeId, requireUser } from '@/lib/auth';
 import { ROLE_GROUPS } from '@/lib/constants';
 import { forbidden, handleApiError, jsonError } from '@/lib/http';
 import { prisma } from '@/lib/prisma';
+import { resolveSelfContext } from '@/lib/employee-scope';
+import { authz, resolveActor, scopedPrisma } from '@/modules/iam';
 import { buildTotalRewardsReport, reportServiceConfigured, type TotalRewardsReportView } from '@/lib/workforce/report-pdf';
 import { GET as portalTotalRewardsGET } from '../route';
 import { calculationTime, companyName, innerRequest, limitPdf, pdfResponse, renderErrorResponse, viewJson } from '@/app/api/workforce/report/_lib';
@@ -18,9 +20,13 @@ const PORTAL_NOT_CONFIGURED = 'تنزيل PDF غير متاح حالياً: خد
 export async function GET(req: Request) {
   try {
     const user = await requireUser(ROLE_GROUPS.ALL);
-    const employeeId = await requireEmployeeId(user);
+    await requireEmployeeId(user); // 403 without an employee file, before the 503
     // Employees have no Excel export: their own wording (the statement can still be printed from the page).
     if (!reportServiceConfigured()) return jsonError(503, PORTAL_NOT_CONFIGURED, { code: 'REPORT_SERVICE_NOT_CONFIGURED' });
+    // P1-SCOPE: SelfContext: the session employee's own statement; his company only for the letterhead.
+    const self = await resolveSelfContext(prisma, await resolveActor(prisma, user));
+    authz.assert(self, 'portal.self.read');
+    const employeeId = self.employeeId;
     limitPdf(user, 'portal-total-rewards');
     const search = new URL(req.url).search;
     const r = await viewJson<({ enabled: false; message: string }) | ({ enabled: true } & TotalRewardsReportView)>(await portalTotalRewardsGET(innerRequest(req, `/api/portal/total-rewards${search}`)));
@@ -28,7 +34,7 @@ export async function GET(req: Request) {
     if (!r.body.enabled) throw forbidden('بيان المكافآت الشاملة غير مفعّل في منشأتك');
     const statement = r.body.statement;
     if (statement.employee.id !== employeeId) throw forbidden();
-    const emp = await prisma.employee.findUnique({ where: { id: employeeId }, select: { legalCompanyId: true, actualCompanyId: true } });
+    const emp = await scopedPrisma(self).employee.findUnique({ where: { id: employeeId }, select: { legalCompanyId: true, actualCompanyId: true } });
     const brandId = emp?.legalCompanyId || emp?.actualCompanyId || null;
     const model = buildTotalRewardsReport({ statement }, 'EMPLOYEE');
     return await pdfResponse({

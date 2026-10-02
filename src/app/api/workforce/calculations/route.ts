@@ -23,6 +23,7 @@ import type { RuleVersionRef } from '@/lib/workforce/types';
 import { summarizeEmployee } from '../_lib/views';
 import { planSnapshotParamsSchema } from '../plans/_lib/schemas';
 import { computePlan, loadPlanOr404, planSnapshotRecord } from '../plans/_lib/server';
+import { assertTenantWide, calculationScopeWhere, workforceScope } from '../_lib/scope';
 
 export const dynamic = 'force-dynamic';
 
@@ -42,9 +43,11 @@ const REDACTED_INPUTS_NOTE = {
 
 export async function GET(req: Request) {
   try {
-    await requireUser(ROLE_GROUPS.WORKFORCE);
+    const user = await requireUser(ROLE_GROUPS.WORKFORCE);
     const q = parseQuery(req, calculationListSchema);
-    const where = q.kind ? { kind: q.kind } : {};
+    // P1-SCOPE: snapshots whose subject is inside the caller's companies (_lib/scope.ts calculationScopeWhere).
+    const inScope = await calculationScopeWhere(await workforceScope(user));
+    const where = { ...(q.kind ? { kind: q.kind } : {}), ...(inScope ? { AND: [inScope] } : {}) };
     const [rows, total] = await Promise.all([
       prisma.workforceCalculation.findMany({
         where,
@@ -74,11 +77,16 @@ export async function POST(req: Request) {
     const user = await requireUser(ROLE_GROUPS.WORKFORCE);
     const body = await parseBody(req, calculationPostSchema);
     limitOrThrow(user, 'calc-save', 20, 60_000);
+    // P1-SCOPE: every calculation is recomputed inside the caller's companies. A snapshot of every company
+    // (subject ALL) would be unreadable for a restricted caller, so he saves per company.
+    const wf = await workforceScope(user);
+    const allCompanies = 'اختر شركة لحفظ الحساب: الحفظ لكل الشركات خارج نطاق صلاحياتك';
 
     let record;
     if (body.kind === 'TRUE_COST') {
       const p = trueCostParamsSchema.parse(body.params);
-      const run = await runTrueCost(p);
+      if (!p.companyId && !p.branchId && !p.departmentId && !p.employeeId) assertTenantWide(wf, allCompanies);
+      const run = await runTrueCost(p, wf);
       const single = p.employeeId ? run.tc.employees.find((e) => e.employeeId === p.employeeId) : null;
       if (p.employeeId && !single) throw notFound('الموظف غير موجود أو لا يعمل خلال فترة التوقع');
       const subject: SnapshotSubject = single
@@ -109,7 +117,7 @@ export async function POST(req: Request) {
       record = buildSnapshot('TRUE_COST', subject, inputs, outputs, run.tc.rulesUsed);
     } else if (body.kind === 'EXIT_COST') {
       const p = exitCostSchema.parse(body.params);
-      const out = await runExitCost(p);
+      const out = await runExitCost(p, wf);
       const inputs = {
         params: { ...p, lastWorkingDate: p.lastWorkingDate.toISOString().slice(0, 10) },
         employee: stripSensitiveEmployeeFields(out.input.employee),
@@ -127,28 +135,29 @@ export async function POST(req: Request) {
     } else if (body.kind === 'SAUDIZATION') {
       const p = saudizationSnapshotSchema.parse(body.params);
       // Restricted view (viewer role null): the stored snapshot never names who is disabled.
-      const est = await runSaudization({ companyId: p.companyId, date: p.date, summary: false }, null);
+      const est = await runSaudization({ companyId: p.companyId, date: p.date, summary: false }, null, wf);
       const company = 'companies' in est ? est.companies[0] : null;
       if (!company || !('compliance' in company)) throw notFound('الشركة غير موجودة');
-      const solve = p.targetBand ? (await runSolve({ companyId: p.companyId, targetBand: p.targetBand, byDate: p.byDate ?? p.date, options: p.options }, null)).result : null;
+      const solve = p.targetBand ? (await runSolve({ companyId: p.companyId, targetBand: p.targetBand, byDate: p.byDate ?? p.date, options: p.options }, null, wf)).result : null;
       const inputs = { params: { ...p, date: est.date, byDate: solve?.byDate ?? null }, activity: company.estimate.activity, counts: company.estimate.counts, assumptions: company.estimate.assumptions };
       const outputs = { estimate: company.estimate, compliance: company.compliance, alerts: company.alerts, solve };
       const refs: RuleVersionRef[] = company.estimate.evidence.map((e) => ({ key: e.key, effectiveFrom: e.effectiveFrom, status: e.status, value: e.value }));
       record = buildSnapshot('SAUDIZATION', { type: 'COMPANY', id: p.companyId, title: body.title ?? `مخطط السعودة — ${company.companyName}` }, inputs, outputs, refs);
     } else if (body.kind === 'HIRE_SCENARIO') {
       const p = hireScenarioSchema.parse(body.params);
-      const out = await runHireScenario(p);
+      const out = await runHireScenario(p, wf);
       const refs = new Map<string, RuleVersionRef>();
       for (const c of out.result.candidates) for (const r of c.rulesUsed) refs.set(`${r.key}@${r.effectiveFrom}`, r);
       const inputs = { params: { ...p, startMonth: out.result.startMonth }, company: out.result.company };
       record = buildSnapshot('HIRE_SCENARIO', { type: 'COMPANY', id: p.companyId, title: body.title ?? `سيناريو توظيف — ${out.result.company.name}` }, inputs, out.result, [...refs.values()]);
     } else if (body.kind === 'WORKFORCE_PLAN') {
       const p = planSnapshotParamsSchema.parse(body.params);
-      const row = await loadPlanOr404(p.planId);
+      const row = await loadPlanOr404(p.planId, wf);
       record = planSnapshotRecord(row, await computePlan(row), 'MANUAL', body.title ?? null);
     } else {
       const p = overviewQuerySchema.parse(body.params);
-      const { run, response } = await runOverview(p);
+      assertTenantWide(wf, allCompanies);
+      const { run, response } = await runOverview(p, wf);
       const inputs = { params: { ...p, startMonth: run.startMonth }, months: run.tc.monthKeys.length, employees: run.tc.employees.length, companies: run.input.companies, assumptions: run.assumptions };
       record = buildSnapshot('OVERVIEW', { type: 'ALL', id: null, title: body.title ?? `لوحة القرار — ${p.months} شهراً` }, inputs, response, run.tc.rulesUsed);
     }

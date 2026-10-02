@@ -8,15 +8,30 @@ import { conflict, forbidden, handleApiError, notFound, parseBody } from '@/lib/
 import { zDate, zId, zOptText, zText } from '@/lib/validation';
 import { logAudit } from '@/lib/audit';
 import { CORRECTION_STATUS, CORRECTION_TYPES, GENERAL_REQUEST_PREFIX, assertCanManageEmployee, managedEmployeesWhere } from '@/lib/hr-workflows';
+import { resolveSelfContext, resolveTeamContext } from '@/lib/employee-scope';
+import { authz, resolveActor, scopedContext, scopedPrisma } from '@/modules/iam';
 
 export const dynamic = 'force-dynamic';
 
 /** Roles that review corrections of other employees (HR + managers). */
 const CORRECTION_REVIEWERS = ROLE_GROUPS.MANAGERS;
 
+/**
+ * P1-SCOPE context: HR works in its companies (ScopedContext), a branch / department manager in his
+ * team inside his own company (TeamContext), everyone else on his own records (SelfContext).
+ */
+async function correctionContext(user: Awaited<ReturnType<typeof requireUser>>, onBehalf: boolean) {
+  const actor = await resolveActor(prisma, user);
+  if (onBehalf && roleIn(user.role, ROLE_GROUPS.HR)) return scopedContext(actor);
+  if (onBehalf && roleIn(user.role, CORRECTION_REVIEWERS)) return resolveTeamContext(prisma, actor);
+  return resolveSelfContext(prisma, actor);
+}
+
 export async function GET() {
   try {
     const user = await requireUser(ROLE_GROUPS.ALL);
+    const ctx = await correctionContext(user, roleIn(user.role, CORRECTION_REVIEWERS));
+    authz.assert(ctx, 'attendance.correction.read');
     let where: Prisma.AttendanceCorrectionWhereInput;
     if (roleIn(user.role, CORRECTION_REVIEWERS)) {
       // HR sees everything; branch/department managers see their scope.
@@ -27,7 +42,7 @@ export async function GET() {
     } else {
       where = { employeeId: await requireEmployeeId(user) };
     }
-    const records = await prisma.attendanceCorrection.findMany({
+    const records = await scopedPrisma(ctx).attendanceCorrection.findMany({
       where,
       include: {
         employee: {
@@ -69,12 +84,16 @@ export async function POST(req: Request) {
       if (body.employeeId && body.employeeId !== employeeId) throw forbidden('لا يمكنك تقديم طلب لموظف آخر');
     }
 
+    // The employee must be inside the context (another company's employee is "not found").
+    const ctx = await correctionContext(user, employeeId !== user.employeeId);
+    authz.assert(ctx, 'attendance.correction.create');
+    const db = scopedPrisma(ctx);
     const [employee, duplicate] = await Promise.all([
-      prisma.employee.findUnique({
+      db.employee.findUnique({
         where: { id: employeeId },
         select: { id: true, directManagerId: true, branchId: true, departmentId: true },
       }),
-      prisma.attendanceCorrection.findFirst({
+      db.attendanceCorrection.findFirst({
         where: { employeeId, date: body.date, reason: body.reason, status: CORRECTION_STATUS.PENDING },
         select: { id: true },
       }),
@@ -86,7 +105,7 @@ export async function POST(req: Request) {
     }
     if (duplicate) throw conflict('يوجد طلب مطابق قيد الانتظار حالياً.');
 
-    const correction = await prisma.attendanceCorrection.create({
+    const correction = await db.attendanceCorrection.create({
       data: {
         employeeId,
         date: body.date,

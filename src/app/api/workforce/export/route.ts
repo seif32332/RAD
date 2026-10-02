@@ -48,6 +48,7 @@ import { limitOrThrow } from '../_lib/server';
 import { actualQuerySchema } from '../plans/_lib/schemas';
 import { bodyFromQuery, runSensitivity, sensitivityBodySchema } from '../sensitivity/_run';
 import { benchmarksQuerySchema, benchmarksView, calculationView, exitView, hireView, overviewView, planView, rulesView, saudizationView, trueCostView } from './_views';
+import { workforceScope, type WfScope } from '../_lib/scope';
 
 export const dynamic = 'force-dynamic';
 
@@ -74,16 +75,16 @@ async function readJson(req: Request): Promise<unknown> {
   }
 }
 
-async function build(kind: ExportKind, method: 'GET' | 'POST', query: Record<string, string>, body: unknown, user: AuthUser, ctx: ExportContext): Promise<Built> {
+async function build(kind: ExportKind, method: 'GET' | 'POST', query: Record<string, string>, body: unknown, user: AuthUser, ctx: ExportContext, wf: WfScope): Promise<Built> {
   switch (kind) {
     case 'overview': {
       const q = overviewQuerySchema.parse(query);
-      const { view, evidence } = await overviewView(q as { months: 12 | 24 | 36; scenario: 'low' | 'base' | 'high' });
+      const { view, evidence } = await overviewView(q as { months: 12 | 24 | 36; scenario: 'low' | 'base' | 'high' }, wf);
       return { built: buildOverviewWorkbook(view, evidence, ctx), filters: { months: q.months, scenario: q.scenario } };
     }
     case 'true-cost': {
       const q = trueCostQuerySchema.parse(query);
-      const { view, evidence } = await trueCostView(q, user.role);
+      const { view, evidence } = await trueCostView(q, user.role, wf);
       return {
         built: buildTrueCostWorkbook(view, evidence, ctx),
         filters: { companyId: q.companyId ?? null, branchId: q.branchId ?? null, departmentId: q.departmentId ?? null, employeeId: q.employeeId ?? null, ...auditSearchText(q.q), flagged: q.flagged, sort: q.sort, months: q.months, scenario: q.scenario },
@@ -91,33 +92,33 @@ async function build(kind: ExportKind, method: 'GET' | 'POST', query: Record<str
     }
     case 'exit-cost': {
       const p = exitCostSchema.parse(body);
-      const view = await exitView(p);
+      const view = await exitView(p, wf);
       return { built: buildExitCostWorkbook(view, [], ctx), filters: { employeeId: p.employeeId, exitReason: p.exitReason, settlementReason: p.settlementReason ?? null, lastWorkingDate: p.lastWorkingDate.toISOString().slice(0, 10), scenario: p.scenario } };
     }
     case 'hire-scenario': {
       const p = hireScenarioSchema.parse(body);
-      const view = await hireView(p);
+      const view = await hireView(p, wf);
       return { built: buildHireScenarioWorkbook(view, ctx), filters: { companyId: p.companyId, startMonth: view.result.startMonth, months: p.months, candidates: p.candidates.map((c) => c.kind) } };
     }
     case 'saudization': {
       if (method === 'POST') {
         const s = solveSchema.parse(body);
         const { date } = solveDateSchema.parse({ date: query.date });
-        const { view, solve } = await saudizationView({ companyId: s.companyId, date }, s, user.role);
+        const { view, solve } = await saudizationView({ companyId: s.companyId, date }, s, user.role, wf);
         return { built: buildSaudizationWorkbook(view, solve ? { companyName: solve.companyName, result: solve.result } : null, ctx), filters: { companyId: s.companyId, date: view.date, targetBand: s.targetBand, byDate: solve?.result.byDate ?? null } };
       }
       const q = saudizationQuerySchema.parse({ ...query, summary: '' });
-      const { view } = await saudizationView({ companyId: q.companyId, date: q.date }, null, user.role);
+      const { view } = await saudizationView({ companyId: q.companyId, date: q.date }, null, user.role, wf);
       return { built: buildSaudizationWorkbook(view, null, ctx), filters: { companyId: q.companyId ?? null, date: view.date } };
     }
     case 'plan': {
       const q = planQuerySchema.parse(query);
-      const view = await planView(q.planId, q.live, q.asOf ?? null);
+      const view = await planView(q.planId, q.live, q.asOf ?? null, wf);
       return { built: buildPlanWorkbook(view, ctx), filters: { planId: q.planId, live: q.live, asOf: view.actual?.result.asOf ?? null } };
     }
     case 'benchmarks': {
       const q = benchmarksQuerySchema.parse(query);
-      const view = await benchmarksView(q);
+      const view = await benchmarksView(q, wf);
       return { built: buildBenchmarksWorkbook(view, ctx), filters: { months: q.months, companyId: q.companyId ?? null, branchId: q.branchId ?? null, departmentId: q.departmentId ?? null, scopeSuppressed: view.scopeSuppressed } };
     }
     case 'rules': {
@@ -126,12 +127,12 @@ async function build(kind: ExportKind, method: 'GET' | 'POST', query: Record<str
     }
     case 'calculation': {
       const q = calcQuerySchema.parse(query);
-      const { view, evidence } = await calculationView(q.id, user.role);
+      const { view, evidence } = await calculationView(q.id, user.role, wf);
       return { built: buildCalculationWorkbook(view, evidence, ctx), filters: { id: q.id, calculationKind: view.kind } };
     }
     case 'sensitivity': {
       const b = method === 'GET' ? bodyFromQuery(query) : sensitivityBodySchema.parse(body);
-      const out = await runSensitivity(b);
+      const out = await runSensitivity(b, wf);
       return { built: buildSensitivityWorkbook(out.result, out.evidence, ctx), filters: out.subject };
     }
   }
@@ -146,10 +147,12 @@ async function handle(req: Request, method: 'GET' | 'POST') {
   if (!(EXPORT_KINDS as ReadonlyArray<string>).includes(kind)) throw badRequest(`نوع التصدير غير صالح (${EXPORT_KINDS.join('، ')})`);
   if (!(method === 'GET' ? GET_KINDS : POST_KINDS).includes(kind)) throw new HttpError(405, method === 'GET' ? 'هذا التصدير يُطلب بـ POST ومعه بيانات الحساب نفسها' : 'هذا التصدير يُطلب بـ GET');
   limitOrThrow(user, 'export', 10, 60_000);
+  // P1-SCOPE (§5.4.4): the export runs the screen's query with the caller's company scope.
+  const wf = await workforceScope(user);
   const body = method === 'POST' ? await readJson(req) : null;
   const generatedAt = new Date();
   const ctx: ExportContext = { generatedAt, canSeeDisability: canSeeDisability(user.role) };
-  const { built, filters } = await build(kind, method, query, body, user, ctx);
+  const { built, filters } = await build(kind, method, query, body, user, ctx, wf);
   const buffer = await built.workbook.xlsx.writeBuffer();
   const rows = built.sheets.reduce((s, x) => s + x.rows, 0);
   await logAudit({

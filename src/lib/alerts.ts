@@ -1083,9 +1083,10 @@ export function loadVehicleAlertSources(db: AlertsDb, t: AlertThresholds, now: D
 }
 
 /** Open accident claims. */
-export function loadClaimAlertSources(db: AlertsDb) {
+/** `scope`: extra filter (e.g. the vehicle's company for a scoped user; AccidentClaim has no company key). */
+export function loadClaimAlertSources(db: AlertsDb, scope: Prisma.AccidentClaimWhereInput = {}) {
   return db.accidentClaim.findMany({
-    where: { status: { in: ['PENDING_SUBMISSION', 'SUBMITTED'] } },
+    where: { AND: [scope, { status: { in: ['PENDING_SUBMISSION', 'SUBMITTED'] } }] },
     select: { id: true, status: true, createdAt: true, vehicle: { select: vehicleLabelSelect } },
   });
 }

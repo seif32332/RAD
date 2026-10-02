@@ -1,13 +1,15 @@
 import { NextResponse } from 'next/server';
 import { z } from 'zod';
 import { prisma } from '@/lib/prisma';
-import { getClientIp, requireEmployeeId, requireUser } from '@/lib/auth';
+import { getClientIp, requireUser } from '@/lib/auth';
 import { ROLE_GROUPS } from '@/lib/constants';
 import { badRequest, conflict, forbidden, handleApiError, parseBody } from '@/lib/http';
 import { zDate, zId, zOptText, zText } from '@/lib/validation';
 import { dateKey } from '@/lib/dates';
 import { logAudit } from '@/lib/audit';
 import { CORRECTION_STATUS, CORRECTION_TYPES, isHrDirectRequest } from '@/lib/hr-workflows';
+import { resolveSelfContext } from '@/lib/employee-scope';
+import { authz, resolveActor, scopedPrisma } from '@/modules/iam';
 
 export const dynamic = 'force-dynamic';
 
@@ -31,7 +33,12 @@ const createSchema = z.object({
 export async function POST(req: Request) {
   try {
     const user = await requireUser(ROLE_GROUPS.ALL);
-    const employeeId = await requireEmployeeId(user);
+    // P1-SCOPE: SelfContext. Every read and the write go through the scoped client, so a punch of another
+    // employee is "not found" and the request can only be filed for the session employee.
+    const self = await resolveSelfContext(prisma, await resolveActor(prisma, user));
+    authz.assert(self, 'portal.self.request');
+    const employeeId = self.employeeId;
+    const db = scopedPrisma(self);
     const body = await parseBody(req, createSchema);
     if (body.employeeId && body.employeeId !== employeeId) throw forbidden('لا يمكنك تقديم طلب لموظف آخر');
 
@@ -42,7 +49,7 @@ export async function POST(req: Request) {
     // checked per punch below instead: the pre-filled reason is the same for every rejection of
     // the same kind (e.g. the face service was down two days in a row).
     if (!linkedToPunch) {
-      const existing = await prisma.attendanceCorrection.findFirst({
+      const existing = await db.attendanceCorrection.findFirst({
         where: { employeeId, reason: body.reason, status: CORRECTION_STATUS.PENDING },
         select: { id: true },
       });
@@ -52,11 +59,11 @@ export async function POST(req: Request) {
 
     let punchId: string | null = null;
     if (body.punchId && linkedToPunch) {
-      const punch = await prisma.attendancePunch.findUnique({ where: { id: body.punchId }, select: { employeeId: true, result: true, workDate: true } });
+      const punch = await db.attendancePunch.findFirst({ where: { id: body.punchId }, select: { employeeId: true, result: true, workDate: true } });
       if (!punch || punch.employeeId !== employeeId) throw forbidden('الحركة المرتبطة بالطلب غير موجودة');
       if (punch.result === 'ACCEPTED') throw badRequest('هذه الحركة مقبولة ولا تحتاج إلى تصحيح');
       if (dateKey(punch.workDate) !== dateKey(body.date)) throw badRequest('تاريخ الطلب لا يطابق تاريخ الحركة');
-      const pendingForPunch = await prisma.attendanceCorrection.findFirst({
+      const pendingForPunch = await db.attendanceCorrection.findFirst({
         where: { punchId: body.punchId, status: CORRECTION_STATUS.PENDING },
         select: { id: true },
       });
@@ -64,7 +71,7 @@ export async function POST(req: Request) {
       punchId = body.punchId;
     }
 
-    const request = await prisma.attendanceCorrection.create({
+    const request = await db.attendanceCorrection.create({
       data: {
         employeeId,
         date: body.date,

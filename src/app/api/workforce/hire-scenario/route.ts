@@ -9,6 +9,7 @@ import { handleApiError, parseBody } from '@/lib/http';
 import { hireScenarioSchema } from '../_lib/saudization-schemas';
 import { runHireScenario } from '../_lib/saudization';
 import { auditViewOnce, limitOrThrow } from '../_lib/server';
+import { workforceScope } from '../_lib/scope';
 
 export const dynamic = 'force-dynamic';
 
@@ -17,7 +18,8 @@ export async function POST(req: Request) {
     const user = await requireUser(ROLE_GROUPS.WORKFORCE);
     const p = await parseBody(req, hireScenarioSchema);
     limitOrThrow(user, 'hire', 20, 60_000);
-    const out = await runHireScenario(p);
+    // P1-SCOPE: a company outside the caller's scope is "not found".
+    const out = await runHireScenario(p, await workforceScope(user));
     await auditViewOnce(user, 'WorkforceHireScenario', { companyId: p.companyId, candidates: p.candidates.map((c) => c.kind), months: p.months }, getClientIp(req));
     return NextResponse.json(out);
   } catch (err) {

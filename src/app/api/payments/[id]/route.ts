@@ -1,3 +1,4 @@
+import { randomUUID } from 'crypto';
 import { after, NextResponse } from 'next/server';
 import { z } from 'zod';
 import type { Prisma } from '@prisma/client';
@@ -18,11 +19,26 @@ import {
   PAYMENT_STATUS,
   paymentDeleteBlockReason,
 } from '../access';
-import { enforceMakerChecker } from '../maker-checker';
+import { paymentCompanies, paymentInScope } from '../scope';
+import { authz, resolveActor, scopedContext } from '@/modules/iam';
+import { deletePaymentRequest, editPaymentRequest, payPaymentRequest, returnPaymentRequest } from '@/modules/finance';
+import { runPayrollTransaction } from '@/modules/payroll';
+import { moneyActorOf } from '@/modules/platform';
 
 export const dynamic = 'force-dynamic';
 
 type Ctx = { params: Promise<{ id: string }> };
+
+/**
+ * P1-SCOPE: the request must belong to the user's companies (company of the linked record, ../scope.ts);
+ * otherwise it is "not found" and nothing (payment, linked settlement / loan / visa) is touched.
+ */
+async function assertPaymentInScope(user: Awaited<ReturnType<typeof requireUser>>, id: string) {
+  const ctx = scopedContext(await resolveActor(prisma, user));
+  authz.assert(ctx, 'payment.manage');
+  const row = await prisma.paymentRequest.findUnique({ where: { id }, select: { id: true, entityType: true, entityId: true, requestedById: true } });
+  if (!row || !paymentInScope(ctx, row, (await paymentCompanies(prisma, [row])).get(id) ?? null)) throw notFound('طلب السداد غير موجود');
+}
 
 const updateSchema = z.object({
   status: z.enum([PAYMENT_STATUS.PAID, PAYMENT_STATUS.RETURNED]).optional(),
@@ -38,8 +54,7 @@ const updateSchema = z.object({
   paidAt: z.string().optional(),
 });
 
-/** Fields that may only change before the request is approved/paid. */
-const EDITABLE_STATUSES = [PAYMENT_STATUS.PENDING_OWNER, PAYMENT_STATUS.RETURNED];
+/** Amount / payee / title change only while PENDING_OWNER or RETURNED (finance.editPaymentRequest). */
 
 export async function PUT(req: Request, { params }: Ctx) {
   try {
@@ -47,8 +62,13 @@ export async function PUT(req: Request, { params }: Ctx) {
     const { id } = await params;
     const body = await parseBody(req, updateSchema);
     const ipAddress = getClientIp(req);
+    await assertPaymentInScope(user, id);
 
-    const payment = await prisma.$transaction(
+    const idem = req.headers.get('idempotency-key')?.trim();
+    const key = (act: string) => (idem ? `payment.${act}:k:${user.id}:${idem.slice(0, 100)}` : `payment.${act}:${id}:${user.id}`);
+    const actor = moneyActorOf(user);
+    const payment = await runPayrollTransaction(
+      prisma,
       async (tx) => {
         const current = await tx.paymentRequest.findUnique({ where: { id } });
         if (!current) throw notFound('طلب السداد غير موجود');
@@ -57,24 +77,18 @@ export async function PUT(req: Request, { params }: Ctx) {
           const receiptUrl = body.receiptUrl ?? current.receiptUrl ?? null;
           if (!receiptUrl) throw badRequest('الرجاء إرفاق صورة السداد أو التحويل');
 
-          // Maker-checker: the requester may not record their own request as paid (403),
-          // except SUPER_ADMIN / allow_self_approval (audited as SELF_APPROVAL_OVERRIDE).
-          const makerChecker = await enforceMakerChecker(tx, 'PAY', user, current, ipAddress);
-
-          // Guard the transition first so a double submit cannot pay twice.
-          const res = await tx.paymentRequest.updateMany({
-            where: { id, status: PAYMENT_STATUS.PENDING_FINANCE },
-            data: { status: PAYMENT_STATUS.PAID, receiptUrl, paidById: user.id },
-          });
-          if (res.count === 0) throw conflict('لا يمكن تأكيد السداد: الطلب غير معتمد للصرف أو تم سداده مسبقاً');
+          // finance.payPaymentRequest behind money.gateway, guarded (a double submit cannot pay twice):
+          // the payer is none of the beneficiary, the requester and the approver, for every role
+          // (BL-PAY-008: no SUPER_ADMIN / allow_self_approval exception; SINGLE_OPERATOR is recorded).
+          await payPaymentRequest(tx, { actor, paymentRequestId: id, receiptUrl, operationKey: key('pay'), ipAddress });
 
           // Linked entities: apply the same side effects as their own finance screens.
           if (current.entityId && current.entityType === 'SETTLEMENT') {
             const proof = settlementPaymentProofSchema.safeParse(body);
             if (!proof.success) throw badRequest(proof.error.issues[0]?.message ?? 'بيانات إثبات الصرف غير مكتملة');
-            await markSettlementPaid(tx, current.entityId, receiptUrl, user, { ipAddress }, proof.data);
+            await markSettlementPaid(tx, current.entityId, receiptUrl, user, { ipAddress, operationKey: `${key('pay')}:settlement` }, proof.data);
           } else if (current.entityId && current.entityType === 'LOAN') {
-            await markLoanTransferred(tx, current.entityId, receiptUrl, user, { ipAddress });
+            await markLoanTransferred(tx, current.entityId, receiptUrl, user, { ipAddress, operationKey: `${key('pay')}:loan` });
           } else if (current.entityId && current.entityType === 'VISA') {
             // Visa fee paid: PENDING_PAYMENT -> PAID (an already ISSUED visa is left as is).
             const visaRes = await tx.visa.updateMany({
@@ -115,7 +129,6 @@ export async function PUT(req: Request, { params }: Ctx) {
                 entityType: current.entityType,
                 entityId: current.entityId,
                 requestedById: current.requestedById,
-                makerChecker,
               },
               ipAddress,
             },
@@ -124,11 +137,7 @@ export async function PUT(req: Request, { params }: Ctx) {
         } else if (body.status === PAYMENT_STATUS.RETURNED) {
           const returnReason = body.returnReason ?? null;
           if (!returnReason) throw badRequest('يرجى كتابة سبب رد السداد');
-          const res = await tx.paymentRequest.updateMany({
-            where: { id, status: { in: [...PAYMENT_OPEN_STATUSES] } },
-            data: { status: PAYMENT_STATUS.RETURNED, returnReason },
-          });
-          if (res.count === 0) throw conflict('لا يمكن رد السداد: تم سداده أو رده مسبقاً');
+          await returnPaymentRequest(tx, { actor, paymentRequestId: id, reason: returnReason, from: [...PAYMENT_OPEN_STATUSES], operationKey: key('return'), ipAddress });
           await logAudit(
             {
               userId: user.id,
@@ -154,13 +163,22 @@ export async function PUT(req: Request, { params }: Ctx) {
           };
           if (Object.keys(data).length === 0) throw badRequest('لا توجد بيانات للتحديث');
 
-          const where: Prisma.PaymentRequestWhereInput = { id };
-          if (Object.keys(financial).length > 0) {
-            // Amount / payee changes after approval would bypass the owner's approval.
-            where.status = { in: [...EDITABLE_STATUSES] };
-          }
-          const res = await tx.paymentRequest.updateMany({ where, data });
-          if (res.count === 0) throw conflict('لا يمكن تعديل بيانات السداد بعد اعتماده أو سداده');
+          // finance.editPaymentRequest: amount / payee changes only before the owner's approval
+          // (PENDING_OWNER / RETURNED), which would otherwise be bypassed.
+          await editPaymentRequest(tx, {
+            actor,
+            paymentRequestId: id,
+            fields: {
+              title: body.title,
+              reason: body.reason,
+              amount: body.amount,
+              accountNumber: body.accountNumber,
+              receiptUrl: body.receiptUrl,
+              returnReason: body.returnReason,
+            },
+            operationKey: idem ? key('edit') : `payment.edit:${id}:${user.id}:${randomUUID()}`,
+            ipAddress,
+          });
           await logAudit(
             { userId: user.id, action: 'UPDATE', entityType: 'PaymentRequest', entityId: id, details: data, ipAddress },
             tx,
@@ -169,7 +187,7 @@ export async function PUT(req: Request, { params }: Ctx) {
 
         return tx.paymentRequest.findUniqueOrThrow({ where: { id } });
       },
-      { timeout: 20_000 },
+      { timeoutMs: 20_000 },
     );
 
     // A paid end-of-service settlement suggests its clearance / experience letters (after commit, best effort).
@@ -188,6 +206,7 @@ export async function DELETE(req: Request, { params }: Ctx) {
   try {
     const user = await requireUser(PAYMENTS_ACCESS);
     const { id } = await params;
+    await assertPaymentInScope(user, id);
 
     const current = await prisma.paymentRequest.findUnique({
       where: { id },
@@ -198,15 +217,10 @@ export async function DELETE(req: Request, { params }: Ctx) {
     const blocked = paymentDeleteBlockReason(current);
     if (blocked) throw conflict(blocked);
 
-    // Guarded delete: fails if the request was paid in the meantime (or got linked).
-    const res = await prisma.paymentRequest.deleteMany({
-      where: {
-        id,
-        status: { in: [...PAYMENT_OPEN_STATUSES, PAYMENT_STATUS.RETURNED] },
-        OR: [{ entityType: null }, { entityType: { notIn: [...LINKED_PAYMENT_ENTITY_TYPES] } }],
-      },
-    });
-    if (res.count === 0) throw conflict('لا يمكن حذف طلب سداد تم صرفه');
+    // finance.deletePaymentRequest, guarded: fails if the request was paid in the meantime (or got linked).
+    await runPayrollTransaction(prisma, (tx) =>
+      deletePaymentRequest(tx, { actor: moneyActorOf(user), paymentRequestId: id, linkedEntityTypes: LINKED_PAYMENT_ENTITY_TYPES, operationKey: `payment.delete:${id}:${user.id}` }),
+    );
 
     await logAudit({
       userId: user.id,

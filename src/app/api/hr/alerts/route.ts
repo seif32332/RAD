@@ -11,17 +11,24 @@ import {
   buildSettlementAlerts,
   getAlertThresholds,
   loadEmployeeAlertSources,
+  type AlertsDb,
   type HrAlert,
 } from '@/lib/alerts';
+import { authz, resolveActor, scopedContext, scopedPrisma } from '@/modules/iam';
 
 export const dynamic = 'force-dynamic';
 
 // Read by /hr-alerts (HR) and /unified-alerts (operations section, also used by gov relations).
 const HR_ALERT_ROLES = [...new Set([...ROLE_GROUPS.HR, ...ROLE_GROUPS.GOV])];
 
+// P1-SCOPE: every source (employees, insurances, settlements) and every count is read through the
+// user's ScopedContext: a scoped user sees and counts only his companies.
 export async function GET() {
   try {
-    await requireUser(HR_ALERT_ROLES);
+    const user = await requireUser(HR_ALERT_ROLES);
+    const ctx = scopedContext(await resolveActor(prisma, user));
+    authz.assert(ctx, 'alerts.read');
+    const db = scopedPrisma(ctx);
     const now = new Date();
     const t = await getAlertThresholds(prisma);
 
@@ -39,8 +46,9 @@ export async function GET() {
       pendingApprovalEvals,
       pendingAckEvals,
     ] = await Promise.all([
-      loadEmployeeAlertSources(prisma),
-      prisma.medicalInsurance.findMany({
+      // The scoped client runs the same model calls (its type is Prisma's extended client).
+      loadEmployeeAlertSources(db as unknown as AlertsDb),
+      db.medicalInsurance.findMany({
         where: { expiryDate: { lt: alertCutoffDate(t.medicalInsurance, now) } },
         select: {
           id: true,
@@ -51,7 +59,7 @@ export async function GET() {
         },
       }),
       // Owner-approved settlements are waiting for the finance transfer.
-      prisma.settlement.findMany({
+      db.settlement.findMany({
         where: { status: SETTLEMENT_STATUS.OWNER_APPROVED },
         select: {
           id: true,
@@ -60,15 +68,15 @@ export async function GET() {
           employee: { select: { firstNameArabic: true, lastNameArabic: true, employeeId: true, branchId: true, legalCompanyId: true } },
         },
       }),
-      prisma.leave.count({ where: { status: LEAVE_STATUS.PENDING } }),
-      prisma.loan.count({ where: { status: LOAN_STATUS.PENDING, isHrApproved: false } }),
-      prisma.terminationRequest.count({ where: { status: 'PENDING' } }),
-      prisma.overtimeRequest.count({ where: { status: 'PENDING' } }),
-      prisma.workAssignment.count({ where: { status: 'PENDING_EMPLOYEE' } }),
-      prisma.leave.count({ where: { status: LEAVE_STATUS.APPROVED, actualReturnDate: { not: null }, isReturned: false } }),
-      prisma.employeeEvaluation.count({ where: { status: 'PENDING_MANAGER' } }),
-      prisma.employeeEvaluation.count({ where: { status: 'PENDING_APPROVAL' } }),
-      prisma.employeeEvaluation.count({ where: { status: 'PENDING_EMPLOYEE_ACK' } }),
+      db.leave.count({ where: { status: LEAVE_STATUS.PENDING } }),
+      db.loan.count({ where: { status: LOAN_STATUS.PENDING, isHrApproved: false } }),
+      db.terminationRequest.count({ where: { status: 'PENDING' } }),
+      db.overtimeRequest.count({ where: { status: 'PENDING' } }),
+      db.workAssignment.count({ where: { status: 'PENDING_EMPLOYEE' } }),
+      db.leave.count({ where: { status: LEAVE_STATUS.APPROVED, actualReturnDate: { not: null }, isReturned: false } }),
+      db.employeeEvaluation.count({ where: { status: 'PENDING_MANAGER' } }),
+      db.employeeEvaluation.count({ where: { status: 'PENDING_APPROVAL' } }),
+      db.employeeEvaluation.count({ where: { status: 'PENDING_EMPLOYEE_ACK' } }),
     ]);
 
     const alerts: HrAlert[] = [

@@ -10,17 +10,18 @@ import { zId } from '@/lib/validation';
 import { limitOrThrow } from '../../../../_lib/server';
 import { positionIssues, positionUpdateSchema } from '../../../_lib/schemas';
 import { assertAllowed, loadPlanOr404, lockEditable, positionColumns, positionData, validatePosition, type PositionData } from '../../../_lib/server';
+import { workforceScope, type WfScope } from '../../../../_lib/scope';
 
 export const dynamic = 'force-dynamic';
 
 type Ctx = { params: Promise<{ id: string; positionId: string }> };
 
-async function target(ctx: Ctx) {
+async function target(ctx: Ctx, wf: WfScope) {
   const p = await ctx.params;
   const id = zId.safeParse(p.id);
   const pid = zId.safeParse(p.positionId);
   if (!id.success || !pid.success) throw notFound('البند غير موجود');
-  const row = await loadPlanOr404(id.data);
+  const row = await loadPlanOr404(id.data, wf);
   const pos = row.positions.find((x) => x.id === pid.data);
   if (!pos) throw notFound('البند غير موجود');
   return { row, pos };
@@ -30,7 +31,9 @@ export async function PATCH(req: Request, ctx: Ctx) {
   try {
     const user = await requireUser(ROLE_GROUPS.WORKFORCE);
     limitOrThrow(user, 'plan-write', 60, 60_000);
-    const { row, pos } = await target(ctx);
+    // P1-SCOPE: the plan and everything the position names must be in the caller's companies (404).
+    const wf = await workforceScope(user, 'workforce.plan.manage');
+    const { row, pos } = await target(ctx, wf);
     assertAllowed('EDIT', row, user);
     const body = await parseBody(req, positionUpdateSchema);
     const before = positionData(pos);
@@ -38,7 +41,7 @@ export async function PATCH(req: Request, ctx: Ctx) {
     const merged = { ...before, ...changes } as PositionData;
     const issues = positionIssues(merged as Parameters<typeof positionIssues>[0]);
     if (issues.length) throw badRequest(issues.map((i) => i.message).join(' — '), issues);
-    await validatePosition(row, merged, pos.id);
+    await validatePosition(row, merged, pos.id, wf);
     await prisma.$transaction(async (tx) => {
       await lockEditable(tx, row.id);
       await tx.plannedPosition.update({ where: { id: pos.id }, data: positionColumns(merged) });
@@ -54,7 +57,8 @@ export async function DELETE(req: Request, ctx: Ctx) {
   try {
     const user = await requireUser(ROLE_GROUPS.WORKFORCE);
     limitOrThrow(user, 'plan-write', 60, 60_000);
-    const { row, pos } = await target(ctx);
+    const wf = await workforceScope(user, 'workforce.plan.manage');
+    const { row, pos } = await target(ctx, wf);
     assertAllowed('EDIT', row, user);
     await prisma.$transaction(async (tx) => {
       await lockEditable(tx, row.id);

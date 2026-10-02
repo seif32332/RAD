@@ -59,6 +59,14 @@ interface RequestCustomData {
   passportCopyUrl?: string | null;
   ibanCertificateUrl?: string | null;
   resumeUrl?: string | null;
+  /** Onboarding: the request's company (scope key) and the company that follows its branch. */
+  companyId?: string | null;
+  orgCompanyId?: string | null;
+}
+
+interface CompanyOption {
+  id: string;
+  nameArabic: string;
 }
 
 interface IncomingRequest {
@@ -86,6 +94,8 @@ interface RequestsData {
   managerRequests: IncomingRequest[];
   deptManagerRequests: IncomingRequest[];
   ownerRequests: IncomingRequest[];
+  /** Companies HR may pick for a new hire (within the user's company scope). */
+  companies: CompanyOption[];
 }
 
 /** Editable onboarding fields sent back to the API when HR approves an onboarding request. */
@@ -102,6 +112,9 @@ interface OnboardingEdit {
   dateOfBirth: string;
   iqamaOrIdExp: string;
   joinDate: string;
+  /** Legal company (registration) and actual company (follows the branch when there is one). */
+  legalCompanyId: string;
+  actualCompanyId: string;
 }
 
 interface ActionResponse {
@@ -110,7 +123,7 @@ interface ActionResponse {
   warning?: string | null;
 }
 
-const EMPTY_DATA: RequestsData = { employeeRequests: [], managerRequests: [], deptManagerRequests: [], ownerRequests: [] };
+const EMPTY_DATA: RequestsData = { employeeRequests: [], managerRequests: [], deptManagerRequests: [], ownerRequests: [], companies: [] };
 
 const TAB_STYLE: Record<Tab, { badge: string; icon: React.ReactNode; tab: string }> = {
   EMPLOYEE: { badge: 'bg-blue-50 text-blue-600', icon: <UsersRound size={20} />, tab: 'bg-blue-50 text-blue-700 border-b-4 border-blue-500' },
@@ -189,7 +202,9 @@ function getNavigationLink(req: IncomingRequest): NavLink | null {
   }
 }
 
-function toEdit(cd: RequestCustomData | null | undefined): OnboardingEdit {
+function toEdit(cd: RequestCustomData | null | undefined, companies: CompanyOption[] = []): OnboardingEdit {
+  const onlyCompany = companies.length === 1 ? companies[0].id : '';
+  const actualCompanyId = cd?.orgCompanyId || onlyCompany;
   return {
     fullNameArabic: cd?.fullNameArabic ?? '',
     lastNameArabic: cd?.lastNameArabic ?? '',
@@ -202,6 +217,8 @@ function toEdit(cd: RequestCustomData | null | undefined): OnboardingEdit {
     dateOfBirth: dateKey(cd?.dateOfBirth) ?? '',
     iqamaOrIdExp: dateKey(cd?.iqamaOrIdExp) ?? '',
     joinDate: dateKey(cd?.joinDate) ?? '',
+    legalCompanyId: cd?.companyId || actualCompanyId,
+    actualCompanyId,
   };
 }
 
@@ -266,6 +283,7 @@ export default function IncomingRequestsPage() {
         managerRequests: json.managerRequests || [],
         deptManagerRequests: json.deptManagerRequests || [],
         ownerRequests: json.ownerRequests || [],
+        companies: json.companies || [],
       });
     } catch {
       if (opts.silent) toast.error('تعذر الاتصال بالخادم');
@@ -412,6 +430,8 @@ export default function IncomingRequestsPage() {
   const fulfilOptions = fulfilReq?.customData?.vacantAssets ?? [];
 
   const reviewAttachments = reviewModalReq?.customData;
+  const reviewOrgCompanyId = reviewModalReq?.customData?.orgCompanyId || null;
+  const companyName = (id: string | null) => data.companies.find((c) => c.id === id)?.nameArabic ?? null;
 
   return (
     <DashboardLayout>
@@ -634,7 +654,7 @@ export default function IncomingRequestsPage() {
                     </div>
                   ) : req.type === 'ONBOARDING' ? (
                     <div className="flex items-center gap-3 pt-4 border-t border-slate-100">
-                      <button type="button" disabled={busyId !== null} onClick={() => { setReviewModalReq(req); setEditedData(toEdit(req.customData)); }} className="flex-1 bg-indigo-50 text-indigo-700 hover:bg-indigo-600 hover:text-white py-3 rounded-xl font-black text-[13px] flex items-center justify-center gap-2 transition border border-indigo-100 hover:border-transparent disabled:opacity-50">
+                      <button type="button" disabled={busyId !== null} onClick={() => { setReviewModalReq(req); setEditedData(toEdit(req.customData, data.companies)); }} className="flex-1 bg-indigo-50 text-indigo-700 hover:bg-indigo-600 hover:text-white py-3 rounded-xl font-black text-[13px] flex items-center justify-center gap-2 transition border border-indigo-100 hover:border-transparent disabled:opacity-50">
                         <CheckCircle size={16} /> استعراض وتعديل
                       </button>
                       <button type="button" disabled={busyId !== null} onClick={() => void handleAction(req, 'REJECT')} className="bg-rose-50 text-rose-700 hover:bg-rose-600 hover:text-white py-3 px-6 rounded-xl font-black text-[13px] flex items-center justify-center gap-1 transition border border-rose-100 hover:border-transparent disabled:opacity-50">
@@ -796,6 +816,35 @@ export default function IncomingRequestsPage() {
                     </EditField>
                     <EditField label="رقم الآيبان"><input type="text" dir="ltr" value={editedData.ibanNumber} onChange={(e) => setEditedData({ ...editedData, ibanNumber: e.target.value.toUpperCase().replace(/\s+/g, '') })} className={INPUT} /></EditField>
                   </div>
+                </div>
+
+                {/* Companies (P0-05): the employee is never created without his legal and actual company */}
+                <div className="bg-white p-6 rounded-2xl border border-slate-100">
+                  <h3 className="font-bold text-slate-700 mb-4 border-b pb-2">الشركة</h3>
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    <EditField label="الشركة النظامية (المسجل عليها الموظف)">
+                      <select required value={editedData.legalCompanyId} onChange={(e) => setEditedData({ ...editedData, legalCompanyId: e.target.value })} className={INPUT}>
+                        <option value="">— اختر الشركة —</option>
+                        {data.companies.map((c) => <option key={c.id} value={c.id}>{c.nameArabic}</option>)}
+                      </select>
+                    </EditField>
+                    <EditField label="الشركة الفعلية (التي يعمل لديها)">
+                      {reviewOrgCompanyId ? (
+                        <div className={`${INPUT} bg-slate-100`}>
+                          {companyName(reviewOrgCompanyId) ?? 'شركة الفرع'}
+                          <span className="block text-[11px] font-bold text-slate-400">مشتقة من الفرع المختار في الطلب</span>
+                        </div>
+                      ) : (
+                        <select required value={editedData.actualCompanyId} onChange={(e) => setEditedData({ ...editedData, actualCompanyId: e.target.value })} className={INPUT}>
+                          <option value="">— اختر الشركة —</option>
+                          {data.companies.map((c) => <option key={c.id} value={c.id}>{c.nameArabic}</option>)}
+                        </select>
+                      )}
+                    </EditField>
+                  </div>
+                  {data.companies.length === 0 && (
+                    <p className="mt-3 text-[12px] font-bold text-rose-500">لا توجد شركة ضمن صلاحياتك. أضف الشركة أولاً أو اطلب توسيع نطاق صلاحياتك.</p>
+                  )}
                 </div>
 
                 {/* Attachments */}

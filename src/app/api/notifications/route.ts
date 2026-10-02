@@ -5,6 +5,7 @@ import { hasRole, requireUser, type AuthUser } from '@/lib/auth';
 import { LEAVE_STATUS, LOAN_PENDING_STATUSES, ROLE_GROUPS } from '@/lib/constants';
 import { handleApiError } from '@/lib/http';
 import { formatMoney } from '@/lib/money';
+import { authz, resolveActor, scopedContext, scopedPrisma } from '@/modules/iam';
 
 export const dynamic = 'force-dynamic';
 
@@ -40,6 +41,11 @@ const employeeName = (e: { firstNameArabic: string | null; lastNameArabic: strin
 export async function GET() {
   try {
     const user = await requireUser();
+    // P1-SCOPE: loans and leaves are read through the user's ScopedContext (his companies); the
+    // role filters below (all / team / own) apply inside it. Circulars have no company yet.
+    const ctx = scopedContext(await resolveActor(prisma, user));
+    authz.assert(ctx, 'notification.read');
+    const db = scopedPrisma(ctx);
 
     const loanScope = requestScope(user, [...ROLE_GROUPS.HR, ...ROLE_GROUPS.FINANCE]);
     const leaveScope = requestScope(user, ROLE_GROUPS.HR);
@@ -49,7 +55,7 @@ export async function GET() {
     const [pendingLoans, pendingLeaves, recentCirculars, recentLogs] = await Promise.all([
       loanScope === 'none'
         ? []
-        : prisma.loan.findMany({
+        : db.loan.findMany({
             where: {
               status: { in: LOAN_PENDING_STATUSES },
               isForgiven: false,
@@ -61,7 +67,7 @@ export async function GET() {
           }),
       leaveScope === 'none'
         ? []
-        : prisma.leave.findMany({
+        : db.leave.findMany({
             where: {
               status: LEAVE_STATUS.PENDING,
               ...(employeeFilter(leaveScope, user.employeeId) ? { employee: employeeFilter(leaveScope, user.employeeId) } : {}),

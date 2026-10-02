@@ -2,16 +2,17 @@
 import 'server-only';
 import { prisma } from '@/lib/prisma';
 import { planMonthKey, POSITION_KIND_LABELS, RAISE_SCOPE_LABELS, type PositionKind, type RaiseScope } from '@/lib/workforce/planning';
+import { branchScopeWhere, departmentScopeWhere, type WfScope } from '../../_lib/scope';
 import { companyNameMap, type PlanRow } from './server';
 
-/** Names shown next to the positions and raises (employees, branches, departments, companies). */
-export async function displayNames(row: PlanRow) {
+/** Names shown next to the positions and raises (employees, branches, departments, companies of the caller's scope). */
+export async function displayNames(row: PlanRow, s: WfScope) {
   const empIds = [...new Set([...row.positions.map((p) => p.exitEmployeeId), ...row.raises.filter((r) => r.scope === 'EMPLOYEE').map((r) => r.scopeId)].filter((x): x is string => !!x))];
   const [emps, branches, departments, companies] = await Promise.all([
     empIds.length ? prisma.employee.findMany({ where: { id: { in: empIds } }, select: { id: true, employeeId: true, firstNameArabic: true, lastNameArabic: true } }) : Promise.resolve([]),
-    prisma.branch.findMany({ select: { id: true, nameArabic: true } }),
-    prisma.department.findMany({ select: { id: true, nameArabic: true } }),
-    companyNameMap(),
+    prisma.branch.findMany({ where: branchScopeWhere(s), select: { id: true, nameArabic: true } }),
+    prisma.department.findMany({ where: departmentScopeWhere(s), select: { id: true, nameArabic: true } }),
+    companyNameMap(s),
   ]);
   return {
     employees: Object.fromEntries(emps.map((e) => [e.id, `${e.firstNameArabic ?? ''} ${e.lastNameArabic ?? ''}`.trim() || e.employeeId || e.id])),

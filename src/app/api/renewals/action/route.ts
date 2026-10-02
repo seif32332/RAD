@@ -1,3 +1,5 @@
+import { closeLinkedPaymentRequests, createPaymentRequest } from '@/modules/finance';
+import { moneyActorOf } from '@/modules/platform';
 import { NextResponse } from 'next/server';
 import { z } from 'zod';
 import type { Prisma } from '@prisma/client';
@@ -22,6 +24,7 @@ import {
   findUnresolvedMuqeemTransaction,
   lockRenewalDocument,
 } from '@/app/api/employees/[id]/muqeem/renewal-record';
+import { ALL_COMPANIES, authz, resolveActor, scopedContext, scopedPrisma, type ScopedPrismaClient } from '@/modules/iam';
 
 export const dynamic = 'force-dynamic';
 
@@ -153,6 +156,30 @@ const ENTITY_DATES: Record<string, EntityDateAccess> = {
   },
 };
 
+/**
+ * P1-SCOPE: true when the entity exists inside the context (scoped client). An entity type without a
+ * known company key is inside an unrestricted context only (fail closed).
+ */
+async function entityInScope(db: ScopedPrismaClient, unrestricted: boolean, entityType: string, id: string): Promise<boolean> {
+  const where = { where: { id }, select: { id: true } } as const;
+  switch (entityType) {
+    case 'EMPLOYEE':
+      return !!(await db.employee.findUnique(where));
+    case 'COMPANY':
+      return !!(await db.company.findUnique(where));
+    case 'BRANCH':
+      return !!(await db.branch.findUnique(where));
+    case 'VEHICLE':
+      return !!(await db.vehicle.findUnique(where));
+    case 'MEDICAL_INSURANCE':
+      return !!(await db.medicalInsurance.findUnique(where));
+    case 'UTILITY_METER':
+      return !!(await db.utilityMeter.findUnique(where));
+    default:
+      return unrestricted;
+  }
+}
+
 /** Document types that have no date column to update (the archive record is the renewal). */
 const DATELESS_DOCUMENT_TYPES = new Set(['ANNUAL_LEAVE_DUE', 'UTILITY_METER']);
 
@@ -233,6 +260,8 @@ function dayRange(d: Date): { gte: Date; lt: Date } {
 export async function POST(req: Request) {
   try {
     const user = await requireUser(ROLE_GROUPS.GOV);
+    const ctx = scopedContext(await resolveActor(prisma, user));
+    authz.assert(ctx, 'gov.renewal.decide');
     const body = await parseBody(req, bodySchema);
     const { action, entityType, entityId, documentType } = body;
     const requiresPayment = action === 'RENEWED' && !!body.requiresPayment;
@@ -244,6 +273,9 @@ export async function POST(req: Request) {
     if (isLegalManaged(entityType) || isLegalManaged(documentType)) {
       throw forbidden(`${LEGAL_MANAGED_MESSAGE}، ولا يمكن تجديده أو إنهاؤه من طابور التجديدات`);
     }
+
+    // The document's entity must belong to the user's companies (404 otherwise, before any write).
+    if (!(await entityInScope(scopedPrisma(ctx), ctx.companies === ALL_COMPANIES, entityType, entityId))) throw notFound();
 
     if (action === 'RENEWED' && newExpDate && !body.confirmPastDate && isNewExpiryNotInFuture(newExpDate)) {
       throw badRequest('تاريخ الانتهاء الجديد اليوم أو قبله، فتبقى الوثيقة منتهية. صحّح التاريخ أو أكّد أنه مقصود', {
@@ -327,29 +359,34 @@ export async function POST(req: Request) {
 
         if (requiresPayment) {
           // 3. Close stale RETURNED requests, then open a new payment request for the owner
-          await tx.paymentRequest.updateMany({
-            where: { entityId, documentType, status: 'RETURNED' },
-            data: { status: 'COMPLETED', returnReason: 'تم إعادة التجديد برقم سداد جديد' },
+          await closeLinkedPaymentRequests(tx, {
+            entityId,
+            documentType,
+            from: ['RETURNED'],
+            to: 'COMPLETED',
+            returnReason: 'تم إعادة التجديد برقم سداد جديد',
+            operationKey: `renewal:${archive.id}:refile`,
           });
           const amount = roundMoney(
             body.paymentAmount ?? sumMoney((body.paymentEntries ?? []).map((p) => toNumber(p.amount))),
           );
           const accountDetails = describePaymentEntries(body.paymentEntries);
           const described = access ? await access.describe(tx, entityId) : null;
-          const payment = await tx.paymentRequest.create({
-            data: {
-              title: renewalPaymentTitle(documentType, described ?? (access ? { name: access.label } : null)),
-              reason: body.notes || 'رسوم تجديد مجدولة عبر النظام',
-              amount,
-              accountNumber: accountDetails || null,
-              receiptUrl: body.attachmentUrl ?? null,
-              status: 'PENDING_OWNER',
-              requestedById: user.id,
-              entityId,
-              entityType,
-              documentType,
-            },
-            select: { id: true },
+          // finance.createPaymentRequest (money.gateway): the owner approves it, finance pays it. An
+          // employee's own document fees go to that employee (BR-PAY-001 beneficiary, Q-PAY-E).
+          const payment = await createPaymentRequest(tx, {
+            actor: moneyActorOf(user),
+            title: renewalPaymentTitle(documentType, described ?? (access ? { name: access.label } : null)),
+            reason: body.notes || 'رسوم تجديد مجدولة عبر النظام',
+            amount,
+            accountNumber: accountDetails || null,
+            receiptUrl: body.attachmentUrl ?? null,
+            status: 'PENDING_OWNER',
+            entityId,
+            entityType,
+            documentType,
+            beneficiaryEmployeeId: entityType === 'EMPLOYEE' ? entityId : null,
+            operationKey: `renewal:${archive.id}:payment`,
           });
           paymentRequestId = payment.id;
         } else {

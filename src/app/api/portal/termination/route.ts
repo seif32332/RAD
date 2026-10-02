@@ -1,12 +1,14 @@
 import { NextResponse } from 'next/server';
 import { z } from 'zod';
 import { prisma } from '@/lib/prisma';
-import { getClientIp, requireEmployeeId, requireUser } from '@/lib/auth';
+import { getClientIp, requireUser } from '@/lib/auth';
 import { ROLE_GROUPS } from '@/lib/constants';
 import { conflict, forbidden, handleApiError, parseBody } from '@/lib/http';
 import { zId, zOptText } from '@/lib/validation';
 import { logAudit } from '@/lib/audit';
 import { lockEmployeeForUpdate } from '@/lib/hr-workflows';
+import { resolveSelfContext } from '@/lib/employee-scope';
+import { authz, resolveActor, scopeWhere } from '@/modules/iam';
 
 export const dynamic = 'force-dynamic';
 
@@ -25,7 +27,12 @@ const createSchema = z.object({
 export async function POST(req: Request) {
   try {
     const user = await requireUser(ROLE_GROUPS.ALL);
-    const employeeId = await requireEmployeeId(user);
+    // P1-SCOPE: SelfContext: the request is always the session employee's own. The transaction stays on
+    // the root client (the row lock is raw SQL), with the Self filter added to its read.
+    const self = await resolveSelfContext(prisma, await resolveActor(prisma, user));
+    authz.assert(self, 'portal.self.request');
+    const employeeId = self.employeeId;
+    const own = scopeWhere(self, 'TerminationRequest') ?? {};
     const body = await parseBody(req, createSchema);
     if (body.employeeId && body.employeeId !== employeeId) throw forbidden('لا يمكنك تقديم طلب لموظف آخر');
 
@@ -33,7 +40,7 @@ export async function POST(req: Request) {
       // Serialize concurrent submissions for this employee so only one pending request exists.
       await lockEmployeeForUpdate(tx, employeeId);
       const pending = await tx.terminationRequest.findFirst({
-        where: { employeeId, status: TERMINATION_PENDING },
+        where: { employeeId, status: TERMINATION_PENDING, AND: [own] },
         select: { id: true },
       });
       if (pending) throw conflict('لديك طلب إنهاء عقد قيد المراجعة بالفعل');

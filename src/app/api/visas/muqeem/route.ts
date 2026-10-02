@@ -24,6 +24,7 @@ import { ROLE_GROUPS } from '@/lib/constants';
 import { HttpError, badRequest, conflict, handleApiError, notFound, parseBody } from '@/lib/http';
 import { logAudit } from '@/lib/audit';
 import { todayKey } from '@/lib/dates';
+import { authz, resolveActor, scopedContext, scopedPrisma, type ScopedPrismaClient } from '@/modules/iam';
 import {
   MuqeemError,
   muqeemConfig,
@@ -141,14 +142,18 @@ type LoadedVisa = Prisma.VisaGetPayload<{
 interface Ctx {
   user: AuthUser;
   ipAddress: string;
+  /** P1-SCOPE: scoped client of the user's companies; every visa is loaded through it (404 outside). */
+  db: ScopedPrismaClient;
 }
 
 export async function POST(req: Request) {
   try {
     const user = await requireUser(OPERATOR_ROLES);
+    const scope = scopedContext(await resolveActor(prisma, user));
+    authz.assert(scope, 'gov.muqeem.operate');
     const raw = await parseBody(req, envelopeSchema);
     const env = raw;
-    const ctx: Ctx = { user, ipAddress: getClientIp(req) };
+    const ctx: Ctx = { user, ipAddress: getClientIp(req), db: scopedPrisma(scope) };
     // Calls that reach Muqeem require the explicit confirmation the UI collects (confirmDialog).
     if (MUQEEM_CALL_ACTIONS.has(env.action) && (raw as { confirm?: unknown }).confirm !== true) {
       throw badRequest('يجب تأكيد العملية صراحةً قبل تنفيذها في منصة مقيم (confirm: true)');
@@ -178,8 +183,8 @@ export async function POST(req: Request) {
 // Shared checks
 // ---------------------------------------------------------------------------
 
-async function loadVisa(visaId: string): Promise<LoadedVisa> {
-  const visa = await prisma.visa.findUnique({
+async function loadVisa(visaId: string, ctx: Ctx): Promise<LoadedVisa> {
+  const visa = await ctx.db.visa.findUnique({
     where: { id: visaId },
     include: {
       employee: {
@@ -341,7 +346,7 @@ async function applyIssued(
 }
 
 async function issue(input: z.infer<typeof issueSchema>, ctx: Ctx) {
-  const visa = await loadVisa(input.visaId);
+  const visa = await loadVisa(input.visaId, ctx);
   const idempotencyKey = key('EXIT_REENTRY_ISSUE', visaMuqeemKeyParts('EXIT_REENTRY_ISSUE', visa));
 
   // Replay: already issued through Muqeem -> return the stored result, no call.
@@ -463,7 +468,7 @@ async function applyExtended(visa: LoadedVisa, tx: MuqeemTransaction, response: 
  */
 async function extensionAlreadyDone(visaId: string, base: string, done: MuqeemTransaction, requestedReturnBefore: string, ctx: Ctx) {
   const executed = toDateKey(parseSummary(done.requestSummary).newReturnBefore as string | null | undefined);
-  const fresh = await loadVisa(visaId);
+  const fresh = await loadVisa(visaId, ctx);
   let applied = false;
   if (toDateKey(fresh.returnBefore) === base && executed && executed !== base) {
     await applyExtended(fresh, done, parseSummary(done.responseSummary), ctx, 'MUQEEM_REPLAY');
@@ -485,7 +490,7 @@ async function extensionAlreadyDone(visaId: string, base: string, done: MuqeemTr
 }
 
 async function extend(input: z.infer<typeof extendSchema>, ctx: Ctx) {
-  const visa = await loadVisa(input.visaId);
+  const visa = await loadVisa(input.visaId, ctx);
   const number = assertMuqeemIssued(visa);
 
   // The plan is computed from the return-before date the user saw, and the key is that BASE date
@@ -564,7 +569,7 @@ async function applyCancelled(visa: LoadedVisa, tx: MuqeemTransaction, ctx: Ctx,
 }
 
 async function cancel(visaId: string, ctx: Ctx) {
-  const visa = await loadVisa(visaId);
+  const visa = await loadVisa(visaId, ctx);
   const number = visa.externalVisaNumber?.trim() ?? '';
   const idempotencyKey = number ? key('EXIT_REENTRY_CANCEL', visaMuqeemKeyParts('EXIT_REENTRY_CANCEL', visa)) : null;
   const done = idempotencyKey ? await findSucceeded(idempotencyKey) : null;
@@ -609,7 +614,7 @@ async function cancel(visaId: string, ctx: Ctx) {
 // ---------------------------------------------------------------------------
 
 async function reprint(visaId: string, ctx: Ctx) {
-  const visa = await loadVisa(visaId);
+  const visa = await loadVisa(visaId, ctx);
   const number = assertMuqeemIssued(visa);
   // A completed reprint that brought back no stored PDF must not block a new attempt: count them.
   const baseParts = visaMuqeemKeyParts('EXIT_REENTRY_REPRINT', visa);
@@ -679,7 +684,7 @@ async function reprint(visaId: string, ctx: Ctx) {
 // ---------------------------------------------------------------------------
 
 async function reconcile(input: z.infer<typeof reconcileSchema>, ctx: Ctx) {
-  const visa = await loadVisa(input.visaId);
+  const visa = await loadVisa(input.visaId, ctx);
   const row = await prisma.muqeemTransaction.findUnique({ where: { id: input.muqeemTransactionId } });
   if (!row || row.entityType !== 'VISA' || row.entityId !== visa.id || !(VISA_MUQEEM_OPERATIONS as readonly string[]).includes(row.operation)) {
     throw notFound('عملية مقيم غير موجودة لهذه التأشيرة');
@@ -726,7 +731,7 @@ async function reconcile(input: z.infer<typeof reconcileSchema>, ctx: Ctx) {
 // ---------------------------------------------------------------------------
 
 async function sync(visaId: string, ctx: Ctx) {
-  const visa = await loadVisa(visaId);
+  const visa = await loadVisa(visaId, ctx);
   const txs = await prisma.muqeemTransaction.findMany({
     where: { entityType: 'VISA', entityId: visa.id, operation: { in: [...VISA_MUQEEM_OPERATIONS] }, status: MUQEEM_TX_STATUS.SUCCEEDED },
     orderBy: { createdAt: 'asc' },

@@ -9,6 +9,8 @@ import { zId, zOptText, zText } from '@/lib/validation';
 import { decryptField, encryptField, isEncrypted } from '@/lib/crypto';
 import { rateLimit } from '@/lib/rate-limit';
 import { logAudit } from '@/lib/audit';
+import { recordCompanyId } from '@/lib/record-company';
+import { authz, resolveActor, scopedContext, scopedPrisma, type ScopedPrismaClient } from '@/modules/iam';
 
 export const dynamic = 'force-dynamic';
 
@@ -18,6 +20,10 @@ export const dynamic = 'force-dynamic';
  * also includes HR_MANAGER for renewals.
  */
 const GOV_PLATFORM_ROLES: readonly AppRole[] = ['SUPER_ADMIN', 'COMPANY_ADMIN', 'GOV_RELATIONS'];
+
+// P1-SCOPE (DOMAIN_BOUNDARIES §5.4.3 gov, EV-5021): credentials belong to one company
+// (GovPlatform.companyId). Every handler goes through the scoped client, so a platform of a company
+// outside the user's scope is "not found" (404) for list, reveal, update and delete alike.
 
 /**
  * Placeholder returned instead of the real password. When the edit form sends it back
@@ -42,6 +48,8 @@ const CreateSchema = z.object({
   phoneNumber: zOptText(50),
   authorizedPerson: zOptText(200),
   notes: zOptText(5000),
+  /** Company whose credentials these are; defaults to the user's only company. */
+  companyId: zOptText(100),
 });
 
 const UpdateSchema = z.object({
@@ -52,15 +60,17 @@ const UpdateSchema = z.object({
   phoneNumber: zOptText(50),
   authorizedPerson: zOptText(200),
   notes: zOptText(5000),
+  /** Move the credentials to another company of the user's scope. */
+  companyId: zOptText(100),
 });
 
 const RevealSchema = z.object({ action: z.literal('reveal'), id: zId });
 
-async function revealPassword(user: AuthUser, id: string, req: Request) {
+async function revealPassword(db: ScopedPrismaClient, user: AuthUser, id: string, req: Request) {
   const limit = rateLimit(`gov-reveal:${user.id}`, 60, 60 * 60_000);
   if (!limit.ok) throw new HttpError(429, 'تم تجاوز عدد مرات عرض كلمات المرور المسموح بها، حاول لاحقاً');
 
-  const row = await prisma.govPlatform.findUnique({ where: { id }, select: { id: true, platformName: true, password: true } });
+  const row = await db.govPlatform.findUnique({ where: { id }, select: { id: true, platformName: true, password: true } });
   if (!row) throw notFound('المنصة غير موجودة');
 
   await logAudit({
@@ -79,10 +89,13 @@ async function revealPassword(user: AuthUser, id: string, req: Request) {
 export async function GET(req: Request) {
   try {
     const user = await requireUser(GOV_PLATFORM_ROLES);
+    const ctx = scopedContext(await resolveActor(prisma, user));
+    authz.assert(ctx, 'gov.platform.manage');
+    const db = scopedPrisma(ctx);
     const revealId = new URL(req.url).searchParams.get('reveal');
-    if (revealId !== null) return await revealPassword(user, zId.parse(revealId), req);
+    if (revealId !== null) return await revealPassword(db, user, zId.parse(revealId), req);
 
-    const platforms = await prisma.govPlatform.findMany({ orderBy: { createdAt: 'desc' } });
+    const platforms = await db.govPlatform.findMany({ orderBy: { createdAt: 'desc' } });
     return NextResponse.json(platforms.map(toPublic));
   } catch (err) {
     return handleApiError(err, 'gov-platforms:GET');
@@ -93,6 +106,9 @@ export async function GET(req: Request) {
 export async function POST(req: Request) {
   try {
     const user = await requireUser(GOV_PLATFORM_ROLES);
+    const ctx = scopedContext(await resolveActor(prisma, user));
+    authz.assert(ctx, 'gov.platform.manage');
+    const db = scopedPrisma(ctx);
     let raw: unknown;
     try {
       raw = await req.json();
@@ -102,12 +118,14 @@ export async function POST(req: Request) {
 
     if (raw && typeof raw === 'object' && (raw as { action?: unknown }).action === 'reveal') {
       const { id } = RevealSchema.parse(raw);
-      return await revealPassword(user, id, req);
+      return await revealPassword(db, user, id, req);
     }
 
     const body = CreateSchema.parse(raw);
-    const platform = await prisma.govPlatform.create({
+    const companyId = await recordCompanyId(prisma, ctx, body.companyId);
+    const platform = await db.govPlatform.create({
       data: {
+        companyId,
         platformName: body.platformName,
         username: body.username,
         password: encryptField(body.password),
@@ -122,7 +140,7 @@ export async function POST(req: Request) {
       action: 'CREATE',
       entityType: 'GovPlatform',
       entityId: platform.id,
-      details: { platformName: platform.platformName, username: platform.username },
+      details: { platformName: platform.platformName, username: platform.username, companyId },
       ipAddress: getClientIp(req),
     });
 
@@ -136,16 +154,21 @@ export async function POST(req: Request) {
 export async function PUT(req: Request) {
   try {
     const user = await requireUser(GOV_PLATFORM_ROLES);
+    const ctx = scopedContext(await resolveActor(prisma, user));
+    authz.assert(ctx, 'gov.platform.manage');
+    const db = scopedPrisma(ctx);
     const body = await parseBody(req, UpdateSchema);
 
-    const existing = await prisma.govPlatform.findUnique({ where: { id: body.id }, select: { id: true, password: true } });
+    const existing = await db.govPlatform.findUnique({ where: { id: body.id }, select: { id: true, password: true } });
     if (!existing) throw notFound('المنصة غير موجودة');
 
     let password: string | undefined;
     if (body.password !== undefined) password = encryptField(body.password);
     else if (existing.password && !isEncrypted(existing.password)) password = encryptField(existing.password); // migrate legacy plaintext
 
+    const companyId = body.companyId ? await recordCompanyId(prisma, ctx, body.companyId) : undefined;
     const data = definedOnly({
+      companyId,
       platformName: body.platformName,
       username: body.username,
       password,
@@ -154,7 +177,7 @@ export async function PUT(req: Request) {
       notes: body.notes,
     });
 
-    const updated = await prisma.govPlatform.update({ where: { id: body.id }, data });
+    const updated = await db.govPlatform.update({ where: { id: body.id }, data });
 
     await logAudit({
       userId: user.id,
@@ -175,12 +198,15 @@ export async function PUT(req: Request) {
 export async function DELETE(req: Request) {
   try {
     const user = await requireUser(GOV_PLATFORM_ROLES);
+    const ctx = scopedContext(await resolveActor(prisma, user));
+    authz.assert(ctx, 'gov.platform.manage');
+    const db = scopedPrisma(ctx);
     const id = zId.parse(new URL(req.url).searchParams.get('id') ?? '');
 
-    const existing = await prisma.govPlatform.findUnique({ where: { id }, select: { id: true, platformName: true, username: true } });
+    const existing = await db.govPlatform.findUnique({ where: { id }, select: { id: true, platformName: true, username: true } });
     if (!existing) throw notFound('المنصة غير موجودة');
 
-    await prisma.govPlatform.delete({ where: { id } });
+    await db.govPlatform.delete({ where: { id } });
     await logAudit({
       userId: user.id,
       action: 'DELETE',

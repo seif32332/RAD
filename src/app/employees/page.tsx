@@ -8,13 +8,14 @@ import DashboardLayout from '@/components/DashboardLayout';
 import { toast, readApiError } from '@/components/ui/feedback';
 import { formatDateShort, todayKey, dateKey } from '@/lib/dates';
 import { formatMoney, sumMoney } from '@/lib/money';
-import { LEAVE_STATUS, ROLE_GROUPS, roleIn } from '@/lib/constants';
+import { ROLE_GROUPS, roleIn } from '@/lib/constants';
+import { isOnLeaveFromRows } from '@/lib/leave';
 import { SAUDI_NATIONALITY, isSaudiNationalityValue } from '@/lib/employee-shared';
 import { useRole } from '@/context/RoleContext';
 
 interface NamedRef { id: string; nameArabic: string }
 interface OrgRow extends NamedRef { companyId?: string | null; administrationId?: string | null }
-interface EmployeeLeave { id: string; status: string; startDate: string; endDate: string; isReturned?: boolean | null }
+interface EmployeeLeave { id: string; status: string; startDate: string; endDate: string; isReturned?: boolean | null; actualReturnDate?: string | null }
 interface EmployeeAllowance { id: string; amount: number | null }
 interface EmployeeRow {
   id: string;
@@ -186,16 +187,11 @@ export default function EmployeesPage() {
 
   // Derived state (memoized: recomputed only when the data or a filter changes)
   const onLeaveIds = useMemo(() => {
+    // The one "on leave" rule (BR-LCY-008): approved/completed leave covering today, ended by a recorded return.
     const t = todayKey();
     const ids = new Set<string>();
     for (const emp of employees) {
-      const onLeave = (emp.leaves ?? []).some((l) => {
-        if (l.status !== LEAVE_STATUS.APPROVED || l.isReturned) return false;
-        const start = dateKey(l.startDate);
-        const end = dateKey(l.endDate);
-        return start !== null && end !== null && start <= t && end >= t;
-      });
-      if (onLeave) ids.add(emp.id);
+      if (isOnLeaveFromRows(emp.leaves, t)) ids.add(emp.id);
     }
     return ids;
   }, [employees]);

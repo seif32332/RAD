@@ -17,6 +17,7 @@ import { handleApiError, parseBody } from '@/lib/http';
 import { ESTIMATE_DISCLAIMER } from '@/lib/workforce/version';
 import { exitCostSchema } from '../_lib/schemas';
 import { auditViewOnce, limitOrThrow, runExitCost } from '../_lib/server';
+import { workforceScope } from '../_lib/scope';
 
 export const dynamic = 'force-dynamic';
 
@@ -25,7 +26,8 @@ export async function POST(req: Request) {
     const user = await requireUser(ROLE_GROUPS.WORKFORCE);
     const body = await parseBody(req, exitCostSchema);
     limitOrThrow(user, 'exit', 60, 60_000);
-    const out = await runExitCost(body);
+    // P1-SCOPE: an employee outside the caller's legal companies is "not found".
+    const out = await runExitCost(body, await workforceScope(user));
     await auditViewOnce(user, 'WorkforceExitCost', { employeeId: body.employeeId, exitReason: body.exitReason, settlementReason: body.settlementReason ?? null }, getClientIp(req));
     return NextResponse.json({
       disclaimer: ESTIMATE_DISCLAIMER,

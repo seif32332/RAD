@@ -15,6 +15,8 @@ import {
   managedEmployeesWhere,
   rejectTransfer,
 } from '@/lib/hr-workflows';
+import { resolveTeamContext } from '@/lib/employee-scope';
+import { authz, resolveActor, scopedContext, scopedPrisma } from '@/modules/iam';
 
 export const dynamic = 'force-dynamic';
 
@@ -23,11 +25,17 @@ export const dynamic = 'force-dynamic';
  * transfers for their team) see only the transfers of the employees they manage or that they
  * requested themselves, and only their team in the form (never themselves: nobody transfers
  * their own file). Approve / reject stays HR-only (POST).
+ * P1-SCOPE: HR works in its ScopedContext (its companies), the other managers in their TeamContext
+ * (their team inside their own legal company); every query goes through the scoped client.
  */
 export async function GET() {
   try {
     const user = await requireUser(ROLE_GROUPS.MANAGERS);
     const isHr = roleIn(user.role, ROLE_GROUPS.HR);
+    const actor = await resolveActor(prisma, user);
+    const ctx = isHr ? scopedContext(actor) : await resolveTeamContext(prisma, actor);
+    authz.assert(ctx, 'employee.read');
+    const db = scopedPrisma(ctx);
     // null for HR (everyone); a team filter for the other managers.
     const team = await managedEmployeesWhere(prisma, user);
     const transferWhere: Prisma.TransferRequestWhereInput = team
@@ -38,7 +46,7 @@ export async function GET() {
       : { isTerminated: false };
 
     const [transfers, employees, branches, me] = await Promise.all([
-      prisma.transferRequest.findMany({
+      db.transferRequest.findMany({
         where: transferWhere,
         include: {
           employee: {
@@ -57,7 +65,7 @@ export async function GET() {
         orderBy: { createdAt: 'desc' },
       }),
       // Form metadata
-      prisma.employee.findMany({
+      db.employee.findMany({
         where: employeeWhere,
         select: {
           id: true,
@@ -71,7 +79,7 @@ export async function GET() {
         },
         orderBy: { firstNameArabic: 'asc' },
       }),
-      prisma.branch.findMany({
+      db.branch.findMany({
         select: {
           id: true,
           nameArabic: true,
@@ -80,7 +88,7 @@ export async function GET() {
         orderBy: { nameArabic: 'asc' },
       }),
       !isHr && user.employeeId
-        ? prisma.employee.findUnique({
+        ? db.employee.findUnique({
             where: { id: user.employeeId },
             select: { id: true, employeeId: true, firstNameArabic: true, lastNameArabic: true, jobTitle: true },
           })
@@ -132,11 +140,23 @@ export async function POST(req: Request) {
     const user = await requireUser(ROLE_GROUPS.MANAGERS);
     const body = await parseBody(req, bodySchema);
     const ipAddress = getClientIp(req);
+    const actor = await resolveActor(prisma, user);
+    // Company layer (P1-SCOPE): the user's companies; managers additionally act on their team only.
+    const staff = scopedContext(actor);
+    const staffDb = scopedPrisma(staff);
 
     // Approve / reject (HR only, guarded + atomic in src/lib/hr-workflows).
     if ('payload' in body) {
       if (!roleIn(user.role, ROLE_GROUPS.HR)) throw forbidden();
+      authz.assert(staff, 'employee.transfer.decide');
       const { id, status, hrNote } = body.payload;
+      // A transfer of another company is "not found"; one moving the employee to a branch outside
+      // the user's companies is not his to decide (403).
+      const transfer = await staffDb.transferRequest.findUnique({ where: { id }, select: { toBranchId: true } });
+      if (!transfer) throw notFound('طلب النقل غير موجود');
+      if (!(await staffDb.branch.findUnique({ where: { id: transfer.toBranchId }, select: { id: true } }))) {
+        throw forbidden('الفرع المنقول إليه خارج نطاق صلاحياتك');
+      }
       if (status === TRANSFER_STATUS.APPROVED) {
         await prisma.$transaction((tx) => approveTransfer(tx, id, user, { hrNote, ipAddress }));
         return NextResponse.json({ message: 'تمت الموافقة على النقل وتحديث بيانات الموظف بنجاح' });
@@ -149,16 +169,20 @@ export async function POST(req: Request) {
     if (!roleIn(user.role, ROLE_GROUPS.HR) && body.requesterId && body.requesterId !== user.employeeId) {
       throw forbidden('لا يمكنك رفع طلب النقل باسم مسؤول آخر');
     }
+    const ctx = roleIn(user.role, ROLE_GROUPS.HR) ? staff : await resolveTeamContext(prisma, actor);
+    const db = scopedPrisma(ctx);
     const [employee, toBranch, requester, pending] = await Promise.all([
-      prisma.employee.findUnique({
+      // Another company's employee is "not found"; a non-team employee of the user's companies is 403 below.
+      staffDb.employee.findUnique({
         where: { id: body.employeeId },
-        select: { id: true, branchId: true, directManagerId: true, departmentId: true, isTerminated: true },
+        select: { id: true, branchId: true, directManagerId: true, departmentId: true, isTerminated: true, legalCompanyId: true },
       }),
-      prisma.branch.findUnique({
+      // Only a branch of the context's companies (a manager: his own company).
+      db.branch.findUnique({
         where: { id: body.toBranchId },
         select: { id: true, workSchedules: { select: { name: true } } },
       }),
-      body.requesterId ? prisma.employee.findUnique({ where: { id: body.requesterId }, select: { id: true } }) : Promise.resolve(null),
+      body.requesterId ? staffDb.employee.findUnique({ where: { id: body.requesterId }, select: { id: true } }) : Promise.resolve(null),
       prisma.transferRequest.findFirst({ where: { employeeId: body.employeeId, status: TRANSFER_STATUS.PENDING }, select: { id: true } }),
     ]);
     if (!employee) throw notFound('الموظف غير موجود');
@@ -171,8 +195,14 @@ export async function POST(req: Request) {
     }
     if (pending) throw conflict('يوجد طلب نقل قائم لهذا الموظف بانتظار الموارد البشرية');
     if (!roleIn(user.role, ROLE_GROUPS.HR)) await assertCanManageEmployee(prisma, user, employee);
+    authz.assert(
+      ctx,
+      'employee.transfer.request',
+      { companyId: employee.legalCompanyId, employeeId: employee.id, directManagerId: employee.directManagerId, branchId: employee.branchId, departmentId: employee.departmentId },
+      'هذا الموظف ليس ضمن نطاق إدارتك',
+    );
 
-    const transfer = await prisma.transferRequest.create({
+    const transfer = await db.transferRequest.create({
       data: {
         employeeId: body.employeeId,
         requesterId: body.requesterId ?? user.employeeId ?? null,

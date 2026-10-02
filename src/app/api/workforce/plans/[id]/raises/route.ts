@@ -10,6 +10,7 @@ import { zId } from '@/lib/validation';
 import { limitOrThrow } from '../../../_lib/server';
 import { raiseCreateSchema } from '../../_lib/schemas';
 import { MAX_RAISES, assertAllowed, loadPlanOr404, lockEditable, monthDate, validateRaise } from '../../_lib/server';
+import { workforceScope } from '../../../_lib/scope';
 
 export const dynamic = 'force-dynamic';
 
@@ -20,11 +21,13 @@ export async function POST(req: Request, ctx: { params: Promise<{ id: string }> 
     const idp = zId.safeParse((await ctx.params).id);
     if (!idp.success) throw notFound('الخطة غير موجودة');
     // Status first: an approved / submitted plan answers 409 whatever the body.
-    const row = await loadPlanOr404(idp.data);
+    // P1-SCOPE: the plan and the raise's company / department / employee must be in the caller's companies (404).
+    const wf = await workforceScope(user, 'workforce.plan.manage');
+    const row = await loadPlanOr404(idp.data, wf);
     assertAllowed('EDIT', row, user);
     const body = await parseBody(req, raiseCreateSchema);
     if (row.raises.length >= MAX_RAISES) throw conflict(`الحد الأعلى ${MAX_RAISES} زيادة في الخطة`);
-    await validateRaise(row, body);
+    await validateRaise(row, body, wf);
     const created = await prisma.$transaction(async (tx) => {
       await lockEditable(tx, row.id);
       const r = await tx.planRaise.create({

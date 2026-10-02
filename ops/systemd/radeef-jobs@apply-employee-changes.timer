@@ -1,0 +1,11 @@
+# /etc/systemd/system/radeef-jobs@apply-employee-changes.timer: daily 00:15 + up to 10 min (dated employee changes take effect)
+[Unit]
+Description=Radeef background job apply-employee-changes (schedule)
+
+[Timer]
+OnCalendar=*-*-* 00:15:00 Asia/Riyadh
+RandomizedDelaySec=10min
+Persistent=true
+
+[Install]
+WantedBy=timers.target

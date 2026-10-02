@@ -7,6 +7,7 @@ import { dateKey, daysBetween, inclusiveDays, monthRange, today } from '@/lib/da
 import { roundMoney } from '@/lib/money';
 import { LEAVE_STATUS } from '@/lib/constants';
 import { isSaudiNational } from '@/lib/nationality';
+import { catalogueLaborLaw, type AnnualLeaveLaw, type SickLeaveLaw, type StatutoryLeaveLaw } from '@/modules/rules';
 
 export const LEAVE_TYPES = [
   'ANNUAL',
@@ -130,21 +131,27 @@ export const LEAVE_RULE_SETTING_KEYS: Readonly<Record<keyof StatutoryLeaveRules,
 };
 
 /**
- * Defaults (PROVISIONAL — pending counsel confirmation, see the sources above). Hajj: the law
- * gives 10 to 15 days including the Eid al-Adha holiday; the default is the statutory minimum and
- * the company may raise it up to 15.
+ * The statutory leave rules of a labour-law bundle (P1-RULE: the values are the RuleParameter keys
+ * MATERNITY_WEEKS, PATERNITY_DAYS, HAJJ_LEAVE_MIN_DAYS…, see src/modules/rules/catalogue.ts). Hajj:
+ * the law gives 10 to 15 days including the Eid al-Adha holiday; the default is the statutory
+ * minimum and the company may raise it up to the maximum.
  */
-export const DEFAULT_STATUTORY_LEAVE_RULES: Readonly<StatutoryLeaveRules> = {
-  maternityDays: 84, // 12 weeks
-  maternityUnpaidExtensionDays: 30, // "one month" without pay
-  paternityDays: 3,
-  paternityWindowDays: 7,
-  marriageDays: 5,
-  bereavementDays: 5,
-  bereavementSiblingDays: 3,
-  hajjDays: 10,
-  hajjMinServiceYears: 2,
-};
+export function statutoryLeaveRulesFromLaw(law: StatutoryLeaveLaw): StatutoryLeaveRules {
+  return {
+    maternityDays: law.maternityWeeks * 7,
+    maternityUnpaidExtensionDays: law.maternityUnpaidExtensionDays,
+    paternityDays: law.paternityDays,
+    paternityWindowDays: law.paternityWindowDays,
+    marriageDays: law.marriageDays,
+    bereavementDays: law.bereavementDays,
+    bereavementSiblingDays: law.bereavementSiblingDays,
+    hajjDays: law.hajjMinDays,
+    hajjMinServiceYears: law.hajjMinServiceYears,
+  };
+}
+
+/** Defaults (PROVISIONAL — pending counsel confirmation, see the sources above): the catalogue's current law. */
+export const DEFAULT_STATUTORY_LEAVE_RULES: Readonly<StatutoryLeaveRules> = statutoryLeaveRulesFromLaw(catalogueLaborLaw().statutoryLeave);
 
 /** Allowed ranges of the rule settings (used by /api/settings validation). */
 export const LEAVE_RULE_LIMITS: Readonly<Record<keyof StatutoryLeaveRules, { min: number; max: number }>> = {
@@ -159,10 +166,16 @@ export const LEAVE_RULE_LIMITS: Readonly<Record<keyof StatutoryLeaveRules, { min
   hajjMinServiceYears: { min: 0, max: 40 },
 };
 
-/** Rules from SystemSetting values (key -> raw value); missing / invalid values use the defaults. */
-export function parseStatutoryLeaveRules(values: ReadonlyMap<string, string | null | undefined> | Record<string, string | null | undefined>): StatutoryLeaveRules {
+/**
+ * Rules from SystemSetting values (key -> raw value); missing / invalid values use `base` (the
+ * company's law from rules.laborLawFor, else the catalogue defaults).
+ */
+export function parseStatutoryLeaveRules(
+  values: ReadonlyMap<string, string | null | undefined> | Record<string, string | null | undefined>,
+  base: Readonly<StatutoryLeaveRules> = DEFAULT_STATUTORY_LEAVE_RULES,
+): StatutoryLeaveRules {
   const get = (k: string): string | null | undefined => (values instanceof Map ? values.get(k) : (values as Record<string, string | null | undefined>)[k]);
-  const out = { ...DEFAULT_STATUTORY_LEAVE_RULES };
+  const out = { ...base };
   for (const field of Object.keys(LEAVE_RULE_SETTING_KEYS) as Array<keyof StatutoryLeaveRules>) {
     const raw = get(LEAVE_RULE_SETTING_KEYS[field]);
     if (raw === null || raw === undefined) continue;
@@ -231,13 +244,19 @@ export const BALANCE_LEAVE_TYPES: readonly string[] = ['ANNUAL', 'DEDUCTED', 'EM
 /** Statuses whose paid days have been consumed from the balance. */
 export const BALANCE_CONSUMING_STATUSES: readonly string[] = [LEAVE_STATUS.APPROVED, LEAVE_STATUS.COMPLETED];
 
-/** Saudi labor law art. 109: 21 days/year, 30 days/year once the employee completes 5 years of service. */
-export const STATUTORY_ANNUAL_LEAVE_DAYS = { UNDER_5_YEARS: 21, FROM_5_YEARS: 30 } as const;
-export const SERVICE_YEARS_FOR_HIGHER_ACCRUAL = 5;
+/**
+ * Saudi labor law art. 109 (21 days/year, 30 once the employee completes 5 years of service): the
+ * catalogue's current law (P1-RULE). Operational callers pass the company's law (rules.laborLawFor).
+ */
+export const DEFAULT_ANNUAL_LEAVE_LAW: Readonly<AnnualLeaveLaw> = catalogueLaborLaw().annualLeave;
+export const SERVICE_YEARS_FOR_HIGHER_ACCRUAL = DEFAULT_ANNUAL_LEAVE_LAW.thresholdYears;
 const DAYS_PER_YEAR = 365;
 
-/** Saudi labor law art. 117 (sick leave within one year): 30 days full pay, 60 days at 75%, 30 days unpaid. */
-export const SICK_LEAVE_TIERS = { FULL: 30, PARTIAL_UNTIL: 90, UNPAID_UNTIL: 120, PARTIAL_PAY_RATIO: 0.75 } as const;
+/**
+ * Saudi labor law art. 117 (sick leave within one year: 30 days full pay, 60 days at 75%, 30 days
+ * unpaid): the catalogue's current law (P1-RULE). Operational callers pass the company's law.
+ */
+export const DEFAULT_SICK_LEAVE_LAW: Readonly<SickLeaveLaw> = catalogueLaborLaw().sickLeave;
 
 /** Maximum length of a single leave request (days). */
 export const MAX_LEAVE_DAYS = 365;
@@ -251,11 +270,11 @@ export function isSaudiNationality(nationality: string | null | undefined): bool
  * Annual accrual rates. The statutory minimum always applies; a company setting
  * (SystemSetting `annual_leave_days`) can only grant more, never less.
  */
-export function annualEntitlementRates(annualLeaveDaysSetting?: number | null): { under5: number; from5: number } {
+export function annualEntitlementRates(annualLeaveDaysSetting?: number | null, law: Readonly<AnnualLeaveLaw> = DEFAULT_ANNUAL_LEAVE_LAW): { under5: number; from5: number } {
   const s = typeof annualLeaveDaysSetting === 'number' && Number.isFinite(annualLeaveDaysSetting) ? annualLeaveDaysSetting : 0;
   return {
-    under5: Math.max(STATUTORY_ANNUAL_LEAVE_DAYS.UNDER_5_YEARS, s),
-    from5: Math.max(STATUTORY_ANNUAL_LEAVE_DAYS.FROM_5_YEARS, s),
+    under5: Math.max(law.daysBeforeThreshold, s),
+    from5: Math.max(law.daysFromThreshold, s),
   };
 }
 
@@ -300,6 +319,8 @@ export interface LeaveBalanceInput {
   annualLeaveDaysSetting?: number | null;
   /** Ignore this leave (e.g. when re-evaluating an existing leave). */
   excludeLeaveId?: string;
+  /** Art. 109 values of the employee's company (rules.laborLawFor); default: the catalogue's. */
+  law?: Readonly<AnnualLeaveLaw>;
 }
 
 export interface LeaveBalance {
@@ -328,12 +349,13 @@ export interface LeaveBalance {
  * APPROVED/COMPLETED ANNUAL/DEDUCTED/EMERGENCY leaves recorded in that accrual period.
  */
 export function computeLeaveBalance(input: LeaveBalanceInput): LeaveBalance {
-  const rates = annualEntitlementRates(input.annualLeaveDaysSetting);
+  const law = input.law ?? DEFAULT_ANNUAL_LEAVE_LAW;
+  const rates = annualEntitlementRates(input.annualLeaveDaysSetting, law);
   const join = toUtcDay(input.joinDate);
   const accrualStart = input.leaveAccrualStartDate ? toUtcDay(input.leaveAccrualStartDate) : join;
   const start = accrualStart.getTime() < join.getTime() ? join : accrualStart;
   const asOf = toUtcDay(input.asOf ?? today());
-  const fiveYears = addYearsUtc(join, SERVICE_YEARS_FOR_HIGHER_ACCRUAL);
+  const fiveYears = addYearsUtc(join, law.thresholdYears);
 
   let accrued = 0;
   if (asOf.getTime() > start.getTime()) {
@@ -390,15 +412,15 @@ export interface SickLeaveTiers {
   beyond: number;
 }
 
-export function computeSickLeaveTiers(pastSickDays: number, totalDays: number): SickLeaveTiers {
+export function computeSickLeaveTiers(pastSickDays: number, totalDays: number, law: Readonly<SickLeaveLaw> = DEFAULT_SICK_LEAVE_LAW): SickLeaveTiers {
   const past = Math.max(0, Math.floor(pastSickDays));
   const tiers: SickLeaveTiers = { past, full: 0, partial: 0, unpaid: 0, beyond: 0 };
   let day = past;
   for (let i = 0; i < totalDays; i++) {
     day++;
-    if (day <= SICK_LEAVE_TIERS.FULL) tiers.full++;
-    else if (day <= SICK_LEAVE_TIERS.PARTIAL_UNTIL) tiers.partial++;
-    else if (day <= SICK_LEAVE_TIERS.UNPAID_UNTIL) tiers.unpaid++;
+    if (day <= law.fullPayDays) tiers.full++;
+    else if (day <= law.partialPayUntilDay) tiers.partial++;
+    else if (day <= law.unpaidUntilDay) tiers.unpaid++;
     else tiers.beyond++;
   }
   return tiers;
@@ -552,6 +574,8 @@ export interface LeaveRequestInput {
   waiveDeduction?: boolean;
   /** Statutory leave types: rules + eligibility facts (defaults when omitted: default rules, no facts). */
   statutory?: StatutoryLeaveContext;
+  /** SICK: art. 117 values of the employee's company (rules.laborLawFor); default: the catalogue's. */
+  sickLeaveLaw?: Readonly<SickLeaveLaw>;
 }
 
 export interface LeaveRequestResult {
@@ -613,10 +637,11 @@ export function computeLeaveRequest(input: LeaveRequestInput): LeaveRequestResul
       break;
     }
     case 'SICK': {
-      sickTiers = computeSickLeaveTiers(input.pastSickDays ?? 0, total);
+      const sickLaw = input.sickLeaveLaw ?? DEFAULT_SICK_LEAVE_LAW;
+      sickTiers = computeSickLeaveTiers(input.pastSickDays ?? 0, total, sickLaw);
       paidDays = sickTiers.full + sickTiers.partial;
       unpaidDays = sickTiers.unpaid + sickTiers.beyond;
-      deduction = sickTiers.partial * rate * (1 - SICK_LEAVE_TIERS.PARTIAL_PAY_RATIO) + unpaidDays * rate;
+      deduction = sickTiers.partial * rate * (1 - sickLaw.partialPayRatio) + unpaidDays * rate;
       if (sickTiers.beyond > 0) issue = 'SICK_LIMIT_EXCEEDED';
       break;
     }
@@ -767,3 +792,73 @@ export function rangesOverlap(aStart: Date | string, aEnd: Date | string, bStart
 
 /** Portal notes markers used by the self-service leave form. */
 export const LEAVE_NOTE_MARKERS = { OUTSIDE: '[outside]', ACCEPT_EXCESS: '[ACCEPT_EXCESS]' } as const;
+
+// ---------------------------------------------------------------------------
+// "On leave on day D" (BR-LCY-008, DEC-PO-030, BL-LCY-002 Release A)
+// ---------------------------------------------------------------------------
+//
+// "On leave" is COMPUTED from Leave rows, never stored (Employee.employmentStatus 'ON_LEAVE' is no
+// longer written or read). A leave covers D when:
+//   status is APPROVED or COMPLETED, startDate <= D <= endEff,
+//   endEff = min(endDate, actualReturnDate - 1) when a return is recorded, else endDate.
+// A recorded return (actualReturnDate, even before HR confirms it) ends the leave the day before.
+// Leave settlements never count: their paid range is not a leave range (EVD-LCY-027).
+// Terminated employees are never shown on leave (EX-LCY-001): the employee-level readers add
+// `isTerminated: false` themselves.
+//
+// Two forms of the ONE rule, kept equal by tests (leave-on-leave.test.ts):
+//   onLeaveWhere(D)       Prisma Leave filter for queries (server readers, counts);
+//   leaveCoversDay(l, D)  the same check on already-loaded rows (client pages).
+
+/** Leave statuses that can put an employee on leave (a COMPLETED leave was shortened to the return). */
+export const ON_LEAVE_STATUSES: readonly string[] = [LEAVE_STATUS.APPROVED, LEAVE_STATUS.COMPLETED];
+
+/** A calendar day: a date-only Date (UTC midnight) or a 'YYYY-MM-DD' key. */
+export type LeaveDay = Date | string;
+
+function dayStart(day: LeaveDay): Date {
+  const key = dateKey(typeof day === 'string' ? `${day.slice(0, 10)}T00:00:00.000Z` : day);
+  if (!key) throw new Error(`invalid day: ${String(day)}`);
+  return new Date(`${key}T00:00:00.000Z`);
+}
+
+/**
+ * Prisma `Leave` filter: the leave covers calendar day `day`. Use it as
+ * `leave.findFirst({ where: { employeeId, ...onLeaveWhere(d) } })` or
+ * `employee: { leaves: { some: onLeaveWhere(d) } }`. Bounds are half-open on the next day so a
+ * value stored with a time of day still counts for its calendar day.
+ */
+export function onLeaveWhere(day: LeaveDay) {
+  const start = dayStart(day);
+  const next = new Date(start.getTime() + 24 * 60 * 60 * 1000);
+  return {
+    status: { in: [LEAVE_STATUS.APPROVED, LEAVE_STATUS.COMPLETED] as ('APPROVED' | 'COMPLETED')[] },
+    startDate: { lt: next },
+    endDate: { gte: start },
+    OR: [{ actualReturnDate: null }, { actualReturnDate: { gte: next } }],
+  };
+}
+
+export interface LeaveCoverageRow {
+  status: string;
+  startDate: Date | string;
+  endDate: Date | string;
+  actualReturnDate?: Date | string | null;
+}
+
+/** True when the loaded leave row covers calendar day `day` (same rule as onLeaveWhere). */
+export function leaveCoversDay(leave: LeaveCoverageRow, day: LeaveDay): boolean {
+  if (!ON_LEAVE_STATUSES.includes(leave.status)) return false;
+  const d = dateKey(dayStart(day));
+  const start = dateKey(leave.startDate);
+  const end = dateKey(leave.endDate);
+  if (!d || !start || !end) return false;
+  if (start > d || end < d) return false;
+  const ret = dateKey(leave.actualReturnDate ?? null);
+  return ret === null || ret > d;
+}
+
+/** True when any of the loaded leaves covers `day`. */
+export function isOnLeaveFromRows(leaves: readonly LeaveCoverageRow[] | null | undefined, day: LeaveDay): boolean {
+  return (leaves ?? []).some((l) => leaveCoversDay(l, day));
+}

@@ -6,8 +6,13 @@ import { ROLE_GROUPS } from '@/lib/constants';
 import { badRequest, handleApiError, parseQuery } from '@/lib/http';
 import { zPagination } from '@/lib/validation';
 import { AUDIT_ORDER_BY, auditCursorWhere, paginateAuditRows, parseAuditCursor } from './cursor';
+import { ALL_COMPANIES, authz, resolveActor, scopedContext } from '@/modules/iam';
 
 export const dynamic = 'force-dynamic';
+
+// P1-SCOPE: tenant-wide (SystemSetting / User / RolePermission / AuditLog have no company): an admin
+// who sees EVERY company only. scopedContext(actor, ALL_COMPANIES) refuses (403) an actor restricted
+// to some companies by UserCompanyScope, whatever his role.
 
 const DEFAULT_TAKE = 200;
 
@@ -21,7 +26,9 @@ const QuerySchema = zPagination.extend({ cursor: z.string().max(100).optional() 
  */
 export async function GET(req: Request) {
   try {
-    await requireUser(ROLE_GROUPS.ADMIN);
+    const user = await requireUser(ROLE_GROUPS.ADMIN);
+    const ctx = scopedContext(await resolveActor(prisma, user), ALL_COMPANIES);
+    authz.assert(ctx, 'platform.settings.manage');
     const { take: rawTake, skip, cursor: rawCursor } = parseQuery(req, QuerySchema);
     const take = rawTake ?? DEFAULT_TAKE;
 

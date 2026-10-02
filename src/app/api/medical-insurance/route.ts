@@ -8,6 +8,7 @@ import { zDate, zId, zMoney, zOptText, zText } from '@/lib/validation';
 import { roundMoney } from '@/lib/money';
 import { logAudit } from '@/lib/audit';
 import { zOptFileUrl } from '@/app/api/medical-insurance/file-url';
+import { authz, resolveActor, scopedContext, scopedPrisma } from '@/modules/iam';
 
 export const dynamic = 'force-dynamic';
 
@@ -33,10 +34,13 @@ const createSchema = z.object({
 
 export async function GET(req: Request) {
   try {
-    await requireUser(INSURANCE_ROLES);
+    const user = await requireUser(INSURANCE_ROLES);
     const { companyId } = parseQuery(req, querySchema);
+    // P1-SCOPE: policies of the user's companies (MedicalInsurance.companyId).
+    const ctx = scopedContext(await resolveActor(prisma, user));
+    authz.assert(ctx, 'insurance.read');
 
-    const items = await prisma.medicalInsurance.findMany({
+    const items = await scopedPrisma(ctx).medicalInsurance.findMany({
       where: companyId ? { companyId } : {},
       include: {
         company: { select: { nameArabic: true } },
@@ -54,11 +58,14 @@ export async function POST(req: Request) {
   try {
     const user = await requireUser(INSURANCE_ROLES);
     const body = await parseBody(req, createSchema);
+    const ctx = scopedContext(await resolveActor(prisma, user));
+    authz.assert(ctx, 'insurance.manage', { companyId: body.companyId });
+    const db = scopedPrisma(ctx);
 
-    const company = await prisma.company.findUnique({ where: { id: body.companyId }, select: { id: true } });
+    const company = await db.company.findUnique({ where: { id: body.companyId }, select: { id: true } });
     if (!company) throw notFound('الشركة غير موجودة');
 
-    const item = await prisma.medicalInsurance.create({
+    const item = await db.medicalInsurance.create({
       data: {
         companyId: body.companyId,
         insuranceIssuer: body.insuranceIssuer,

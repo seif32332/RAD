@@ -8,14 +8,17 @@ import { NextResponse } from 'next/server';
 import { getClientIp, requireUser } from '@/lib/auth';
 import { ROLE_GROUPS } from '@/lib/constants';
 import { handleApiError, parseBody } from '@/lib/http';
+import type { AuthUser } from '@/lib/auth';
 import { auditViewOnce, limitOrThrow } from '../_lib/server';
+import { workforceScope } from '../_lib/scope';
 import { bodyFromQuery, runSensitivity, sensitivityBodySchema, type SensitivityBody } from './_run';
 
 export const dynamic = 'force-dynamic';
 
-async function respond(req: Request, body: SensitivityBody, userId: string) {
-  const out = await runSensitivity(body);
-  await auditViewOnce({ id: userId }, 'WorkforceSensitivity', out.subject, getClientIp(req));
+async function respond(req: Request, body: SensitivityBody, user: AuthUser) {
+  // P1-SCOPE: the employee, company or plan of the decision must be in the caller's companies (404).
+  const out = await runSensitivity(body, await workforceScope(user));
+  await auditViewOnce({ id: user.id }, 'WorkforceSensitivity', out.subject, getClientIp(req));
   return NextResponse.json({ result: out.result, evidence: out.evidence });
 }
 
@@ -24,7 +27,7 @@ export async function GET(req: Request) {
     const user = await requireUser(ROLE_GROUPS.WORKFORCE);
     const body = bodyFromQuery(Object.fromEntries(new URL(req.url).searchParams.entries()));
     limitOrThrow(user, 'sensitivity', 10, 60_000);
-    return await respond(req, body, user.id);
+    return await respond(req, body, user);
   } catch (err) {
     return handleApiError(err, 'workforce:sensitivity:GET');
   }
@@ -35,7 +38,7 @@ export async function POST(req: Request) {
     const user = await requireUser(ROLE_GROUPS.WORKFORCE);
     const body = await parseBody(req, sensitivityBodySchema);
     limitOrThrow(user, 'sensitivity', 10, 60_000);
-    return await respond(req, body, user.id);
+    return await respond(req, body, user);
   } catch (err) {
     return handleApiError(err, 'workforce:sensitivity:POST');
   }

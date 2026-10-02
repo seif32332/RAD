@@ -1,9 +1,10 @@
-// scripts/lib/document-chain.mjs (used by scripts/jobs.mjs, which cannot import TypeScript) must
-// hash exactly like the application: a divergence would make the integrity job report a broken
-// chain after every retention purge.
+// scripts/lib/document-chain.mjs (read by the reconciliation report, scripts/lib/reconciliation-checks.mjs,
+// which runs with plain node) must hash exactly like the application: a divergence would make the
+// report see a broken chain. The jobs themselves run the application's code since P1-FND-JOBS.
 import { describe, expect, it } from 'vitest';
 import { canonicalJson as tsCanonical } from '@/lib/documents/core';
 import { eventHash as tsEventHash, GENESIS_HASH as TS_GENESIS } from '@/lib/documents/events';
+import { isStoredDocumentName, parseRetentionYears } from '@/lib/documents/jobs';
 import * as js from '../../../scripts/lib/document-chain.mjs';
 
 const samples: unknown[] = [
@@ -12,7 +13,7 @@ const samples: unknown[] = [
   { typeKey: 'SALARY_CERTIFICATE', data: { salary: { rows: [{ amount: '9500.00' }], total: '13500.50' } } },
 ];
 
-describe('document chain: JS job helpers match the application', () => {
+describe('document chain: JS report helpers match the application', () => {
   it('canonicalJson is byte-identical', () => {
     for (const s of samples) expect(js.canonicalJson(s)).toBe(tsCanonical(s));
     expect(() => js.canonicalJson(1.5)).toThrow(/safe integers/);
@@ -29,12 +30,19 @@ describe('document chain: JS job helpers match the application', () => {
     }
   });
 
-  it('retention years: owner decision 10 by default, bounded', () => {
-    expect(js.parseRetentionYears(undefined)).toBe(10);
-    expect(js.parseRetentionYears('7')).toBe(7);
-    expect(js.parseRetentionYears('0')).toBe(10);
-    expect(js.parseRetentionYears('abc')).toBe(10);
-    expect(js.isStoredDocumentName('2026/123e4567-e89b-12d3-a456-426614174000.pdf')).toBe(true);
-    expect(js.isStoredDocumentName('../etc/passwd')).toBe(false);
+  it('retention years (documents-retention job): owner decision 10 by default, bounded', () => {
+    expect(parseRetentionYears(undefined)).toBe(10);
+    expect(parseRetentionYears('7')).toBe(7);
+    expect(parseRetentionYears('0')).toBe(10);
+    expect(parseRetentionYears('abc')).toBe(10);
+    expect(parseRetentionYears(null, 2)).toBe(2);
+  });
+
+  it('stored document names: the report and the jobs accept the same names', () => {
+    for (const name of ['2026/123e4567-e89b-12d3-a456-426614174000.pdf', '../etc/passwd', '2026/x.pdf', '']) {
+      expect(js.isStoredDocumentName(name)).toBe(isStoredDocumentName(name));
+    }
+    expect(isStoredDocumentName('2026/123e4567-e89b-12d3-a456-426614174000.pdf')).toBe(true);
+    expect(isStoredDocumentName('../etc/passwd')).toBe(false);
   });
 });

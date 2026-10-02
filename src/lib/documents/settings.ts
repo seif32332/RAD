@@ -11,6 +11,7 @@ import { canonicalJson, PREFIX_RE } from './core';
 import { appendEvent } from './events';
 import { enqueueNotice } from './notify';
 import { storeAsset } from './storage';
+import { effectiveOptions } from './policy';
 import { DOCUMENT_TEXT_RE, DOCUMENT_TYPES, getDocumentType } from './types';
 import { staffCompanyScope, type Actor } from './service';
 
@@ -68,6 +69,8 @@ export async function documentSettings(companyId: string | null, actor: Actor) {
     types: Object.values(DOCUMENT_TYPES).map((d) => ({
       key: d.key, code: d.code, labelAr: d.labelAr, defaults: d.defaults, locked: !!d.approvalLocked || d.issuance === 'AUTO', approvalFixed: !!d.approvalMandatory,
       setting: typeSettings.find((s) => s.typeKey === d.key) ?? null,
+      // Company options of the type: label, default and the value in force.
+      options: (d.options ?? []).map((o) => ({ ...o, value: effectiveOptions(d, typeSettings.find((s) => s.typeKey === d.key)?.optionsJson)[o.key] })),
       texts: { opening: textOf(d.key, 'OPENING'), closing: textOf(d.key, 'CLOSING') },
     })),
   };
@@ -93,6 +96,8 @@ export const settingsActionSchema = z.discriminatedUnion('action', [
     action: z.literal('type'), companyId: z.string().min(1), typeKey: z.string().min(1),
     enabled: z.boolean(), selfService: z.boolean().nullable(), requiresApproval: z.boolean().nullable(),
     validityDays: z.number().int().min(1).max(3650).nullable(), signatoryId: z.string().nullable(),
+    /** The type's company options (keys of DocumentTypeDefinition.options); absent = unchanged. */
+    options: z.record(z.string(), z.boolean()).optional(),
   }),
   z.object({
     action: z.literal('grant'), companyId: z.string().min(1), signatoryId: z.string().min(1), typeKey: z.string().min(1),
@@ -236,7 +241,13 @@ export async function applySettingsAction(body: SettingsAction, actor: Actor) {
       }
       // A locked type (warning) is always approved and never requested from the portal: those two are not settings.
       const locked = !!def.approvalLocked || def.issuance === 'AUTO';
-      const data = { enabled: body.enabled, selfService: locked ? null : body.selfService, requiresApproval: locked || def.approvalMandatory ? null : body.requiresApproval, validityDays: body.validityDays, signatoryId: body.signatoryId, updatedById: actor.userId };
+      const optionKeys = (def.options ?? []).map((o) => o.key);
+      if (body.options && Object.keys(body.options).some((k) => !optionKeys.includes(k))) throw badRequest('خيار غير معروف لهذا النوع');
+      const optionsJson = body.options ? JSON.stringify(Object.fromEntries(optionKeys.filter((k) => k in body.options!).map((k) => [k, body.options![k]]))) : undefined;
+      const data = {
+        enabled: body.enabled, selfService: locked ? null : body.selfService, requiresApproval: locked || def.approvalMandatory ? null : body.requiresApproval,
+        validityDays: body.validityDays, signatoryId: body.signatoryId, updatedById: actor.userId, ...(optionsJson !== undefined ? { optionsJson } : {}),
+      };
       await prisma.$transaction(async (tx) => {
         await tx.documentTypeSetting.upsert({ where: { companyId_typeKey: { companyId: company.id, typeKey: def.key } }, create: { companyId: company.id, typeKey: def.key, ...data }, update: data });
         await appendEvent(tx, { type: 'POLICY_CHANGED', actorId: actor.userId, ip: actor.ip, meta: { companyId: company.id, typeKey: def.key, ...data } });

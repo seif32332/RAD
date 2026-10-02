@@ -8,6 +8,7 @@ import { zDate, zId, zMoney, zOptText, zText } from '@/lib/validation';
 import { roundMoney } from '@/lib/money';
 import { logAudit } from '@/lib/audit';
 import { zOptFileUrl } from '@/app/api/medical-insurance/file-url';
+import { authz, resolveActor, scopedContext, scopedPrisma } from '@/modules/iam';
 
 export const dynamic = 'force-dynamic';
 
@@ -32,11 +33,19 @@ const updateSchema = z.object({
 
 type Params = { params: Promise<{ id: string }> };
 
+/** P1-SCOPE: the scoped client of the user's companies; another company's policy is "not found". */
+async function insuranceDb(user: Awaited<ReturnType<typeof requireUser>>, action: 'insurance.read' | 'insurance.manage') {
+  const ctx = scopedContext(await resolveActor(prisma, user));
+  authz.assert(ctx, action);
+  return scopedPrisma(ctx);
+}
+
 export async function GET(_req: Request, { params }: Params) {
   try {
-    await requireUser(INSURANCE_ROLES);
+    const user = await requireUser(INSURANCE_ROLES);
     const { id } = await params;
-    const item = await prisma.medicalInsurance.findUnique({
+    const db = await insuranceDb(user, 'insurance.read');
+    const item = await db.medicalInsurance.findUnique({
       where: { id },
       include: {
         company: { select: { nameArabic: true } },
@@ -56,6 +65,7 @@ export async function PUT(req: Request, { params }: Params) {
     const user = await requireUser(INSURANCE_ROLES);
     const { id } = await params;
     const body = await parseBody(req, updateSchema);
+    const db = await insuranceDb(user, 'insurance.manage');
 
     const update = definedOnly({
       ...body,
@@ -63,11 +73,11 @@ export async function PUT(req: Request, { params }: Params) {
     });
 
     if (update.companyId) {
-      const company = await prisma.company.findUnique({ where: { id: update.companyId }, select: { id: true } });
+      const company = await db.company.findUnique({ where: { id: update.companyId }, select: { id: true } });
       if (!company) throw notFound('الشركة غير موجودة');
     }
 
-    const upd = await prisma.medicalInsurance.update({
+    const upd = await db.medicalInsurance.update({
       where: { id },
       data: update,
     });
@@ -91,7 +101,8 @@ export async function DELETE(req: Request, { params }: Params) {
   try {
     const user = await requireUser(INSURANCE_ROLES);
     const { id } = await params;
-    const del = await prisma.medicalInsurance.delete({
+    const db = await insuranceDb(user, 'insurance.manage');
+    const del = await db.medicalInsurance.delete({
       where: { id },
     });
 

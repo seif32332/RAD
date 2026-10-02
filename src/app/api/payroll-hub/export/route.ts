@@ -10,6 +10,7 @@ import { logAudit } from '@/lib/audit';
 import { decryptField } from '@/lib/crypto';
 import { formatDateTime } from '@/lib/dates';
 import { roundMoney, sumMoney } from '@/lib/money';
+import { authz, resolveActor, scopedContext, scopedPrisma } from '@/modules/iam';
 import { hasStoredBreakdown, payrollTotals, STORED_PAYROLL_SELECT } from '@/lib/payroll';
 
 export const dynamic = 'force-dynamic';
@@ -90,8 +91,11 @@ export async function GET(req: Request) {
   try {
     const user = await requireUser(ROLE_GROUPS.PAYROLL);
     const { month, year, status } = parseQuery(req, QuerySchema);
+    // P1-SCOPE: the sheet lists the payroll rows of the user's companies only.
+    const ctx = scopedContext(await resolveActor(prisma, user));
+    authz.assert(ctx, 'payroll.read');
 
-    const rows = await prisma.payroll.findMany({
+    const rows = await scopedPrisma(ctx).payroll.findMany({
       where: { month, year, ...(status ? { status } : {}) },
       select: {
         ...STORED_PAYROLL_SELECT,

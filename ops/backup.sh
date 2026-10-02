@@ -10,9 +10,14 @@
 # Retention: KEEP_DAILY=7, KEEP_WEEKLY=4 (Sunday copies), KEEP_MONTHLY=6 (1st of month copies).
 # pre-deploy-*/pre-restore-* dumps (made by deploy.sh/restore.sh) are kept KEEP_ADHOC_DAYS=30 days.
 #
-# Offsite (strongly recommended - the local copies die with the disk):
-#   RCLONE_REMOTE=b2crypt:radeef-backups   -> rclone copy of each tenant folder after the run
-#   (use an rclone "crypt" remote so the provider never sees employee data in clear text)
+# Offsite copy is REQUIRED by default (master plan P0-04; the local copies die with the disk):
+#   RCLONE_REMOTE=b2:radeef-backups        -> rclone copy of each new backup set after the run
+# and it is always ENCRYPTED, one of:
+#   BACKUP_AGE_RECIPIENTS=/etc/radeef/backup-age.pub  -> every file is encrypted with age before upload
+#                                               (the private key is kept OFF this server)
+#   or RCLONE_REMOTE on an rclone "crypt" remote -> rclone encrypts (checked with listremotes)
+# Without an offsite remote the local backup still runs, then the script exits 1 (and pings /fail).
+# ALLOW_LOCAL_ONLY=1 accepts local-only backups (development or a host with its own offsite copy).
 # Optional: BACKUP_PING_URL=https://hc-ping.com/<uuid>  (pinged on success, /fail on failure)
 # Settings may also be placed in /etc/radeef/backup.conf (KEY=value lines, root-owned).
 # =============================================================================
@@ -33,6 +38,8 @@ KEEP_MONTHLY="${KEEP_MONTHLY:-$(conf KEEP_MONTHLY 6)}"
 KEEP_ADHOC_DAYS="${KEEP_ADHOC_DAYS:-$(conf KEEP_ADHOC_DAYS 30)}"
 RCLONE_REMOTE="${RCLONE_REMOTE:-$(conf RCLONE_REMOTE)}"
 BACKUP_PING_URL="${BACKUP_PING_URL:-$(conf BACKUP_PING_URL)}"
+BACKUP_AGE_RECIPIENTS="${BACKUP_AGE_RECIPIENTS:-$(conf BACKUP_AGE_RECIPIENTS)}"
+ALLOW_LOCAL_ONLY="${ALLOW_LOCAL_ONLY:-$(conf ALLOW_LOCAL_ONLY 0)}"
 
 for n in "$KEEP_DAILY" "$KEEP_WEEKLY" "$KEEP_MONTHLY" "$KEEP_ADHOC_DAYS"; do
   [[ "$n" =~ ^[0-9]+$ ]] && ((n >= 1)) || die "retention values must be positive integers"
@@ -54,6 +61,19 @@ for t in "${TENANTS[@]}"; do validate_tenant "$t"; done
 
 require_cmd pg_dump pg_restore tar sha256sum flock
 [[ -z "$RCLONE_REMOTE" ]] || require_cmd rclone
+[[ -z "$BACKUP_AGE_RECIPIENTS" ]] || { require_cmd age; [[ -r "$BACKUP_AGE_RECIPIENTS" ]] || die "BACKUP_AGE_RECIPIENTS: cannot read $BACKUP_AGE_RECIPIENTS"; }
+
+# OFFSITE_MODE: age (files encrypted here), crypt (rclone crypt remote), or none.
+OFFSITE_MODE="none"
+if [[ -n "$RCLONE_REMOTE" ]]; then
+  if [[ -n "$BACKUP_AGE_RECIPIENTS" ]]; then
+    OFFSITE_MODE="age"
+  elif rclone listremotes --long 2>/dev/null | awk -v r="${RCLONE_REMOTE%%:*}:" '$1 == r && $2 == "crypt" { ok = 1 } END { exit !ok }'; then
+    OFFSITE_MODE="crypt"
+  else
+    die "RCLONE_REMOTE ${RCLONE_REMOTE%%:*}: is not an rclone crypt remote and BACKUP_AGE_RECIPIENTS is not set: refusing to upload employee data unencrypted"
+  fi
+fi
 
 mkdir -p "$BACKUP_DIR"
 exec 9>"$BACKUP_DIR/.backup.lock"
@@ -120,10 +140,29 @@ backup_tenant() {
   prune_tier "$root/monthly" "$KEEP_MONTHLY"
   find "$root" -maxdepth 1 -type f \( -name 'pre-deploy-*.dump' -o -name 'pre-restore-*' \) -mtime +"$KEEP_ADHOC_DAYS" -delete
 
-  if [[ -n "$RCLONE_REMOTE" ]]; then
-    log "[$t] offsite copy -> $RCLONE_REMOTE/$t"
-    rclone copy --transfers 2 --exclude '*.partial' "$root" "$RCLONE_REMOTE/$t"
-  fi
+  case "$OFFSITE_MODE" in
+    crypt)
+      log "[$t] offsite copy (rclone crypt) -> $RCLONE_REMOTE/$t"
+      rclone copy --transfers 2 --exclude '*.partial' --exclude '.offsite/**' "$root" "$RCLONE_REMOTE/$t"
+      ;;
+    age)
+      # Only the new set is encrypted and uploaded (the older ones are already offsite); weekly and
+      # monthly copies are the same files under another folder, as locally.
+      local stage="$root/.offsite" f rel tier
+      rm -rf -- "$stage"
+      for tier in daily weekly monthly; do
+        for f in "$root/$tier/$base".*; do
+          [[ -f "$f" ]] || continue
+          rel="$tier/$(basename "$f").age"
+          mkdir -p "$stage/$tier"
+          age -R "$BACKUP_AGE_RECIPIENTS" -o "$stage/$rel" "$f"
+        done
+      done
+      log "[$t] offsite copy (age) -> $RCLONE_REMOTE/$t"
+      rclone copy --transfers 2 "$stage" "$RCLONE_REMOTE/$t"
+      rm -rf -- "$stage"
+      ;;
+  esac
   log "[$t] ok ($(du -sh "$daily/$base.dump" | cut -f1) db)"
 }
 
@@ -144,5 +183,9 @@ if ((${#FAILED[@]} > 0)); then
   [[ -z "$BACKUP_PING_URL" ]] || curl -fsS -m 10 --retry 3 -o /dev/null "$BACKUP_PING_URL/fail" || true
   die "backup failed for: ${FAILED[*]}"
 fi
+if [[ "$OFFSITE_MODE" == "none" && "$ALLOW_LOCAL_ONLY" != "1" ]]; then
+  [[ -z "$BACKUP_PING_URL" ]] || curl -fsS -m 10 --retry 3 -o /dev/null "$BACKUP_PING_URL/fail" || true
+  die "local backup done for ${TENANTS[*]}, but NO offsite copy: set RCLONE_REMOTE (crypt remote or BACKUP_AGE_RECIPIENTS) in $BACKUP_CONF, or ALLOW_LOCAL_ONLY=1 (docs/RUNBOOK.md 3.4)"
+fi
 [[ -z "$BACKUP_PING_URL" ]] || curl -fsS -m 10 --retry 3 -o /dev/null "$BACKUP_PING_URL" || true
-log "backup complete: ${TENANTS[*]}"
+log "backup complete: ${TENANTS[*]} (offsite: $OFFSITE_MODE)"

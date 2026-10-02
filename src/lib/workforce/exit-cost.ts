@@ -26,9 +26,11 @@ import { monthlyWage } from '@/lib/payroll-core';
 import { nationalityClass } from '@/lib/nationality';
 import {
   COUNSEL_PENDING_NOTE,
+  DEFAULT_EOS_LAW,
   TERMINATION_REASONS,
   TERMINATION_REASON_LABELS,
   computeSettlement,
+  fullEndOfServiceAward,
   isCounselPendingReason,
   outstandingLoansForSettlement,
   type TerminationReasonValue,
@@ -168,9 +170,10 @@ export function computeExitCost(input: ExitCostInput): ExitCostResult {
   });
 
   // --- EOSB ---
-  const full = years <= 5 ? wage * 0.5 * years : wage * 0.5 * 5 + wage * (years - 5);
+  const eos = DEFAULT_EOS_LAW;
+  const full = fullEndOfServiceAward(wage, years, eos);
   const eosbKeys = [law('EOSB', 'LAW:ART84')];
-  let eosbBasis = `${fmt(wage)} × (0.5 × ${fmt(Math.min(years, 5))}${years > 5 ? ` + ${fmt(years - 5)}` : ''}) = ${fmt(full)}`;
+  let eosbBasis = `${fmt(wage)} × (${fmt(eos.firstPeriodMonthsPerYear)} × ${fmt(Math.min(years, eos.firstPeriodYears))}${years > eos.firstPeriodYears ? ` + ${fmt(years - eos.firstPeriodYears)}` : ''}) = ${fmt(full)}`;
   let eosbStatus: WfStatus = 'VERIFIED_PRIMARY';
   let eosbNote: string | undefined;
   if (reason === 'RESIGNATION') {

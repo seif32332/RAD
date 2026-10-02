@@ -4,7 +4,7 @@ import type { Prisma } from '@prisma/client';
 import { prisma } from '@/lib/prisma';
 import { getClientIp, requireEmployeeId, requireUser } from '@/lib/auth';
 import { LEAVE_STATUS, ROLE_GROUPS, roleIn } from '@/lib/constants';
-import { badRequest, conflict, forbidden, handleApiError, parseBody, parseQuery } from '@/lib/http';
+import { badRequest, conflict, forbidden, handleApiError, notFound, parseBody, parseQuery } from '@/lib/http';
 import { zBool, zDate, zId, zOptDate, zOptMoney, zOptText } from '@/lib/validation';
 import { logAudit } from '@/lib/audit';
 import {
@@ -26,6 +26,8 @@ import {
   lockEmployeeForUpdate,
   managedEmployeesWhere,
 } from '@/lib/hr-workflows';
+import { resolveSelfContext, resolveTeamContext } from '@/lib/employee-scope';
+import { authz, resolveActor, scopedContext, scopedPrisma } from '@/modules/iam';
 
 export const dynamic = 'force-dynamic';
 
@@ -47,6 +49,15 @@ export async function GET(req: Request) {
     const q = parseQuery(req, listQuery);
     const where: Prisma.LeaveWhereInput = {};
     const readAll = roleIn(user.role, LEAVE_READ_ALL);
+    // P1-SCOPE: HR / payroll read in their companies, managers in their team (own company), everyone
+    // else his own leaves; the list goes through the scoped client.
+    const actor = await resolveActor(prisma, user);
+    const ctx = readAll
+      ? scopedContext(actor)
+      : roleIn(user.role, ROLE_GROUPS.MANAGERS)
+        ? await resolveTeamContext(prisma, actor)
+        : await resolveSelfContext(prisma, actor);
+    authz.assert(ctx, 'leave.request.read');
     if (readAll) {
       if (q.employeeId) where.employeeId = q.employeeId;
     } else if (roleIn(user.role, ROLE_GROUPS.MANAGERS)) {
@@ -58,7 +69,7 @@ export async function GET(req: Request) {
     }
     if (q.status) where.status = q.status;
 
-    const leaves = await prisma.leave.findMany({
+    const leaves = await scopedPrisma(ctx).leave.findMany({
       where,
       include: {
         employee: {
@@ -120,6 +131,12 @@ export async function POST(req: Request) {
       employeeId = await requireEmployeeId(user);
       if (body.employeeId && body.employeeId !== employeeId) throw forbidden('لا يمكنك تقديم طلب إجازة لموظف آخر');
     }
+
+    // P1-SCOPE: HR files only for an employee of its companies (else "not found"); self otherwise.
+    const actor = await resolveActor(prisma, user);
+    const ctx = employeeId !== user.employeeId ? scopedContext(actor) : await resolveSelfContext(prisma, actor);
+    authz.assert(ctx, 'leave.request.create', { employeeId });
+    if (!(await scopedPrisma(ctx).employee.findUnique({ where: { id: employeeId }, select: { id: true } }))) throw notFound('الموظف غير موجود');
 
     const eventDate = EVENT_DATED_LEAVE_TYPES.includes(body.leaveType) ? (body.eventDate ?? null) : null;
     const bereavementRelation = body.leaveType === 'BEREAVEMENT' ? (body.bereavementRelation ?? 'FIRST_DEGREE') : null;

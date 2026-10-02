@@ -1,0 +1,11 @@
+# /etc/systemd/system/radeef-jobs@documents-integrity.timer: daily 04:30 + up to 30 min
+[Unit]
+Description=Radeef background job documents-integrity (schedule)
+
+[Timer]
+OnCalendar=*-*-* 04:30:00 Asia/Riyadh
+RandomizedDelaySec=30min
+Persistent=true
+
+[Install]
+WantedBy=timers.target

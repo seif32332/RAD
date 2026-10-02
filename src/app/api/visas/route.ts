@@ -4,6 +4,7 @@ import { requireUser } from '@/lib/auth';
 import { ROLE_GROUPS } from '@/lib/constants';
 import { handleApiError } from '@/lib/http';
 import { todayKey } from '@/lib/dates';
+import { authz, resolveActor, scopedContext, scopedPrisma } from '@/modules/iam';
 import {
   EXIT_REENTRY_VISA_TYPE,
   VISA_MUQEEM_OPERATIONS,
@@ -26,11 +27,15 @@ const TX_PER_VISA = 10;
  * GET /api/visas -> Visa[] with, for each visa, a `muqeem` block:
  * { eligible, reason, company: {id, name, linked} | null, leave, suggestion, pendingSync, transactions[] }.
  * Never returns the iqama number, credentials or Muqeem request payloads.
+ * P1-SCOPE: the visas of the employees of the user's companies (scoped client, via the employee);
+ * the leaves and Muqeem transactions are then loaded by the ids of those visas only.
  */
 export async function GET() {
   try {
-    await requireUser(VISA_ROLES);
-    const visas = await prisma.visa.findMany({
+    const user = await requireUser(VISA_ROLES);
+    const ctx = scopedContext(await resolveActor(prisma, user));
+    authz.assert(ctx, 'gov.visa.read');
+    const visas = await scopedPrisma(ctx).visa.findMany({
       include: {
         employee: {
           select: {

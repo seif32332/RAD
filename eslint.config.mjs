@@ -16,6 +16,26 @@ const eslintConfig = defineConfig([
     },
   },
   {
+    // ARCH-001 (docs/architecture/ARCHITECTURE_INVARIANTS.md §4.1): a module is used only through its
+    // public interface src/modules/<m>/index.ts. Inside a module, import its own files relatively.
+    // The full check (cross-module reads, dependency direction) is src/test/architecture.
+    files: ["src/**/*.{ts,tsx}"],
+    ignores: ["src/**/__tests__/**", "src/**/*.test.ts", "src/test/**"],
+    rules: {
+      "no-restricted-imports": [
+        "error",
+        {
+          patterns: [
+            {
+              group: ["@/modules/*/*", "!@/modules/*/index", "**/modules/*/*", "!**/modules/*/index"],
+              message: 'ARCH-001: import a module through its index ("@/modules/<m>"); inside the module use relative imports.',
+            },
+          ],
+        },
+      ],
+    },
+  },
+  {
     // Node CommonJS config files at the repo root.
     files: ["*.config.js", "ecosystem.config.js"],
     rules: {
@@ -32,6 +52,8 @@ const eslintConfig = defineConfig([
     // Project ignores:
     "node_modules/**",
     "coverage/**",
+    // Generated background-jobs bundle (scripts/build-jobs.mjs).
+    "dist/**",
     "ops/legacy/**",
     "docs/**",
     "radeef-manage/**",

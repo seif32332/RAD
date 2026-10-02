@@ -17,6 +17,7 @@
 //   from them carry `provisional: true`. They do not block anything.
 import { roundMoney, sumMoney } from '@/lib/money';
 import { isSaudiNational } from '@/lib/nationality';
+import { GOSI_FALLBACK_RATES } from '@/modules/rules';
 
 export type GosiRegimeValue = 'OLD' | 'NEW' | 'UNKNOWN';
 
@@ -43,30 +44,13 @@ export const GOSI_NOTES = {
 
 /**
  * Fallback used only when the GosiRate table is empty: the OLD-regime rows documented in the
- * official GOSI employer FAQ (9.75% / 11.75% Saudi, 0% / 2% non-Saudi, wage 1,500 - 45,000).
+ * official GOSI employer FAQ (9.75% / 11.75% Saudi, 0% / 2% non-Saudi, wage 1,500 - 45,000). The
+ * values are the rules catalogue's mirror of the GosiRate seed (GOSI_FALLBACK_RATES, P1-RULE).
  */
-export const DEFAULT_GOSI_RATES: ReadonlyArray<GosiRateLike> = [
-  {
-    regime: 'OLD',
-    isSaudi: true,
-    effectiveFrom: new Date('2000-01-01T00:00:00.000Z'),
-    employeeRate: 9.75,
-    employerRate: 11.75,
-    minWage: 1500,
-    maxWage: 45000,
-    isProvisional: false,
-  },
-  {
-    regime: 'OLD',
-    isSaudi: false,
-    effectiveFrom: new Date('2000-01-01T00:00:00.000Z'),
-    employeeRate: 0,
-    employerRate: 2,
-    minWage: 1500,
-    maxWage: 45000,
-    isProvisional: false,
-  },
-];
+export const DEFAULT_GOSI_RATES: ReadonlyArray<GosiRateLike> = GOSI_FALLBACK_RATES.map((r) => ({
+  ...r,
+  effectiveFrom: new Date(`${r.effectiveFrom}T00:00:00.000Z`),
+}));
 
 /**
  * Saudi detection for GOSI. Thin wrapper kept for existing callers: delegates to THE canonical rule in

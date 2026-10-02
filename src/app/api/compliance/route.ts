@@ -7,6 +7,7 @@ import { badRequest, conflict, handleApiError, notFound, parseBody } from '@/lib
 import { zBool, zId, zMoney, zOptInt, zOptText, zText } from '@/lib/validation';
 import { roundMoney } from '@/lib/money';
 import { logAudit } from '@/lib/audit';
+import { authz, resolveActor, scopedContext, scopedPrisma } from '@/modules/iam';
 
 export const dynamic = 'force-dynamic';
 
@@ -52,19 +53,26 @@ const createSchema = z.object({
   notes: zOptText(5000),
 });
 
+/**
+ * Violations, companies and branches of the user's companies (P1-SCOPE: ComplianceViolation.companyId,
+ * which a branch violation also carries: its branch's company).
+ */
 export async function GET() {
   try {
-    await requireUser(ROLE_GROUPS.STAFF);
+    const user = await requireUser(ROLE_GROUPS.STAFF);
+    const ctx = scopedContext(await resolveActor(prisma, user));
+    authz.assert(ctx, 'compliance.read');
+    const db = scopedPrisma(ctx);
     const [violations, companies, branches] = await Promise.all([
-      prisma.complianceViolation.findMany({
+      db.complianceViolation.findMany({
         include: {
           company: { select: { nameArabic: true } },
           branch: { select: { nameArabic: true } },
         },
         orderBy: { createdAt: 'desc' },
       }),
-      prisma.company.findMany({ select: { id: true, nameArabic: true } }),
-      prisma.branch.findMany({ select: { id: true, nameArabic: true } }),
+      db.company.findMany({ select: { id: true, nameArabic: true } }),
+      db.branch.findMany({ select: { id: true, nameArabic: true } }),
     ]);
 
     const structuredData = violations.map((v) => ({
@@ -85,24 +93,27 @@ export async function GET() {
 export async function POST(req: Request) {
   try {
     const user = await requireUser(COMPLIANCE_WRITE_ROLES);
+    const ctx = scopedContext(await resolveActor(prisma, user));
+    authz.assert(ctx, 'compliance.manage');
+    // Scoped client: a violation, company or branch outside the user's scope is "not found" (404).
+    const db = scopedPrisma(ctx);
     const body = await parseBody(req, envelopeSchema);
     const ipAddress = getClientIp(req);
 
     // Status updates (corrected / paid).
     if (body.actionType === 'UPDATE_STATUS') {
       const { id, status } = updateStatusSchema.parse(body.payload ?? {});
-      const updatedViolation = await prisma.$transaction(async (tx) => {
-        const res = await tx.complianceViolation.updateMany({
-          where: { id, status: { in: ALLOWED_FROM[status] } },
-          data: { status },
-        });
-        if (res.count === 0) {
-          const exists = await tx.complianceViolation.findUnique({ where: { id }, select: { id: true } });
-          if (!exists) throw notFound('المخالفة غير موجودة');
-          throw conflict('لا يمكن تغيير حالة المخالفة من حالتها الحالية (ربما تمت معالجتها مسبقاً)');
-        }
-        return tx.complianceViolation.findUniqueOrThrow({ where: { id } });
+      // One conditional update (atomic): the status guard makes a replay a 409.
+      const res = await db.complianceViolation.updateMany({
+        where: { id, status: { in: ALLOWED_FROM[status] } },
+        data: { status },
       });
+      if (res.count === 0) {
+        const exists = await db.complianceViolation.findUnique({ where: { id }, select: { id: true } });
+        if (!exists) throw notFound('المخالفة غير موجودة');
+        throw conflict('لا يمكن تغيير حالة المخالفة من حالتها الحالية (ربما تمت معالجتها مسبقاً)');
+      }
+      const updatedViolation = await db.complianceViolation.findUniqueOrThrow({ where: { id } });
 
       await logAudit({
         userId: user.id,
@@ -125,13 +136,14 @@ export async function POST(req: Request) {
 
     // Default action: register a new government violation.
     const data = createSchema.parse(body);
+    // The scope key is the company: the company itself, or the branch's company.
     const target =
       data.targetType === 'COMPANY'
-        ? await prisma.company.findUnique({ where: { id: data.targetId }, select: { id: true } })
-        : await prisma.branch.findUnique({ where: { id: data.targetId }, select: { id: true } });
+        ? await db.company.findUnique({ where: { id: data.targetId }, select: { id: true } }).then((c) => c && { companyId: c.id })
+        : await db.branch.findUnique({ where: { id: data.targetId }, select: { companyId: true } });
     if (!target) throw notFound(data.targetType === 'COMPANY' ? 'الشركة غير موجودة' : 'الفرع غير موجود');
 
-    const newViolation = await prisma.complianceViolation.create({
+    const newViolation = await db.complianceViolation.create({
       data: {
         authority: data.authority,
         amount: roundMoney(data.amount),
@@ -139,7 +151,7 @@ export async function POST(req: Request) {
         canObject: data.canObject,
         notes: data.notes ?? null,
         status: VIOLATION_STATUS.PENDING_PAYMENT,
-        companyId: data.targetType === 'COMPANY' ? data.targetId : null,
+        companyId: target.companyId,
         branchId: data.targetType === 'BRANCH' ? data.targetId : null,
       },
     });

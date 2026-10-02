@@ -16,6 +16,7 @@ import { zId } from '@/lib/validation';
 import { BENCHMARK_PERIODS, BENCHMARK_SOURCE, MIN_GROUP_SIZE, computeBenchmarks, scopeDisclosure } from '@/lib/workforce/benchmarks';
 import { auditViewOnce, limitOrThrow } from '../_lib/server';
 import { loadBenchmarkPopulation, loadBenchmarksInput } from './_load';
+import { assertUnitsVisible, workforceScope } from '../_lib/scope';
 
 export const dynamic = 'force-dynamic';
 
@@ -38,6 +39,9 @@ export async function GET(req: Request) {
     const user = await requireUser(ROLE_GROUPS.WORKFORCE);
     const q = parseQuery(req, querySchema);
     limitOrThrow(user, 'benchmarks', 30, 60_000);
+    // P1-SCOPE: the caller's legal companies only; a company / branch / department outside them is "not found".
+    const wf = await workforceScope(user);
+    await assertUnitsVisible(wf, q);
     const [company, branch, department] = await Promise.all([
       q.companyId ? prisma.company.findUnique({ where: { id: q.companyId }, select: { id: true, nameArabic: true } }) : null,
       q.branchId ? prisma.branch.findUnique({ where: { id: q.branchId }, select: { id: true, nameArabic: true } }) : null,
@@ -50,7 +54,10 @@ export async function GET(req: Request) {
     const asOf = today();
     const scope = { companyId: q.companyId ?? null, branchId: q.branchId ?? null, departmentId: q.departmentId ?? null };
     const scoped = !!(scope.companyId || scope.branchId || scope.departmentId);
-    const [{ input, notes }, population] = await Promise.all([loadBenchmarksInput({ asOf, months: q.months, scope }), scoped ? loadBenchmarkPopulation({ asOf, months: q.months }) : Promise.resolve(null)]);
+    const [{ input, notes }, population] = await Promise.all([
+      loadBenchmarksInput({ asOf, months: q.months, scope: { ...scope, companyIds: wf.companyIds } }),
+      scoped ? loadBenchmarkPopulation({ asOf, months: q.months, companyIds: wf.companyIds }) : Promise.resolve(null),
+    ]);
     // A sub-scope is compared with the wider scopes containing it (no recovery of a small group by subtraction).
     const disclosure = population ? scopeDisclosure(population, scope, asOf, q.months, MIN_GROUP_SIZE) : null;
     const result = computeBenchmarks(input, { asOf, months: q.months, minGroupSize: MIN_GROUP_SIZE, disclosure });

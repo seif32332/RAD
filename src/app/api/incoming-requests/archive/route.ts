@@ -6,6 +6,7 @@ import { LEAVE_STATUS, LOAN_STATUS, ROLE_GROUPS, type AppRole } from '@/lib/cons
 import { handleApiError } from '@/lib/http';
 import { formatDateShort } from '@/lib/dates';
 import { roundMoney } from '@/lib/money';
+import { authz, resolveActor, scopedContext, scopedPrisma } from '@/modules/iam';
 
 export const dynamic = 'force-dynamic';
 
@@ -49,24 +50,28 @@ export async function GET() {
     const user = await requireUser(ARCHIVE_ROLES);
     const isHr = hasRole(user, ROLE_GROUPS.HR);
     const hrOnly = <T,>(q: () => Promise<T[]>): Promise<T[]> => (isHr ? q() : Promise.resolve([]));
+    // P1-SCOPE: the archive of the user's companies only (each request follows its employee).
+    const ctx = scopedContext(await resolveActor(prisma, user));
+    authz.assert(ctx, 'hrHub.read');
+    const db = scopedPrisma(ctx);
 
     const [leaves, loans, terminations, attendanceCorrections] = await Promise.all([
       hrOnly(() =>
-        prisma.leave.findMany({
+        db.leave.findMany({
           where: { status: { in: LEAVE_ARCHIVE_STATUSES } },
           select: { id: true, status: true, startDate: true, endDate: true, createdAt: true, updatedAt: true, employee: employeeSelect },
           orderBy: { updatedAt: 'desc' },
           take: TAKE,
         }),
       ),
-      prisma.loan.findMany({
+      db.loan.findMany({
         where: { status: { in: LOAN_ARCHIVE_STATUSES } },
         select: { id: true, status: true, amount: true, reason: true, createdAt: true, updatedAt: true, employee: employeeSelect },
         orderBy: { updatedAt: 'desc' },
         take: TAKE,
       }),
       hrOnly(() =>
-        prisma.terminationRequest.findMany({
+        db.terminationRequest.findMany({
           where: { status: { in: DECIDED_STATUSES } },
           select: { id: true, status: true, terminationType: true, createdAt: true, updatedAt: true, employee: employeeSelect },
           orderBy: { updatedAt: 'desc' },
@@ -74,7 +79,7 @@ export async function GET() {
         }),
       ),
       hrOnly(() =>
-        prisma.attendanceCorrection.findMany({
+        db.attendanceCorrection.findMany({
           where: { status: { in: DECIDED_STATUSES } },
           select: { id: true, status: true, reason: true, createdAt: true, updatedAt: true, employee: employeeSelect },
           orderBy: { updatedAt: 'desc' },

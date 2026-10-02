@@ -1,7 +1,7 @@
 import { NextResponse } from 'next/server';
 import { z } from 'zod';
 import { prisma } from '@/lib/prisma';
-import { getClientIp, requireEmployeeId, requireUser } from '@/lib/auth';
+import { getClientIp, requireUser } from '@/lib/auth';
 import { ROLE_GROUPS } from '@/lib/constants';
 import { HttpError, badRequest, conflict, forbidden, handleApiError, jsonError } from '@/lib/http';
 import { zNumber } from '@/lib/validation';
@@ -27,6 +27,8 @@ import {
   type PunchReason,
 } from '@/lib/self-attendance';
 import { loadPlanRows, loadSelfAttendanceContext } from '@/lib/self-attendance-server';
+import { resolveSelfContext } from '@/lib/employee-scope';
+import { authz, resolveActor, scopedPrisma } from '@/modules/iam';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -65,7 +67,13 @@ export async function POST(req: Request) {
   let evidenceName: string | null = null;
   try {
     const user = await requireUser(ROLE_GROUPS.ALL);
-    const employeeId = await requireEmployeeId(user);
+    // P1-SCOPE: SelfContext: the punch is always the session employee's own. Reads go through the scoped
+    // client; the transaction stays on the root client (its row lock is raw SQL) and writes only rows of
+    // `employeeId`, which comes from the context.
+    const self = await resolveSelfContext(prisma, await resolveActor(prisma, user));
+    authz.assert(self, 'attendance.punch');
+    const employeeId = self.employeeId;
+    const db = scopedPrisma(self);
     const ipAddress = getClientIp(req);
     const userAgent = req.headers.get('user-agent')?.slice(0, 300) ?? null;
 
@@ -109,7 +117,7 @@ export async function POST(req: Request) {
     if (ctx.faceRequired && !ctx.faceConsentCurrent) {
       throw conflict('تم تحديث إشعار الخصوصية. اقرأه ووافق عليه قبل تسجيل الحركة.', { code: 'CONSENT_OUTDATED' });
     }
-    const recent = await prisma.attendancePunch.count({ where: { employeeId, createdAt: { gte: new Date(now.getTime() - PUNCH_WINDOW_MS) } } });
+    const recent = await db.attendancePunch.count({ where: { employeeId, createdAt: { gte: new Date(now.getTime() - PUNCH_WINDOW_MS) } } });
     if (recent >= MAX_PUNCHES_PER_WINDOW) {
       return jsonError(429, 'محاولات كثيرة خلال وقت قصير. انتظر قليلاً ثم حاول مرة أخرى.', { retryAfterSeconds: Math.ceil(PUNCH_WINDOW_MS / 1000) });
     }
@@ -138,7 +146,7 @@ export async function POST(req: Request) {
       if (!ctx.faceRequired) {
         reasons.push(PUNCH_REASONS.FACE_EXEMPT);
       } else if (selfie) {
-        const profile = await prisma.faceProfile.findUnique({ where: { employeeId }, select: { embedding: true, model: true } });
+        const profile = await db.faceProfile.findUnique({ where: { employeeId }, select: { embedding: true, model: true } });
         const template = profile?.model === FACE_MODEL ? openEmbedding(profile.embedding) : null;
         const analysis = template ? await analyzeFace(selfie.bytes, selfie.mime) : null;
         similarity = analysis?.embedding && template ? cosineSimilarity(analysis.embedding, template) : null;
@@ -146,7 +154,8 @@ export async function POST(req: Request) {
         reasons.push(...checkFace({ exempt: false, enrolled: !!template, analysis, similarity, settings }));
       }
     }
-    if (employee.employmentStatus === 'ON_LEAVE') reasons.push(PUNCH_REASONS.ON_LEAVE);
+    // On leave = an approved leave covers the work day (Leave rows, BR-LCY-008), not a stored status (EV-3016).
+    if (ctx.onLeave) reasons.push(PUNCH_REASONS.ON_LEAVE);
     const result = decidePunch(reasons);
 
     // Evidence: saved before the transaction, removed again if the transaction fails.

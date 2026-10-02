@@ -1,3 +1,4 @@
+import { randomUUID } from 'crypto';
 import { NextResponse } from 'next/server';
 import { z } from 'zod';
 import { prisma } from '@/lib/prisma';
@@ -7,15 +8,27 @@ import { zMoney, zOptText, zText } from '@/lib/validation';
 import { roundMoney } from '@/lib/money';
 import { logAudit } from '@/lib/audit';
 import { PAYMENTS_ACCESS } from './access';
+import { filterPaymentsInScope } from './scope';
+import { authz, resolveActor, scopedContext } from '@/modules/iam';
+import { createPaymentRequest } from '@/modules/finance';
+import { runPayrollTransaction } from '@/modules/payroll';
+import { moneyActorOf } from '@/modules/platform';
 
 export const dynamic = 'force-dynamic';
 
 export async function GET() {
   try {
     const user = await requireUser(PAYMENTS_ACCESS);
-    const payments = await prisma.paymentRequest.findMany({
-      orderBy: { createdAt: 'desc' },
-    });
+    // P1-SCOPE: the requests of the user's companies (company of the linked record, ./scope.ts).
+    const ctx = scopedContext(await resolveActor(prisma, user));
+    authz.assert(ctx, 'payment.read');
+    const payments = await filterPaymentsInScope(
+      prisma,
+      ctx,
+      await prisma.paymentRequest.findMany({
+        orderBy: { createdAt: 'desc' },
+      }),
+    );
     // Maker-checker display: who filed / approved / paid each request (the requester cannot pay it).
     const userIds = [
       ...new Set(payments.flatMap((p) => [p.requestedById, p.approvedById, p.paidById]).filter((v): v is string => !!v)),
@@ -52,18 +65,24 @@ export async function POST(req: Request) {
   try {
     const user = await requireUser(PAYMENTS_ACCESS);
     const body = await parseBody(req, createSchema);
+    // A free-form request has no company: visible to unrestricted users and to its requester (./scope.ts).
+    authz.assert(scopedContext(await resolveActor(prisma, user)), 'payment.manage');
 
-    const payment = await prisma.paymentRequest.create({
-      data: {
+    // finance.createPaymentRequest behind money.gateway. Maker-checker: the requester may not approve
+    // (owner portal) nor pay (payments) it.
+    const idem = req.headers.get('idempotency-key')?.trim();
+    const payment = await runPayrollTransaction(prisma, (tx) =>
+      createPaymentRequest(tx, {
+        actor: moneyActorOf(user),
         title: body.title,
         reason: body.reason ?? null,
         amount: roundMoney(body.amount),
         accountNumber: body.accountNumber ?? null,
         status: 'PENDING_OWNER',
-        // Maker-checker: the requester may not approve (owner portal) nor pay (payments) it.
-        requestedById: user.id,
-      },
-    });
+        operationKey: idem ? `payment.create:k:${user.id}:${idem.slice(0, 100)}` : `payment.create:${randomUUID()}`,
+        ipAddress: getClientIp(req),
+      }),
+    );
 
     await logAudit({
       userId: user.id,

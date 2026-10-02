@@ -5,9 +5,14 @@ import { getClientIp, requireUser } from '@/lib/auth';
 import { ROLE_GROUPS } from '@/lib/constants';
 import { badRequest, handleApiError, parseBody } from '@/lib/http';
 import { logAudit } from '@/lib/audit';
+import { ALL_COMPANIES, authz, resolveActor, scopedContext } from '@/modules/iam';
 import { DEFAULT_SETTINGS, SETTING_ORDER_RULES, isKnownSetting, normalizeSettingValue, settingOrderProblems, settingValueProblem } from './definitions';
 
 export const dynamic = 'force-dynamic';
+
+// P1-SCOPE: tenant-wide (SystemSetting / User / RolePermission / AuditLog have no company): an admin
+// who sees EVERY company only. scopedContext(actor, ALL_COMPANIES) refuses (403) an actor restricted
+// to some companies by UserCompanyScope, whatever his role.
 
 const SETTING_KEY = /^[A-Za-z][A-Za-z0-9_.-]{0,99}$/;
 const MAX_KEYS = 300;
@@ -26,7 +31,9 @@ const SettingsSchema = z.object({
 /** GET: every editable setting (defaults <- stored values). Admins only. */
 export async function GET() {
   try {
-    await requireUser(ROLE_GROUPS.ADMIN);
+    const user = await requireUser(ROLE_GROUPS.ADMIN);
+    const ctx = scopedContext(await resolveActor(prisma, user), ALL_COMPANIES);
+    authz.assert(ctx, 'platform.settings.manage');
     const keys = Object.keys(DEFAULT_SETTINGS);
     const dbSettings = await prisma.systemSetting.findMany({ where: { key: { in: keys } }, select: { key: true, value: true } });
 
@@ -42,6 +49,8 @@ export async function GET() {
 async function saveSettings(req: Request) {
   try {
     const user = await requireUser(ROLE_GROUPS.ADMIN);
+    const ctx = scopedContext(await resolveActor(prisma, user), ALL_COMPANIES);
+    authz.assert(ctx, 'platform.settings.manage');
     const { settings } = await parseBody(req, SettingsSchema);
 
     // Keys nothing reads are ignored (never stored), known keys are validated.

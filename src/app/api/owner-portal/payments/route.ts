@@ -8,7 +8,9 @@ import { zId, zOptText } from '@/lib/validation';
 import { roundMoney } from '@/lib/money';
 import { logAudit } from '@/lib/audit';
 import { approveLoanStep, approveSettlement, rejectLoan, rejectSettlement } from '@/lib/finance';
-import { enforceMakerChecker } from '@/app/api/payments/maker-checker';
+import { recordSettlementEffects } from '@/modules/offboarding';
+import { approvePaymentRequest, returnPaymentRequest } from '@/modules/finance';
+import { moneyActorOf } from '@/modules/platform';
 
 export const dynamic = 'force-dynamic';
 
@@ -117,37 +119,30 @@ export async function POST(req: Request) {
         }
 
         if (type === 'SETTLEMENT') {
-          if (approve) await approveSettlement(tx, id, user, notes, ctx);
+          if (approve) await approveSettlement(tx, id, user, notes, { ...ctx, recordEffects: recordSettlementEffects });
           else await rejectSettlement(tx, id, user, notes, ctx);
           return;
         }
 
-        // PAYMENT: PENDING_OWNER -> PENDING_FINANCE (approve) / RETURNED (reject), guarded.
+        // PAYMENT: PENDING_OWNER -> PENDING_FINANCE (approve) / RETURNED (reject), through finance's
+        // transitions behind money.gateway: the approver is neither the requester nor the beneficiary,
+        // for every role (BL-PAY-008: no SUPER_ADMIN / allow_self_approval exception). Rejecting
+        // (withdrawing) is always allowed.
         const current = await tx.paymentRequest.findUnique({ where: { id }, select: { id: true, status: true, requestedById: true } });
         if (!current) throw notFound('أمر الصرف غير موجود');
         if (current.status !== 'PENDING_OWNER') throw conflict('تم اتخاذ قرار بشأن أمر الصرف مسبقاً');
-        // Maker-checker: the requester may not approve their own request (403), except SUPER_ADMIN /
-        // allow_self_approval (audited as SELF_APPROVAL_OVERRIDE). Rejecting (withdrawing) is always allowed.
-        const makerChecker = approve ? await enforceMakerChecker(tx, 'APPROVE', user, current, ctx.ipAddress) : null;
-        const res = await tx.paymentRequest.updateMany({
-          where: { id, status: 'PENDING_OWNER' },
-          data: approve
-            ? { status: 'PENDING_FINANCE', returnReason: null, approvedById: user.id }
-            : { status: 'RETURNED', returnReason: notes ?? 'مرفوض من صاحب العمل' },
-        });
-        if (res.count === 0) throw conflict('تم اتخاذ قرار بشأن أمر الصرف مسبقاً');
+        const idem = req.headers.get('idempotency-key')?.trim();
+        const operationKey = idem ? `owner.payment:k:${user.id}:${idem.slice(0, 100)}` : `owner.payment:${approve ? 'approve' : 'return'}:${id}:${user.id}`;
+        const row = approve
+          ? await approvePaymentRequest(tx, { actor: moneyActorOf(user), paymentRequestId: id, operationKey, ipAddress: ctx.ipAddress })
+          : await returnPaymentRequest(tx, { actor: moneyActorOf(user), paymentRequestId: id, reason: notes ?? 'مرفوض من صاحب العمل', from: ['PENDING_OWNER'], operationKey, ipAddress: ctx.ipAddress });
         await logAudit(
           {
             userId: user.id,
             action: approve ? 'APPROVE' : 'REJECT',
             entityType: 'PaymentRequest',
             entityId: id,
-            details: {
-              status: approve ? 'PENDING_FINANCE' : 'RETURNED',
-              notes: notes ?? null,
-              requestedById: current.requestedById,
-              ...(makerChecker ? { makerChecker } : {}),
-            },
+            details: { status: row.status, notes: notes ?? null, requestedById: current.requestedById },
             ipAddress: ctx.ipAddress,
           },
           tx,

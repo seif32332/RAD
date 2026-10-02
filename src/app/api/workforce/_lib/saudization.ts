@@ -26,6 +26,7 @@ import { ESTIMATE_DISCLAIMER } from '@/lib/workforce/version';
 import type { RuleEvidence } from '@/lib/workforce/types';
 import { assumptionEvidence, companySettingsEvidence } from './views';
 import type { HireScenarioParams, SaudizationQuery, SolveParams } from './saudization-schemas';
+import { assertCompanyVisible, type WfScope } from './scope';
 
 /** Company form anchor of the Nitaqat activity select. */
 export function nitaqatSettingsHref(companyId: string): string {
@@ -135,10 +136,12 @@ function computeCompany(cw: LegalCompanyWorkforce, reg: RegisterData, date: Date
   };
 }
 
-export async function runSaudization(q: SaudizationQuery, viewerRole: string | null | undefined) {
+/** `s` = the caller's company scope: his legal companies only; a company outside it is a 404. */
+export async function runSaudization(q: SaudizationQuery, viewerRole: string | null | undefined, s: WfScope) {
+  assertCompanyVisible(s, q.companyId);
   const date = q.date ?? todayDate();
   const canSee = canSeeDisability(viewerRole);
-  const [workforces, reg] = await Promise.all([loadLegalCompanyWorkforce({ companyId: q.companyId ?? null, date }), loadRegisterData()]);
+  const [workforces, reg] = await Promise.all([loadLegalCompanyWorkforce({ companyId: q.companyId ?? null, date, companyIds: s.companyIds }), loadRegisterData()]);
   if (q.companyId && !workforces.length) throw notFound('الشركة غير موجودة');
   const companies = workforces.map((cw) => computeCompany(cw, reg, date, canSee, !q.summary));
   const date10 = date.toISOString().slice(0, 10);
@@ -168,15 +171,16 @@ export async function runSaudization(q: SaudizationQuery, viewerRole: string | n
 
 export type SaudizationResponse = Awaited<ReturnType<typeof runSaudization>>;
 
-async function companyWorkforce(companyId: string, date: Date): Promise<LegalCompanyWorkforce> {
-  const [cw] = await loadLegalCompanyWorkforce({ companyId, date });
+async function companyWorkforce(companyId: string, date: Date, s: WfScope): Promise<LegalCompanyWorkforce> {
+  assertCompanyVisible(s, companyId);
+  const [cw] = await loadLegalCompanyWorkforce({ companyId, date, companyIds: s.companyIds });
   if (!cw) throw notFound('الشركة غير موجودة');
   return cw;
 }
 
-export async function runSolve(p: SolveParams, viewerRole: string | null | undefined): Promise<{ result: SolveResult; companyName: string; disclaimer: string; settingsHref: string }> {
+export async function runSolve(p: SolveParams, viewerRole: string | null | undefined, s: WfScope): Promise<{ result: SolveResult; companyName: string; disclaimer: string; settingsHref: string }> {
   const byDate = p.byDate ?? todayDate();
-  const [cw, reg, ctx] = await Promise.all([companyWorkforce(p.companyId, byDate), loadRegisterData(), loadCostContextRows()]);
+  const [cw, reg, ctx] = await Promise.all([companyWorkforce(p.companyId, byDate, s), loadRegisterData(), loadCostContextRows(undefined, s.companyIds)]);
   const key = cw.company.nitaqatActivityKey ?? null;
   const activity = key ? (reg.activities.find((a) => a.key === key) ?? null) : null;
   const result = solveToBand({
@@ -194,10 +198,10 @@ export async function runSolve(p: SolveParams, viewerRole: string | null | undef
   };
 }
 
-export async function runHireScenario(p: HireScenarioParams): Promise<{ result: HireScenarioResult; assumptionEvidence: Record<string, RuleEvidence>; horizon: number }> {
+export async function runHireScenario(p: HireScenarioParams, s: WfScope): Promise<{ result: HireScenarioResult; assumptionEvidence: Record<string, RuleEvidence>; horizon: number }> {
   const startMonth = p.startMonth ?? todayKey().slice(0, 7);
   const date = new Date(`${startMonth}-01T00:00:00.000Z`);
-  const [cw, reg, ctx] = await Promise.all([companyWorkforce(p.companyId, date), loadRegisterData(), loadCostContextRows()]);
+  const [cw, reg, ctx] = await Promise.all([companyWorkforce(p.companyId, date, s), loadRegisterData(), loadCostContextRows(undefined, s.companyIds)]);
   const known = new Set(cw.employees.map((e) => e.id));
   for (const c of p.candidates) if (c.overtimeEmployeeId && !known.has(c.overtimeEmployeeId)) throw notFound('الموظف المختار للعمل الإضافي ليس من موظفي هذه الشركة');
   const key = cw.company.nitaqatActivityKey ?? null;

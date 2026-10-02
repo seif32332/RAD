@@ -4,6 +4,8 @@ import type { Prisma } from '@prisma/client';
 import { prisma } from '@/lib/prisma';
 import { issueEvaluationReportQuietly } from '@/lib/documents/service';
 import { getClientIp, hasRole, requireEmployeeId, requireUser, type AuthUser } from '@/lib/auth';
+import { resolveSelfContext } from '@/lib/employee-scope';
+import { authz, resolveActor, scopeWhere, scopedContext, scopedPrisma, type ScopedContext, type SelfContext } from '@/modules/iam';
 import { ROLE_GROUPS } from '@/lib/constants';
 import { HttpError, badRequest, conflict, forbidden, handleApiError, notFound, parseBody } from '@/lib/http';
 import { zBool, zDate, zId, zInt, zNumber, zOptText, zText } from '@/lib/validation';
@@ -54,12 +56,31 @@ function reportsScope(managerEmployeeId: string): Prisma.EmployeeEvaluationWhere
   };
 }
 
-/** null = unrestricted (HR); otherwise the where-filter limiting evaluations to the manager's reports. */
-async function evaluationScope(user: AuthUser): Promise<Prisma.EmployeeEvaluationWhereInput | null> {
-  if (hasRole(user, ROLE_GROUPS.HR)) return null;
+/**
+ * P1-SCOPE: staff (HR, managers) work in their ScopedContext (the evaluations of employees of their
+ * companies); an employee in his SelfContext. Templates and cycles have no company: a cycle is shown
+ * with (and decided on through) the evaluations of the context only.
+ */
+async function evaluationContext(user: AuthUser): Promise<ScopedContext | SelfContext> {
+  const actor = await resolveActor(prisma, user);
+  return hasRole(user, ROLE_GROUPS.STAFF) ? scopedContext(actor) : resolveSelfContext(prisma, actor);
+}
+
+/** The context's filter on EmployeeEvaluation (null = unrestricted). */
+function evaluationsIn(ctx: ScopedContext | SelfContext): Prisma.EmployeeEvaluationWhereInput | null {
+  return scopeWhere(ctx, 'EmployeeEvaluation') as Prisma.EmployeeEvaluationWhereInput | null;
+}
+
+/** null = unrestricted (unscoped HR); otherwise the where-filter limiting the evaluations shown. */
+async function evaluationScope(user: AuthUser, ctx: ScopedContext | SelfContext): Promise<Prisma.EmployeeEvaluationWhereInput | null> {
+  const company = evaluationsIn(ctx);
+  let own: Prisma.EmployeeEvaluationWhereInput | null;
+  if (hasRole(user, ROLE_GROUPS.HR)) own = null;
   // A manager account that is not linked to an employee file has no team: empty lists, not 403.
-  if (!user.employeeId) return { id: { in: [] } };
-  return reportsScope(await requireEmployeeId(user));
+  else if (!user.employeeId) own = { id: { in: [] } };
+  else own = reportsScope(await requireEmployeeId(user));
+  const parts = [own, company].filter((w): w is Prisma.EmployeeEvaluationWhereInput => !!w);
+  return parts.length === 0 ? null : parts.length === 1 ? parts[0] : { AND: parts };
 }
 
 function isManagerOf(
@@ -91,7 +112,9 @@ export async function GET(req: Request) {
 
     if (view === 'cycles') {
       const user = await requireUser(ROLE_GROUPS.MANAGERS);
-      const scope = await evaluationScope(user);
+      const ctx = await evaluationContext(user);
+      authz.assert(ctx, 'evaluation.read');
+      const scope = await evaluationScope(user, ctx);
       const cycles = await prisma.evaluationCycle.findMany({
         where: scope ? { evaluations: { some: scope } } : undefined,
         include: {
@@ -109,7 +132,9 @@ export async function GET(req: Request) {
     if (view === 'cycle-detail') {
       const user = await requireUser(ROLE_GROUPS.MANAGERS);
       const cycleId = zId.parse(searchParams.get('cycleId') ?? '');
-      const scope = await evaluationScope(user);
+      const ctx = await evaluationContext(user);
+      authz.assert(ctx, 'evaluation.read');
+      const scope = await evaluationScope(user, ctx);
       const cycle = await prisma.evaluationCycle.findUnique({
         where: { id: cycleId },
         include: {
@@ -135,15 +160,26 @@ export async function GET(req: Request) {
           },
         },
       });
-      // The page treats a null body as "not found".
+      // The page treats a null body as "not found". A cycle without any evaluation of the user's
+      // companies is not his (P1-SCOPE), unless it has no evaluation at all.
       if (!cycle) return NextResponse.json(null, { status: 404 });
+      const company = evaluationsIn(ctx);
+      if (company) {
+        const [total, mine] = await Promise.all([
+          prisma.employeeEvaluation.count({ where: { cycleId } }),
+          prisma.employeeEvaluation.count({ where: { cycleId, AND: [company] } }),
+        ]);
+        if (total > 0 && mine === 0) return NextResponse.json(null, { status: 404 });
+      }
       return NextResponse.json(cycle);
     }
 
     if (view === 'evaluation') {
       const user = await requireUser(ROLE_GROUPS.ALL);
       const evalId = zId.parse(searchParams.get('evalId') ?? '');
-      const evaluation = await prisma.employeeEvaluation.findUnique({
+      const ctx = await evaluationContext(user);
+      authz.assert(ctx, 'evaluation.read');
+      const evaluation = await scopedPrisma(ctx).employeeEvaluation.findUnique({
         where: { id: evalId },
         include: {
           cycle: { include: { template: { include: templateWithItems } } },
@@ -181,8 +217,10 @@ export async function GET(req: Request) {
       const requested = searchParams.get('employeeId');
       const employeeId =
         hasRole(user, ROLE_GROUPS.HR) && requested ? zId.parse(requested) : await requireEmployeeId(user);
+      const ctx = await evaluationContext(user);
+      authz.assert(ctx, 'evaluation.read');
 
-      const evals = await prisma.employeeEvaluation.findMany({
+      const evals = await scopedPrisma(ctx).employeeEvaluation.findMany({
         where: { employeeId, status: EVAL_STATUS.PENDING_EMPLOYEE_ACK },
         include: {
           cycle: { select: { title: true, cycleType: true } },
@@ -194,10 +232,13 @@ export async function GET(req: Request) {
     }
 
     if (view === 'dashboard') {
-      await requireUser(ROLE_GROUPS.HR);
+      const user = await requireUser(ROLE_GROUPS.HR);
+      const ctx = await evaluationContext(user);
+      authz.assert(ctx, 'evaluation.read');
+      const db = scopedPrisma(ctx);
       const closedWhere: Prisma.EmployeeEvaluationWhereInput = { status: EVAL_STATUS.CLOSED, totalScore: { not: null } };
       const [allEvals, pendingManager, pendingApproval, pendingAck] = await Promise.all([
-        prisma.employeeEvaluation.findMany({
+        db.employeeEvaluation.findMany({
           where: closedWhere,
           include: {
             employee: {
@@ -214,9 +255,9 @@ export async function GET(req: Request) {
           },
           orderBy: { totalScore: 'desc' },
         }),
-        prisma.employeeEvaluation.count({ where: { status: EVAL_STATUS.PENDING_MANAGER } }),
-        prisma.employeeEvaluation.count({ where: { status: EVAL_STATUS.PENDING_APPROVAL } }),
-        prisma.employeeEvaluation.count({ where: { status: EVAL_STATUS.PENDING_EMPLOYEE_ACK } }),
+        db.employeeEvaluation.count({ where: { status: EVAL_STATUS.PENDING_MANAGER } }),
+        db.employeeEvaluation.count({ where: { status: EVAL_STATUS.PENDING_APPROVAL } }),
+        db.employeeEvaluation.count({ where: { status: EVAL_STATUS.PENDING_EMPLOYEE_ACK } }),
       ]);
 
       const totals = allEvals.map((e) => e.totalScore ?? 0);
@@ -257,7 +298,10 @@ export async function GET(req: Request) {
       // No scores, no leave data, no suggestions: the evaluator reads the record and decides alone.
       const user = await requireUser(ROLE_GROUPS.MANAGERS);
       const evalId = zId.parse(searchParams.get('evalId') ?? '');
-      const evaluation = await prisma.employeeEvaluation.findUnique({
+      const ctx = await evaluationContext(user);
+      authz.assert(ctx, 'evaluation.read');
+      const db = scopedPrisma(ctx);
+      const evaluation = await db.employeeEvaluation.findUnique({
         where: { id: evalId },
         select: {
           employeeId: true,
@@ -269,7 +313,7 @@ export async function GET(req: Request) {
       if (!evaluation) throw notFound('التقييم غير موجود');
       if (!hasRole(user, ROLE_GROUPS.HR) && !isManagerOf(user, evaluation)) throw forbidden();
       const limit = 200;
-      const rows = await prisma.attendance.findMany({
+      const rows = await db.attendance.findMany({
         where: { employeeId: evaluation.employeeId, date: { gte: evaluation.cycle.startDate, lte: evaluation.cycle.endDate } },
         select: { date: true, checkIn: true, checkOut: true, status: true, lateMinutes: true, earlyLeaveMin: true },
         orderBy: { date: 'desc' },
@@ -373,6 +417,8 @@ export async function POST(req: Request) {
     const ip = getClientIp(req);
     const raw = await parseBody(req, z.object({ action: z.string().max(50) }).passthrough());
     const { action } = raw;
+    const ctx = await evaluationContext(user);
+    const db = scopedPrisma(ctx);
 
     // === إنشاء قالب تقييم جديد مع المحاور والعناصر ===
     if (action === 'CREATE_TEMPLATE') {
@@ -454,10 +500,12 @@ export async function POST(req: Request) {
       const body = createCycleSchema.parse(raw);
       if (body.endDate < body.startDate) throw badRequest('تاريخ نهاية الدورة يجب أن يكون بعد تاريخ البداية');
 
+      authz.assert(ctx, 'evaluation.manage');
       const targetIds = body.targetEmployeeIds?.length ? [...new Set(body.targetEmployeeIds)] : null;
       const [template, employees] = await Promise.all([
         prisma.evaluationTemplate.findUnique({ where: { id: body.templateId }, select: { id: true } }),
-        prisma.employee.findMany({
+        // Only employees of the user's companies (a target of another company is ignored like a terminated one).
+        db.employee.findMany({
           where: { isTerminated: false, ...(targetIds ? { id: { in: targetIds } } : {}) },
           select: { id: true, directManagerId: true },
         }),
@@ -511,7 +559,8 @@ export async function POST(req: Request) {
       const body = saveScoresSchema.parse(raw);
       const submit = body.submitForApproval === true;
 
-      const evaluation = await prisma.employeeEvaluation.findUnique({
+      authz.assert(ctx, 'evaluation.score');
+      const evaluation = await db.employeeEvaluation.findUnique({
         where: { id: body.evaluationId },
         select: {
           id: true,
@@ -614,14 +663,16 @@ export async function POST(req: Request) {
       const body = approvalSchema.parse(raw);
       const isApprove = action === 'APPROVE_EVALUATION';
       if (!isApprove && !body.comment) throw badRequest('يرجى كتابة سبب الإعادة');
+      authz.assert(ctx, 'evaluation.manage');
+      const inScope = evaluationsIn(ctx) ?? {};
 
       await prisma.$transaction(async (tx) => {
         const res = await tx.employeeEvaluation.updateMany({
-          where: { id: body.evaluationId, status: EVAL_STATUS.PENDING_APPROVAL },
+          where: { id: body.evaluationId, status: EVAL_STATUS.PENDING_APPROVAL, AND: [inScope] },
           data: { status: isApprove ? EVAL_STATUS.PENDING_EMPLOYEE_ACK : EVAL_STATUS.RETURNED },
         });
         if (res.count === 0) {
-          const exists = await tx.employeeEvaluation.findUnique({ where: { id: body.evaluationId }, select: { id: true } });
+          const exists = await tx.employeeEvaluation.findFirst({ where: { id: body.evaluationId, AND: [inScope] }, select: { id: true } });
           if (!exists) throw notFound('التقييم غير موجود');
           throw conflict('التقييم ليس بانتظار الاعتماد، يرجى تحديث الصفحة');
         }
@@ -656,6 +707,8 @@ export async function POST(req: Request) {
     if (action === 'EMPLOYEE_ACKNOWLEDGE') {
       const employeeId = await requireEmployeeId(user);
       const body = acknowledgeSchema.parse(raw);
+      // The employee acknowledges only his own evaluation (the where below keys on the session employee).
+      authz.assert(await resolveSelfContext(prisma, await resolveActor(prisma, user)), 'evaluation.acknowledge', { employeeId });
 
       await prisma.$transaction(async (tx) => {
         const res = await tx.employeeEvaluation.updateMany({
@@ -693,6 +746,18 @@ export async function POST(req: Request) {
     if (action === 'CLOSE_CYCLE') {
       if (!hasRole(user, ROLE_GROUPS.HR)) throw forbidden();
       const { cycleId } = closeCycleSchema.parse(raw);
+      authz.assert(ctx, 'evaluation.manage');
+      // A cycle has no company: a scoped user closes it only when every evaluation in it is of his
+      // companies (404 when none is, 403 when some are not).
+      const inScope = evaluationsIn(ctx);
+      if (inScope) {
+        const [total, mine] = await Promise.all([
+          prisma.employeeEvaluation.count({ where: { cycleId } }),
+          prisma.employeeEvaluation.count({ where: { cycleId, AND: [inScope] } }),
+        ]);
+        if (total > 0 && mine === 0) throw notFound('دورة التقييم غير موجودة');
+        if (mine < total) throw forbidden('دورة التقييم تشمل موظفين من شركات خارج نطاق صلاحياتك');
+      }
 
       await prisma.$transaction(async (tx) => {
         const res = await tx.evaluationCycle.updateMany({

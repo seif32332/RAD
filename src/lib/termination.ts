@@ -1,5 +1,6 @@
 // Last working day rules of an employee's own request to end the contract (resignation, mutual
 // agreement, non-renewal), applied when HR approves it (src/app/api/incoming-requests).
+import { catalogueValueAt } from '@/modules/rules';
 
 /** A resignation may be withdrawn within this many days of its submission (owner decision 2026-09-26). */
 export const RESIGNATION_WITHDRAWAL_DAYS = 7;
@@ -15,9 +16,13 @@ export function earliestLastWorkingDay(submittedAt: Date, terminationType: strin
   return riyadhDay(submittedAt, terminationType === 'RESIGNATION' ? RESIGNATION_WITHDRAWAL_DAYS + 1 : 0);
 }
 
-/** Suggested last working day: submission + the employee's notice period, never before the earliest. */
-export function suggestedLastWorkingDay(submittedAt: Date, terminationType: string, noticePeriodDays: number | null): string {
-  const byNotice = riyadhDay(submittedAt, noticePeriodDays ?? 30);
+/**
+ * Suggested last working day: submission + the employee's notice period, never before the earliest.
+ * Without a contractual notice period, the worker's statutory notice (art. 75, NOTICE_DAYS_EMPLOYEE:
+ * pass the company's value from rules.valueAt; default: the catalogue's on the submission day).
+ */
+export function suggestedLastWorkingDay(submittedAt: Date, terminationType: string, noticePeriodDays: number | null, statutoryNoticeDays?: number): string {
+  const byNotice = riyadhDay(submittedAt, noticePeriodDays ?? statutoryNoticeDays ?? catalogueValueAt('NOTICE_DAYS_EMPLOYEE', submittedAt));
   const earliest = earliestLastWorkingDay(submittedAt, terminationType);
   return byNotice < earliest ? earliest : byNotice;
 }

@@ -1,0 +1,11 @@
+# /etc/systemd/system/radeef-jobs@documents-retention.timer: weekly, Friday 05:00 + up to 30 min
+[Unit]
+Description=Radeef background job documents-retention (schedule)
+
+[Timer]
+OnCalendar=Fri *-*-* 05:00:00 Asia/Riyadh
+RandomizedDelaySec=30min
+Persistent=true
+
+[Install]
+WantedBy=timers.target

@@ -27,6 +27,7 @@ import type { HireScenarioParams, SolveParams } from '../_lib/saudization-schema
 import { loadBenchmarkPopulation, loadBenchmarksInput } from '../benchmarks/_load';
 import { companyNameMap, loadPlanOr404, planHeader, planHistories, projectionFor, publicProjection, todayDate, toDefinition, userNames } from '../plans/_lib/server';
 import { displayNames, serializePositions, serializeRaises } from '../plans/_lib/views';
+import { assertUnitsVisible, calculationScopeWhere, type WfScope } from '../_lib/scope';
 
 // ---------------------------------------------------------------------------
 // Evidence of a true-cost run («لماذا؟» of every line, assumptions, company settings)
@@ -44,8 +45,10 @@ export function trueCostEvidence(tc: TrueCostResult, assumptions: TrueCostRun['a
 // Overview / true cost
 // ---------------------------------------------------------------------------
 
-export async function overviewView(q: { months: 12 | 24 | 36; scenario: 'low' | 'base' | 'high' }): Promise<{ view: OverviewResponse; evidence: RuleEvidence[] }> {
-  const { run, response } = await runOverview(q);
+// Every view takes the caller's company scope (P1-SCOPE, §5.4.4: an export goes through the same canonical
+// query with the same context as the screen).
+export async function overviewView(q: { months: 12 | 24 | 36; scenario: 'low' | 'base' | 'high' }, s: WfScope): Promise<{ view: OverviewResponse; evidence: RuleEvidence[] }> {
+  const { run, response } = await runOverview(q, s);
   return { view: response, evidence: trueCostEvidence(run.tc, run.assumptions, null) };
 }
 
@@ -67,8 +70,9 @@ async function scopeText(p: { companyId?: string | null; branchId?: string | nul
 export async function trueCostView(
   q: TrueCostParams & { q?: string; sort: 'cost' | 'name' | 'flags'; flagged: boolean },
   role: string,
+  s: WfScope,
 ): Promise<{ view: TrueCostExportView; evidence: RuleEvidence[]; rows: number }> {
-  const run = await runTrueCost(q);
+  const run = await runTrueCost(q, s);
   const h = q.months as 12 | 24 | 36;
   const all = run.tc.employees.map(summarizeEmployee);
   const page = pageSummaries(all, { q: q.q, sort: q.sort, flagged: q.flagged, take: all.length || 1, skip: 0 });
@@ -99,20 +103,20 @@ export async function trueCostView(
 // Exit cost / hire scenario / Saudization (POST bodies = the page's bodies)
 // ---------------------------------------------------------------------------
 
-export async function exitView(p: ExitCostParams): Promise<ExitCostExportView> {
-  const out = await runExitCost(p);
+export async function exitView(p: ExitCostParams, s: WfScope): Promise<ExitCostExportView> {
+  const out = await runExitCost(p, s);
   return { ...out.result, employee: out.employee, reasonMapping: out.reasonMapping, warnings: out.warnings, assumptionEvidence: out.assumptionEvidence };
 }
 
-export async function hireView(p: HireScenarioParams): Promise<HireExportView> {
-  const out = await runHireScenario(p);
+export async function hireView(p: HireScenarioParams, s: WfScope): Promise<HireExportView> {
+  const out = await runHireScenario(p, s);
   return { result: out.result, assumptionEvidence: out.assumptionEvidence, horizon: out.horizon };
 }
 
-export async function saudizationView(q: { companyId?: string; date?: Date }, solve: SolveParams | null, role: string): Promise<{ view: SaudizationExportView; solve: Awaited<ReturnType<typeof runSolve>> | null }> {
-  const body = await runSaudization({ companyId: solve?.companyId ?? q.companyId, date: q.date, summary: false }, role);
+export async function saudizationView(q: { companyId?: string; date?: Date }, solve: SolveParams | null, role: string, wf: WfScope): Promise<{ view: SaudizationExportView; solve: Awaited<ReturnType<typeof runSolve>> | null }> {
+  const body = await runSaudization({ companyId: solve?.companyId ?? q.companyId, date: q.date, summary: false }, role, wf);
   if (!('activitiesCount' in body)) throw badRequest('تعذر إعداد التصدير');
-  const s = solve ? await runSolve(solve, role) : null;
+  const s = solve ? await runSolve(solve, role, wf) : null;
   return { view: { date: body.date, canSeeNames: body.canSeeNames, companies: body.companies as CompanySaudization[] }, solve: s };
 }
 
@@ -120,9 +124,9 @@ export async function saudizationView(q: { companyId?: string; date?: Date }, so
 // Workforce plan (+ plan vs actual, same queries as /plans/[id]/actual)
 // ---------------------------------------------------------------------------
 
-export async function planView(planId: string, live: boolean, asOfKey: string | null): Promise<PlanExportView> {
-  const row = await loadPlanOr404(planId);
-  const [{ projection, frozen }, histories, names, companies] = await Promise.all([projectionFor(row, live), planHistories([row.id]), displayNames(row), companyNameMap()]);
+export async function planView(planId: string, live: boolean, asOfKey: string | null, s: WfScope): Promise<PlanExportView> {
+  const row = await loadPlanOr404(planId, s);
+  const [{ projection, frozen }, histories, names, companies] = await Promise.all([projectionFor(row, live), planHistories([row.id]), displayNames(row, s), companyNameMap(s)]);
   const history = histories.get(row.id) ?? null;
   const users = await userNames([row.createdById, row.decidedById, history?.archivedById]);
   const header = planHeader(row, users, companies, history);
@@ -135,14 +139,14 @@ export async function planView(planId: string, live: boolean, asOfKey: string | 
     const [y, m] = k.split('-').map(Number);
     byYear.set(y, [...(byYear.get(y) ?? []), m]);
   }
-  const scope = row.companyId ? { legalCompanyId: row.companyId } : {};
+  const scope = row.companyId ? { legalCompanyId: row.companyId } : s.companyIds ? { legalCompanyId: { in: [...s.companyIds] } } : {};
   const [rows, employees] = byYear.size
     ? await Promise.all([
         prisma.payroll.findMany({
           where: {
             status: { in: [PAYROLL_STATUS.APPROVED, PAYROLL_STATUS.PAID] as PayrollStatus[] },
             OR: [...byYear.entries()].map(([year, months]) => ({ year, month: { in: months } })),
-            ...(row.companyId ? { employee: scope } : {}),
+            ...(row.companyId || s.companyIds ? { employee: scope } : {}),
           },
           select: { employeeId: true, year: true, month: true, status: true, basicSalary: true, totalAllowances: true, overtimeCost: true, gosiEmployer: true, bonusAmount: true },
           orderBy: [{ year: 'asc' }, { month: 'asc' }, { employeeId: 'asc' }],
@@ -221,7 +225,8 @@ export const benchmarksQuerySchema = z
   })
   .strict();
 
-export async function benchmarksView(q: z.infer<typeof benchmarksQuerySchema>): Promise<BenchmarksExportView> {
+export async function benchmarksView(q: z.infer<typeof benchmarksQuerySchema>, s: WfScope): Promise<BenchmarksExportView> {
+  await assertUnitsVisible(s, q);
   const [company, branch, department] = await Promise.all([
     q.companyId ? prisma.company.findUnique({ where: { id: q.companyId }, select: { id: true, nameArabic: true } }) : null,
     q.branchId ? prisma.branch.findUnique({ where: { id: q.branchId }, select: { id: true, nameArabic: true } }) : null,
@@ -233,7 +238,10 @@ export async function benchmarksView(q: z.infer<typeof benchmarksQuerySchema>): 
   const asOf = today();
   const scope = { companyId: q.companyId ?? null, branchId: q.branchId ?? null, departmentId: q.departmentId ?? null };
   const scoped = !!(scope.companyId || scope.branchId || scope.departmentId);
-  const [{ input, notes }, population] = await Promise.all([loadBenchmarksInput({ asOf, months: q.months, scope }), scoped ? loadBenchmarkPopulation({ asOf, months: q.months }) : Promise.resolve(null)]);
+  const [{ input, notes }, population] = await Promise.all([
+    loadBenchmarksInput({ asOf, months: q.months, scope: { ...scope, companyIds: s.companyIds } }),
+    scoped ? loadBenchmarkPopulation({ asOf, months: q.months, companyIds: s.companyIds }) : Promise.resolve(null),
+  ]);
   const disclosure = population ? scopeDisclosure(population, scope, asOf, q.months, MIN_GROUP_SIZE) : null;
   const result = computeBenchmarks(input, { asOf, months: q.months, minGroupSize: MIN_GROUP_SIZE, disclosure });
   return {
@@ -288,9 +296,10 @@ function parse(raw: string): unknown {
   }
 }
 
-export async function calculationView(id: string, role: string): Promise<{ view: CalculationExportView; evidence: RuleEvidence[] }> {
+export async function calculationView(id: string, role: string, s: WfScope): Promise<{ view: CalculationExportView; evidence: RuleEvidence[] }> {
   const view = canSeeDisability(role) ? (v: unknown) => v : redactSnapshotJson;
-  const row = await prisma.workforceCalculation.findUnique({ where: { id } });
+  const inScope = await calculationScopeWhere(s);
+  const row = await prisma.workforceCalculation.findFirst({ where: { id, ...(inScope ? { AND: [inScope] } : {}) } });
   if (!row) throw notFound('الحساب المحفوظ غير موجود');
   const creator = row.createdById ? await prisma.user.findUnique({ where: { id: row.createdById }, select: { name: true, email: true } }) : null;
   const ruleVersions = (parse(row.ruleVersions) as RuleVersionRef[] | null) ?? [];

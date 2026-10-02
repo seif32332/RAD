@@ -19,7 +19,7 @@ import { appendEvent, truncateIp } from './events';
 import { cancelChangeOrder, createChangeOrder } from './change-orders';
 import { grantCandidateAccess } from './candidate';
 import { loadDocumentTexts } from './texts';
-import { loadAddendumFacts, loadCircularFacts, loadCommencementFacts, loadEvaluationFacts, loadLeaveFacts, loadBankFacts, loadExitFacts, loadInvestigationFacts, loadPayrollFacts, loadSettlementFacts, loadTerminationFacts } from './facts';
+import { loadAddendumFacts, loadCircularFacts, loadTransferFacts, loadCommencementFacts, loadEvaluationFacts, loadLeaveFacts, loadBankFacts, loadExitFacts, loadInvestigationFacts, loadPayrollFacts, loadSettlementFacts, loadTerminationFacts } from './facts';
 import { employeeUserId, enqueueNotice } from './notify';
 import {
   computeValidUntil, decideSignature, effectivePolicy, needsApproval, validityStatus,
@@ -200,10 +200,13 @@ async function buildMaterialSnapshot(db: Tx, def: DocumentTypeDefinition, subjec
   const leave = def.facts === 'LEAVE' ? await loadLeaveFacts(db, params.leaveId) : undefined;
   const evaluation = def.facts === 'EVALUATION' ? await loadEvaluationFacts(db, params.evaluationId) : undefined;
   const addendum = def.facts === 'ADDENDUM' ? await loadAddendumFacts(db, employeeId, params.addendum?.newBranchId) : undefined;
+  const transfer = def.facts === 'TRANSFER'
+    ? await loadTransferFacts(db, employeeId, params.transfer, !!(await loadPolicy(db, def, company.id)).options.allowCityChange)
+    : undefined;
   const commencement = def.facts === 'COMMENCEMENT' ? await loadCommencementFacts(db, employeeId, params.commencement?.kind, params.commencement?.leaveId) : undefined;
   let data: Record<string, unknown>;
   try {
-    data = buildContractData(def, { employee, company, params, facts, settlement, payroll, termination, investigation, bank, leave, evaluation, addendum, commencement });
+    data = buildContractData(def, { employee, company, params, facts, settlement, payroll, termination, investigation, bank, leave, evaluation, addendum, commencement, transfer });
   } catch (e) {
     if (e instanceof ContractValidationError) throw new HttpError(422, e.message, { errors: e.errors });
     throw e;
@@ -604,14 +607,13 @@ export async function processRenderJob(jobId: string, actor: Actor = SYSTEM_ACTO
         // A candidate has no account: a private link, valid until the offer's deadline (candidate.ts).
         await grantCandidateAccess(tx, { documentId: doc.id, jobApplicationId: req.jobApplicationId, validUntil, issuedAt: job.issuedAt, number: job.number });
       }
-      if (def.executesChange) {
-        const ch = (material.data as { change: { effectiveDate: string; toBasicSalary: string | null; toJobTitleAr: string | null; toJobTitleEn: string | null } }).change;
+      if (def.executesChange && def.changeOrderOf) {
         if (supersedesDocumentId && (await cancelChangeOrder(tx, supersedesDocumentId)) === 'APPLIED') {
           throw new RenderError('القرار السابق نُفّذ على ملف الموظف؛ لا يُستبدل بإعادة الإصدار بل بقرار جديد', 'CHANGE_ALREADY_APPLIED', false);
         }
+        const terms = def.changeOrderOf(material.data);
         await createChangeOrder(tx, {
-          documentId: doc.id, employeeId: req.employeeId!, effectiveDate: ch.effectiveDate,
-          basicSalary: ch.toBasicSalary !== null ? Number(ch.toBasicSalary) : null, jobTitle: ch.toJobTitleAr, jobTitleEnglish: ch.toJobTitleEn,
+          documentId: doc.id, employeeId: req.employeeId!, basicSalary: null, jobTitle: null, jobTitleEnglish: null, ...terms,
         }, actor.userId);
       }
       if (supersedesDocumentId) {

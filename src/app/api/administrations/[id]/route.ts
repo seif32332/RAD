@@ -7,6 +7,7 @@ import { handleApiError, parseBody, notFound, conflict, badRequest, definedOnly 
 import { zText, zOptText } from '@/lib/validation';
 import { logAudit } from '@/lib/audit';
 import { deletionBlockers } from '@/lib/employee';
+import { authz, resolveActor, scopedContext, scopedPrisma } from '@/modules/iam';
 
 export const dynamic = 'force-dynamic';
 
@@ -14,11 +15,19 @@ type Ctx = { params: Promise<{ id: string }> };
 
 const WRITERS = [...new Set([...ROLE_GROUPS.ADMIN, ...ROLE_GROUPS.HR])];
 
+/** P1-SCOPE: the user's company context; an administration of another company is "not found" (404). */
+async function orgScope(user: Awaited<ReturnType<typeof requireUser>>, action: 'org.read' | 'org.manage') {
+  const ctx = scopedContext(await resolveActor(prisma, user));
+  authz.assert(ctx, action);
+  return { ctx, db: scopedPrisma(ctx) };
+}
+
 export async function GET(_req: Request, { params }: Ctx) {
   try {
-    await requireUser(ROLE_GROUPS.STAFF);
+    const user = await requireUser(ROLE_GROUPS.STAFF);
     const { id } = await params;
-    const admin = await prisma.administration.findUnique({
+    const { db } = await orgScope(user, 'org.read');
+    const admin = await db.administration.findUnique({
       where: { id },
       include: {
         company: true,
@@ -43,14 +52,18 @@ export async function PUT(req: Request, { params }: Ctx) {
     const user = await requireUser(WRITERS);
     const { id } = await params;
     const b = await parseBody(req, updateSchema);
+    const { ctx, db } = await orgScope(user, 'org.manage');
+    if (!(await db.administration.findUnique({ where: { id }, select: { id: true } }))) throw notFound('الإدارة غير موجودة');
 
     if (b.companyId) {
-      const company = await prisma.company.findUnique({ where: { id: b.companyId }, select: { id: true } });
+      // Moving it to another company: that company must be one of the user's (403).
+      authz.assert(ctx, 'org.manage', { companyId: b.companyId });
+      const company = await db.company.findUnique({ where: { id: b.companyId }, select: { id: true } });
       if (!company) throw badRequest('الشركة المحددة غير موجودة');
     }
 
     const data = definedOnly(b);
-    const admin = await prisma.administration.update({ where: { id }, data });
+    const admin = await db.administration.update({ where: { id }, data });
 
     await logAudit({
       userId: user.id,
@@ -71,8 +84,9 @@ export async function DELETE(req: Request, { params }: Ctx) {
   try {
     const user = await requireUser(WRITERS);
     const { id } = await params;
+    const { db } = await orgScope(user, 'org.manage');
 
-    const admin = await prisma.administration.findUnique({
+    const admin = await db.administration.findUnique({
       where: { id },
       select: { id: true, nameArabic: true, _count: { select: { branches: true, employees: true } } },
     });
@@ -84,7 +98,7 @@ export async function DELETE(req: Request, { params }: Ctx) {
     ]);
     if (blocked) throw conflict(blocked, { counts: admin._count });
 
-    await prisma.administration.delete({ where: { id } });
+    await db.administration.delete({ where: { id } });
 
     await logAudit({
       userId: user.id,

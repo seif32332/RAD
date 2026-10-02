@@ -64,7 +64,48 @@ model User {
   employeeProfile Employee?
   auditLogs       AuditLog[]
   uploadedFiles   UploadedFile[]
-  companyScopes   UserCompanyScope[] @relation("ScopedUser")
+  companyScopes                UserCompanyScope[]     @relation("ScopedUser") // back-relations of the foreign keys added by 9x_db_constraints (P1-FND-DB)
+  paymentsRequested            PaymentRequest[]       @relation("PaymentRequestedBy")
+  paymentsApproved             PaymentRequest[]       @relation("PaymentApprovedBy")
+  paymentsPaid                 PaymentRequest[]       @relation("PaymentPaidBy")
+  salaryChangesCreated         SalaryChange[]         @relation("SalaryChangeCreatedBy")
+  headcountPlansCreated        HeadcountPlan[]        @relation("HeadcountPlanCreatedBy")
+  headcountPlansDecided        HeadcountPlan[]        @relation("HeadcountPlanDecidedBy")
+  punchesReviewed              AttendancePunch[]      @relation("PunchReviewedBy")
+  evaluationApprovals          EvaluationApproval[]   @relation("EvaluationApprover")
+  ruleParametersCreated        RuleParameter[]        @relation("RuleParameterCreatedBy")
+  holidaysCreated              HolidayCalendar[]      @relation("HolidayCreatedBy")
+  ramadanPeriodsCreated        RamadanPeriod[]        @relation("RamadanCreatedBy")
+  nitaqatCurvesCreated         NitaqatCurve[]         @relation("NitaqatCurveCreatedBy")
+  localizationDecisionsCreated LocalizationDecision[] @relation("LocalizationDecisionCreatedBy")
+  workforceCalculations        WorkforceCalculation[] @relation("WorkforceCalculationCreatedBy")
+  workforceAssumptionsSet      WorkforceAssumption[]  @relation("WorkforceAssumptionUpdatedBy")
+  companyScopesGranted         UserCompanyScope[]     @relation("UserCompanyScopeCreatedBy")
+  muqeemTransactions           MuqeemTransaction[]    @relation("MuqeemTransactionRequestedBy")
+  // P1-PAY-A (9zf_payroll_gateway): actor columns of the money tables (BR-PAY-006, BR-PAY-011: RESTRICT)
+  payrollsGenerated          Payroll[]         @relation("PayrollGeneratedBy")
+  payrollsApproved           Payroll[]         @relation("PayrollApprovedBy")
+  payrollsPaid               Payroll[]         @relation("PayrollPaidBy")
+  payrollMonthsCalculated    PayrollMonth[]    @relation("PayrollMonthCalculatedBy")
+  payrollMonthsApproved      PayrollMonth[]    @relation("PayrollMonthApprovedBy")
+  payrollMonthsPaid          PayrollMonth[]    @relation("PayrollMonthPaidBy")
+  loansCreated               Loan[]            @relation("LoanCreatedBy")
+  loansManagerApproved       Loan[]            @relation("LoanManagerApprovedBy")
+  loansHrApproved            Loan[]            @relation("LoanHrApprovedBy")
+  loansOwnerApproved         Loan[]            @relation("LoanOwnerApprovedBy")
+  loansTransferred           Loan[]            @relation("LoanTransferredBy")
+  loansFinanceReviewed       Loan[]            @relation("LoanFinanceReviewedBy")
+  loansForgiven              Loan[]            @relation("LoanForgivenBy")
+  loansRejected              Loan[]            @relation("LoanRejectedBy")
+  deductionsIssued           Deduction[]       @relation("DeductionIssuedBy")
+  deductionsDecided          Deduction[]       @relation("DeductionDecidedBy")
+  overtimesCreated           OvertimeRequest[] @relation("OvertimeCreatedBy")
+  overtimesDecided           OvertimeRequest[] @relation("OvertimeDecidedBy")
+  allowancesCreated          Allowance[]       @relation("AllowanceCreatedBy")
+  allowancesApproved         Allowance[]       @relation("AllowanceApprovedBy")
+  settlementsCreated         Settlement[]      @relation("SettlementCreatedBy")
+  settlementsApproved        Settlement[]      @relation("SettlementApprovedBy")
+  settlementsPaid            Settlement[]      @relation("SettlementPaidBy")
 }
 
 // --- وحدة التدقيق (Audit Logs) ---
@@ -129,10 +170,20 @@ model Company {
   updatedAt DateTime @updatedAt
 
   branches  Branch[]
-  documents CompanyDocument[]
 
   legalEmployees  Employee[] @relation("LegalCompany")
   actualEmployees Employee[] @relation("ActualCompany")
+
+  legalAssignmentPeriods  AssignmentPeriod[] @relation("AssignmentLegalCompany")
+  actualAssignmentPeriods AssignmentPeriod[] @relation("AssignmentActualCompany")
+
+  // calendar (P1-CAL, 9z_calendar)
+  workPatterns   WorkSchedule[]    @relation("WorkPatternCompany")
+  holidays       HolidayCalendar[] @relation("HolidayCompany")
+  ramadanPeriods RamadanPeriod[]   @relation("RamadanCompany")
+
+  // rules (P1-RULE, 9za_rules)
+  ruleOverrides CompanyRuleOverride[] @relation("RuleOverrideCompany")
 
   telecomSims    TelecomSim[]
   legalMeters    UtilityMeter[] @relation("LegalMeterOwner")
@@ -143,6 +194,14 @@ model Company {
   violations        ComplianceViolation[]
   medicalInsurances MedicalInsurance[]
   administrations   Administration[]
+  // back-relations of the foreign keys added by 9x_db_constraints (P1-FND-DB)
+  jobRequests        JobRequest[]          @relation("JobRequestCompany")
+  onboardingRequests OnboardingRequest[]   @relation("OnboardingCompany")
+  muqeemTransactions MuqeemTransaction[]   @relation("MuqeemTransactionCompany")
+  headcountPlans     HeadcountPlan[]       @relation("HeadcountPlanCompany")
+  // P1-PAY-A (9zf): payroll per company and month (ARC-PAY-A7, DOMAIN_BOUNDARIES §5.4.3 payroll key)
+  payrollMonths      PayrollMonth[]        @relation("PayrollMonthCompany")
+  payrolls           Payroll[]             @relation("PayrollCompany")
 
   // محرك إصدار المستندات (docs/document-engine): الشركة هنا هي الجهة النظامية المُصدِرة
   brandProfile         BrandProfile?
@@ -153,6 +212,14 @@ model Company {
   issuedDocuments      IssuedDocument[]
   userScopes           UserCompanyScope[]
   muqeemPlatform       GovPlatform?          @relation("CompanyMuqeemPlatform", fields: [muqeemPlatformId], references: [id], onDelete: SetNull)
+
+  // P1-SCOPE (9zb): scope keys of the gov, legal and assets tables (DOMAIN_BOUNDARIES §5.4.3)
+  govPlatforms      GovPlatform[]     @relation("GovPlatformCompany")
+  legalContracts    LegalContract[]   @relation("LegalContractCompany")
+  lawsuits          Lawsuit[]         @relation("LawsuitCompany")
+  promissoryNotes   PromissoryNote[]  @relation("PromissoryNoteCompany")
+  certifiedAgencies CertifiedAgency[] @relation("CertifiedAgencyCompany")
+  assets            Asset[]           @relation("AssetCompany")
 
   @@index([commercialRegExp])
   @@index([trademarkExpDate])
@@ -168,6 +235,7 @@ model Administration {
   company   Company    @relation(fields: [companyId], references: [id], onDelete: Restrict)
   branches  Branch[]
   employees Employee[]
+  onboardingRequests OnboardingRequest[] @relation("OnboardingAdministration") // 9x_db_constraints
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -258,11 +326,17 @@ model Branch {
   departments Department[]
   employees   Employee[]
 
+  assignmentPeriods AssignmentPeriod[]
+
   telecomSims         TelecomSim[]
   utilityMeters       UtilityMeter[]
   workSchedules       WorkSchedule[]
   violations          ComplianceViolation[]
   attendanceLocations AttendanceLocation[]
+  // back-relations of the foreign keys added by 9x_db_constraints (P1-FND-DB)
+  transfersFrom       TransferRequest[]     @relation("TransferFromBranch")
+  transfersTo         TransferRequest[]     @relation("TransferToBranch")
+  onboardingRequests  OnboardingRequest[]   @relation("OnboardingBranch")
 
   @@index([companyId])
   @@index([administrationId])
@@ -287,11 +361,68 @@ model WorkSchedule {
 
   workDays String? // أيام العمل (مثال: الأحد-الخميس)
 
+  // P1-CAL (9z_calendar): this table IS the WorkPattern of DOMAIN_BOUNDARIES §5.2 (owner calendar).
+  // companyId = the branch's company (scope key; a trigger keeps it equal to Branch.companyId).
+  // workWeekdays: the structured working days, 0 = Sunday … 6 = Saturday (empty = not set: the
+  // calendar default applies); workDays stays as the label typed by HR. archivedAt: a pattern
+  // referenced by an employee or an assignment period is archived, never deleted.
+  companyId    String
+  workWeekdays Int[]     @default([])
+  archivedAt   DateTime?
+
   branch    Branch   @relation(fields: [branchId], references: [id], onDelete: Cascade)
+  company   Company  @relation("WorkPatternCompany", fields: [companyId], references: [id], onDelete: Restrict)
   createdAt DateTime @default(now())
   updatedAt DateTime @default(now()) @updatedAt
 
+  employees         Employee[]         @relation("EmployeeWorkPattern")
+  assignmentPeriods AssignmentPeriod[] @relation("AssignmentWorkPattern")
+
   @@index([branchId])
+  @@index([companyId])
+}
+
+// P1-CAL: official and company holidays (DOMAIN_BOUNDARIES §5.2, owner calendar). One row per
+// holiday, dated [startDate, endDate] inclusive, per company (DEC-PO-116: HR edits them). Eid dates
+// follow the Hijri calendar and are announced each year: they are entered by HR, never invented.
+model HolidayCalendar {
+  id          String    @id @default(uuid())
+  companyId   String
+  name        String
+  kind        String    @default("COMPANY") // OFFICIAL | COMPANY (CHECK in 9z_calendar)
+  startDate   DateTime  @db.Date
+  endDate     DateTime  @db.Date
+  source      String? // e.g. RuleParameter:OFFICIAL_FIXED_HOLIDAYS, or null when typed by HR
+  cancelledAt DateTime?
+  createdById String?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @default(now()) @updatedAt
+
+  company   Company @relation("HolidayCompany", fields: [companyId], references: [id], onDelete: Restrict)
+  createdBy User?   @relation("HolidayCreatedBy", fields: [createdById], references: [id], onDelete: Restrict)
+
+  @@unique([companyId, name, startDate])
+  @@index([companyId, startDate])
+}
+
+// P1-CAL: the Ramadan period of one Hijri year for one company, and its daily working hours
+// (Labor Law Art. 98 cap in RuleParameter RAMADAN_MAX_DAILY_HOURS; the company value may be lower).
+model RamadanPeriod {
+  id          String   @id @default(uuid())
+  companyId   String
+  hijriYear   Int
+  startDate   DateTime @db.Date
+  endDate     DateTime @db.Date
+  dailyHours  Float
+  createdById String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @default(now()) @updatedAt
+
+  company   Company @relation("RamadanCompany", fields: [companyId], references: [id], onDelete: Restrict)
+  createdBy User?   @relation("RamadanCreatedBy", fields: [createdById], references: [id], onDelete: Restrict)
+
+  @@unique([companyId, hijriYear])
+  @@index([companyId, startDate])
 }
 
 model Department {
@@ -303,6 +434,9 @@ model Department {
   branch      Branch       @relation(fields: [branchId], references: [id], onDelete: Restrict)
   employees   Employee[]
   jobRequests JobRequest[]
+  onboardingRequests OnboardingRequest[] @relation("OnboardingDepartment") // 9x_db_constraints
+
+  assignmentPeriods AssignmentPeriod[]
   createdAt   DateTime     @default(now())
   updatedAt   DateTime     @default(now()) @updatedAt
 
@@ -379,7 +513,11 @@ model Employee {
   jobTitleEnglish String? // المسمى بالإنجليزية (الخطابات ثنائية اللغة، docs/document-engine)
   directManagerId String? // المدير المباشر
 
-  workSchedule      String? // جدول العمل
+  workSchedule      String? // جدول العمل (اسم، للعرض فقط؛ المرجع workPatternId)
+  // P1-CAL: the work pattern (FK, replaces matching by name). Projection of the org assignment;
+  // AssignmentPeriod.workPatternId is the fact (DOMAIN_MODEL §1.3).
+  workPatternId     String?
+  workPattern       WorkSchedule?      @relation("EmployeeWorkPattern", fields: [workPatternId], references: [id], onDelete: Restrict)
   accommodationType AccommodationType? // محل السكن
 
   // العقد والرواتب
@@ -400,6 +538,9 @@ model Employee {
   isTerminated     Boolean   @default(false)
   terminationDate  DateTime?
   employmentStatus String    @default("ACTIVE") // ACTIVE, ON_LEAVE, EXCLUDED
+  /// Projection of the latest non-superseded EmploymentStateChange (DEC-PO-119), written by
+  /// lifecycle.transitionEmploymentState only (ARCH-005). Null until the opening (J1, P1-LCY Release B).
+  employmentState  EmploymentState?
 
   // --- محرك القرارات (الكلفة الحقيقية والسعودة) ---
   occupationCode           String? // رمز المهنة (التصنيف السعودي الموحد للمهن)
@@ -474,13 +615,32 @@ model Employee {
   issuedDocuments  IssuedDocument[]
   circularRecipients CircularRecipient[]
 
+  // Effective periods (P1-FND-EFF): written through src/modules/platform/effective only (ARCH-012).
+  employmentPeriods         EmploymentPeriod[]
+  employmentStateChanges    EmploymentStateChange[]
+  employmentMigrationReviews EmploymentMigrationReview[] // 9zd_lcy_tables
+  settlementEffects         SettlementEffect[]           // 9zd_lcy_tables
+  paymentsReceived          PaymentRequest[]             @relation("PaymentBeneficiary") // 9zf_payroll_gateway
+  compensationPeriods       CompensationPeriod[]
+  assignmentPeriods         AssignmentPeriod[]   @relation("AssignmentEmployee")
+  managedAssignmentPeriods  AssignmentPeriod[]   @relation("AssignmentManager")
+  // back-relations of the foreign keys added by 9x_db_constraints (P1-FND-DB)
+  transferRequestsRaised    TransferRequest[]    @relation("TransferRequester")
+  overtimesSupervised       OvertimeRequest[]    @relation("OvertimeSupervisor")
+  workAssignmentsSupervised WorkAssignment[]     @relation("WorkAssignmentSupervisor")
+  evaluationsAsManager      EmployeeEvaluation[] @relation("EvaluationManager")
+  muqeemTransactions        MuqeemTransaction[]  @relation("MuqeemTransactionEmployee")
+  onboardingsAsManager      OnboardingRequest[]  @relation("OnboardingDirectManager")
+
   @@index([legalCompanyId])
   @@index([actualCompanyId])
   @@index([administrationId])
   @@index([branchId])
   @@index([departmentId])
   @@index([directManagerId])
+  @@index([workPatternId])
   @@index([isTerminated, employmentStatus])
+  @@index([employmentState, terminationDate])
   @@index([iqamaOrIdExp])
   @@index([passportExp])
   @@index([healthCertificateExp])
@@ -506,7 +666,10 @@ model TransferRequest {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  employee Employee @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+  employee   Employee  @relation(fields: [employeeId], references: [id], onDelete: Restrict)
+  requester  Employee? @relation("TransferRequester", fields: [requesterId], references: [id], onDelete: Restrict)
+  fromBranch Branch?   @relation("TransferFromBranch", fields: [fromBranchId], references: [id], onDelete: Restrict)
+  toBranch   Branch    @relation("TransferToBranch", fields: [toBranchId], references: [id], onDelete: Restrict)
 
   @@index([employeeId])
   @@index([status])
@@ -515,22 +678,6 @@ model TransferRequest {
 // ---------------------------------------------------------
 // 3. Documents
 // ---------------------------------------------------------
-
-model CompanyDocument {
-  id             String   @id @default(uuid())
-  companyId      String
-  documentType   String
-  documentUrl    String
-  expirationDate DateTime
-  isAlertSent    Boolean  @default(false)
-  createdAt      DateTime @default(now())
-
-  company   Company  @relation(fields: [companyId], references: [id], onDelete: Cascade)
-  updatedAt DateTime @default(now()) @updatedAt
-
-  @@index([companyId])
-  @@index([expirationDate])
-}
 
 // ---------------------------------------------------------
 // 4. Time & Attendance
@@ -558,7 +705,7 @@ model Attendance {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  employee Employee          @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+  employee Employee          @relation(fields: [employeeId], references: [id], onDelete: Restrict)
   punches  AttendancePunch[]
 
   @@unique([employeeId, date])
@@ -589,6 +736,7 @@ model AttendanceLocation {
   updatedAt DateTime @updatedAt
 
   branch Branch @relation(fields: [branchId], references: [id], onDelete: Cascade)
+  punches AttendancePunch[] // 9x_db_constraints
 
   @@index([branchId])
 }
@@ -647,8 +795,10 @@ model AttendancePunch {
   /// Server time of the punch: the only trusted clock.
   createdAt DateTime @default(now())
 
-  employee    Employee               @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+  employee    Employee               @relation(fields: [employeeId], references: [id], onDelete: Restrict)
   attendance  Attendance?            @relation(fields: [attendanceId], references: [id], onDelete: SetNull)
+  location    AttendanceLocation?    @relation(fields: [locationId], references: [id], onDelete: SetNull)
+  reviewedBy  User?                  @relation("PunchReviewedBy", fields: [reviewedById], references: [id], onDelete: Restrict)
   corrections AttendanceCorrection[]
 
   @@index([employeeId, createdAt])
@@ -770,7 +920,7 @@ model Visa {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  employee Employee @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+  employee Employee @relation(fields: [employeeId], references: [id], onDelete: Restrict)
 
   @@index([employeeId])
   @@index([status])
@@ -793,8 +943,17 @@ model Allowance {
   payrollYear      Int?
   isPaid           Boolean  @default(false)
   paidInPayrollId  String?
+  /// P1-PAY-A (9zf, BR-PAY-003): PENDING | APPROVED | REJECTED (CHECK Allowance_status_check). Existing rows
+  /// APPROVED; the default goes when BL-PAY-007 makes new bonuses and allowances PENDING.
+  status           String   @default("APPROVED")
+  createdById      String?
+  approvedById     String?
+  approvedAt       DateTime?
   createdAt        DateTime @default(now())
-  employee         Employee @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+  employee         Employee @relation(fields: [employeeId], references: [id], onDelete: Restrict)
+  paidInPayroll    Payroll? @relation("AllowancePaidInPayroll", fields: [paidInPayrollId], references: [id], onDelete: Restrict)
+  createdBy        User?    @relation("AllowanceCreatedBy", fields: [createdById], references: [id], onDelete: Restrict)
+  approvedBy       User?    @relation("AllowanceApprovedBy", fields: [approvedById], references: [id], onDelete: Restrict)
   updatedAt        DateTime @default(now()) @updatedAt
 
   @@index([employeeId])
@@ -841,13 +1000,66 @@ model Payroll {
   isFinalSettlement Boolean @default(false)
   settlementReason  String?
 
+  /// P1-PAY-A (9zf): the legal company of the line and its month (ARC-PAY-A7). NULL only on legacy rows
+  /// the migration could not resolve (RAISE NOTICE; CHECK Payroll_companyId_required refuses new ones).
+  companyId      String?
+  payrollMonthId String?
+  /// Who triggered payroll.generate (SYSTEM operation), who approved, who recorded the payment (BR-PAY-006).
+  generatedById  String?
+  approvedById   String?
+  approvedAt     DateTime?
+  paidById       String?
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
   employee         Employee          @relation(fields: [employeeId], references: [id], onDelete: Restrict)
+  company          Company?          @relation("PayrollCompany", fields: [companyId], references: [id], onDelete: Restrict)
+  payrollMonth     PayrollMonth?     @relation(fields: [payrollMonthId], references: [id], onDelete: Restrict)
+  generatedBy      User?             @relation("PayrollGeneratedBy", fields: [generatedById], references: [id], onDelete: Restrict)
+  approvedBy       User?             @relation("PayrollApprovedBy", fields: [approvedById], references: [id], onDelete: Restrict)
+  paidBy           User?             @relation("PayrollPaidBy", fields: [paidById], references: [id], onDelete: Restrict)
   loanInstallments LoanInstallment[]
+  paidAllowances   Allowance[]       @relation("AllowancePaidInPayroll") // 9x_db_constraints
+  paidOvertimes    OvertimeRequest[] @relation("OvertimePaidInPayroll") // 9x_db_constraints
 
+  // One line per employee and month stays until BL-PAY-008b prorates a mid-month transfer by
+  // AssignmentPeriod (a second company's line would pay the month twice); the design key is the next one.
   @@unique([employeeId, month, year])
+  @@unique([payrollMonthId, employeeId])
+  @@index([year, month])
+  @@index([status])
+  @@index([companyId, year, month])
+}
+
+/// kind: FACT (after approval) - the payroll of one legal company for one month (ARC-PAY-A7,
+/// LIFECYCLE_MODEL §2.3). Sole writer: src/modules/payroll/transitions (behind money.gateway).
+/// status: DRAFT, CALCULATED, APPROVED, PAID (LINES_APPROVED / EXPORTED / PAYMENT_EXCEPTION arrive with
+/// BL-PAY-008b / 020); CHECK PayrollMonth_status_check.
+model PayrollMonth {
+  id             String    @id @default(uuid())
+  companyId      String
+  year           Int
+  month          Int
+  status         String    @default("DRAFT")
+  /// Optimistic version: every transition moves it (guarded updateMany, LIFECYCLE_MODEL §2.2).
+  version        Int       @default(0)
+  calculatedAt   DateTime?
+  calculatedById String?
+  approvedAt     DateTime?
+  approvedById   String?
+  paidAt         DateTime?
+  paidById       String?
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  company      Company   @relation("PayrollMonthCompany", fields: [companyId], references: [id], onDelete: Restrict)
+  calculatedBy User?     @relation("PayrollMonthCalculatedBy", fields: [calculatedById], references: [id], onDelete: Restrict)
+  approvedBy   User?     @relation("PayrollMonthApprovedBy", fields: [approvedById], references: [id], onDelete: Restrict)
+  paidBy       User?     @relation("PayrollMonthPaidBy", fields: [paidById], references: [id], onDelete: Restrict)
+  lines        Payroll[]
+
+  @@unique([companyId, year, month])
   @@index([year, month])
   @@index([status])
 }
@@ -859,6 +1071,10 @@ model Payroll {
 model PromissoryNote {
   id     String @id @default(uuid())
   amount Float // مبلغ السند النقدية
+
+  // P1-SCOPE (9zb): scope key (DOMAIN_BOUNDARIES §5.4.3); NULL = unknown, visible to unrestricted users only
+  companyId String?
+  company   Company? @relation("PromissoryNoteCompany", fields: [companyId], references: [id], onDelete: Restrict)
 
   // أطراف السند
   creditorName String // اسم الدائن (المستفيد)
@@ -888,6 +1104,7 @@ model PromissoryNote {
 
   @@index([status])
   @@index([dueDate])
+  @@index([companyId])
 }
 
 // ==========================================
@@ -897,6 +1114,10 @@ model PromissoryNote {
 model LegalContract {
   id    String @id @default(uuid())
   title String // مسمى أو موضوع العقد
+
+  // P1-SCOPE (9zb): scope key (DOMAIN_BOUNDARIES §5.4.3); NULL = unknown, visible to unrestricted users only
+  companyId String?
+  company   Company? @relation("LegalContractCompany", fields: [companyId], references: [id], onDelete: Restrict)
 
   // أطراف العقد
   firstParty  String // الطرف الأول (غالبًا الشركة)
@@ -919,6 +1140,7 @@ model LegalContract {
 
   @@index([status])
   @@index([endDate])
+  @@index([companyId])
 }
 
 // ==========================================
@@ -927,6 +1149,10 @@ model LegalContract {
 
 model Lawsuit {
   id String @id @default(uuid())
+
+  // P1-SCOPE (9zb): scope key (DOMAIN_BOUNDARIES §5.4.3); NULL = unknown, visible to unrestricted users only
+  companyId String?
+  company   Company? @relation("LawsuitCompany", fields: [companyId], references: [id], onDelete: Restrict)
 
   // التصنيف
   caseType String // LABOR (عمالية), COMMERCIAL (تجارية), REAL_ESTATE (عقارية), OTHER (أخرى)
@@ -949,6 +1175,7 @@ model Lawsuit {
   updatedAt DateTime @updatedAt
 
   @@index([status])
+  @@index([companyId])
 }
 
 // --- طلبات العمل الإضافي (الأوفرتايم) ---
@@ -964,9 +1191,18 @@ model OvertimeRequest {
   status             String   @default("PENDING") // PENDING, APPROVED, REJECTED
   paidInPayrollId    String? // المسير الذي صُرف فيه
   paidInSettlementId String? // التصفية التي صُرف فيها
+  /// P1-PAY-A (9zf, BR-PAY-006): who filed / assigned it and who decided it.
+  createdById        String?
+  decidedById        String?
+  decidedAt          DateTime?
+  createdBy          User?   @relation("OvertimeCreatedBy", fields: [createdById], references: [id], onDelete: Restrict)
+  decidedBy          User?   @relation("OvertimeDecidedBy", fields: [decidedById], references: [id], onDelete: Restrict)
 
   createdAt DateTime @default(now())
-  employee  Employee @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+  employee         Employee    @relation(fields: [employeeId], references: [id], onDelete: Restrict)
+  supervisor       Employee?   @relation("OvertimeSupervisor", fields: [supervisorId], references: [id], onDelete: Restrict)
+  paidInPayroll    Payroll?    @relation("OvertimePaidInPayroll", fields: [paidInPayrollId], references: [id], onDelete: Restrict)
+  paidInSettlement Settlement? @relation("OvertimePaidInSettlement", fields: [paidInSettlementId], references: [id], onDelete: Restrict)
   updatedAt DateTime @default(now()) @updatedAt
 
   @@index([employeeId])
@@ -994,7 +1230,8 @@ model WorkAssignment {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  employee Employee @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+  employee   Employee  @relation(fields: [employeeId], references: [id], onDelete: Restrict)
+  supervisor Employee? @relation("WorkAssignmentSupervisor", fields: [supervisorId], references: [id], onDelete: Restrict)
 
   @@index([employeeId])
   @@index([status])
@@ -1039,6 +1276,11 @@ model Deduction {
   issuedBy   String? // من أصدر المخالفة (اسم أو ID)
   approvedBy String? // من اعتمدها
   approvedAt DateTime?
+  /// P1-PAY-A (9zf, BR-PAY-006): the users behind issuedBy / approvedBy (the names stay for display).
+  issuedById   String?
+  decidedById  String?
+  issuedByUser User?   @relation("DeductionIssuedBy", fields: [issuedById], references: [id], onDelete: Restrict)
+  decidedBy    User?   @relation("DeductionDecidedBy", fields: [decidedById], references: [id], onDelete: Restrict)
 
   createdAt     DateTime       @default(now())
   employee      Employee       @relation(fields: [employeeId], references: [id], onDelete: Restrict)
@@ -1132,6 +1374,25 @@ model Loan {
   isFinanceTransferred Boolean   @default(false)
   financeTransferredAt DateTime?
 
+  /// P1-PAY-A (9zf, BR-PAY-006 / BR-PAY-017): the person of every stage. Legacy rows keep NULL (BR-PAY-015).
+  createdById         String?
+  managerApprovedById String?
+  hrApprovedById      String?
+  ownerApprovedById   String?
+  transferredById     String?
+  financeReviewedById String?
+  forgivenById        String?
+  rejectedById        String?
+  rejectedAt          DateTime?
+  createdBy           User?     @relation("LoanCreatedBy", fields: [createdById], references: [id], onDelete: Restrict)
+  managerApprovedBy   User?     @relation("LoanManagerApprovedBy", fields: [managerApprovedById], references: [id], onDelete: Restrict)
+  hrApprovedBy        User?     @relation("LoanHrApprovedBy", fields: [hrApprovedById], references: [id], onDelete: Restrict)
+  ownerApprovedBy     User?     @relation("LoanOwnerApprovedBy", fields: [ownerApprovedById], references: [id], onDelete: Restrict)
+  transferredBy       User?     @relation("LoanTransferredBy", fields: [transferredById], references: [id], onDelete: Restrict)
+  financeReviewedBy   User?     @relation("LoanFinanceReviewedBy", fields: [financeReviewedById], references: [id], onDelete: Restrict)
+  forgivenBy          User?     @relation("LoanForgivenBy", fields: [forgivenById], references: [id], onDelete: Restrict)
+  rejectedBy          User?     @relation("LoanRejectedBy", fields: [rejectedById], references: [id], onDelete: Restrict)
+
   createdAt    DateTime          @default(now())
   employee     Employee          @relation(fields: [employeeId], references: [id], onDelete: Restrict)
   installments LoanInstallment[]
@@ -1215,7 +1476,7 @@ model AttendanceCorrection {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  employee Employee         @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+  employee Employee         @relation(fields: [employeeId], references: [id], onDelete: Restrict)
   punch    AttendancePunch? @relation(fields: [punchId], references: [id], onDelete: SetNull)
 
   @@index([employeeId])
@@ -1233,6 +1494,8 @@ model JobRequest {
 
   departmentId String? // القسم الطالب للوظيفة
   requesterId  String // المدير الذي رفع الطلب
+  // مفتاح نطاق الشركة (ARC-ONB-A4، BL-ONB-012): شركة فرع القسم. قابل للفراغ ولا FK في المرحلة 0؛ الإلزام والمفتاح الأجنبي في P1-FND-DB
+  companyId    String?
 
   jobTitle    String // المسمى الوظيفي
   jobType     String // كامل، جزئي، عن بعد
@@ -1245,11 +1508,13 @@ model JobRequest {
 
   requester    Employee         @relation("RequesterToJobRequest", fields: [requesterId], references: [id], onDelete: Cascade)
   department   Department?      @relation(fields: [departmentId], references: [id], onDelete: SetNull)
+  company      Company?         @relation("JobRequestCompany", fields: [companyId], references: [id], onDelete: Restrict)
   applications JobApplication[]
 
   @@index([departmentId])
   @@index([requesterId])
   @@index([status])
+  @@index([companyId])
 }
 
 model JobApplication {
@@ -1266,6 +1531,7 @@ model JobApplication {
   status        String    @default("APPLIED") // APPLIED (تحت الفرز), INTERVIEW (مقابلة), OFFERED (عرض وظيفي), HIRED (تم التوظيف), REJECTED (مرفوض)
   documentRequests DocumentRequest[]
   issuedDocuments  IssuedDocument[]
+  onboardingRequests OnboardingRequest[] @relation("OnboardingJobApplication") // 9x_db_constraints
   interviewDate DateTime? // موعد المقابلة إن وجد
   notes         String? // ملاحظات التقييم أو العرض المالي
 
@@ -1281,6 +1547,10 @@ model JobApplication {
 model OnboardingRequest {
   id          String @id @default(uuid())
   requesterId String // المدير الذي رفع الطلب
+  // مفتاح نطاق الشركة (ARC-ONB-A4، BL-ONB-012): الشركة النظامية للموظف الجديد (عند الرفع تُشتق من الفرع، وعند الاعتماد ما اعتمدته HR).
+  // قابل للفراغ ولا FK في المرحلة 0؛ الإلزام والمفتاحان الأجنبيان (Restrict) في P1-FND-DB
+  companyId        String?
+  jobApplicationId String? // المرشح الذي قُبل عرضه (onb-to-be §17)؛ يُملأ من مسار العرض (BL-ONB-004)
 
   // البيانات الشخصية للموظف
   fullNameArabic   String
@@ -1331,9 +1601,17 @@ model OnboardingRequest {
   updatedAt DateTime @updatedAt
 
   requester Employee @relation("RequesterToOnboarding", fields: [requesterId], references: [id], onDelete: Cascade)
+  company        Company?        @relation("OnboardingCompany", fields: [companyId], references: [id], onDelete: Restrict)
+  jobApplication JobApplication? @relation("OnboardingJobApplication", fields: [jobApplicationId], references: [id], onDelete: SetNull)
+  branch         Branch?         @relation("OnboardingBranch", fields: [branchId], references: [id], onDelete: SetNull)
+  administration Administration? @relation("OnboardingAdministration", fields: [administrationId], references: [id], onDelete: SetNull)
+  department     Department?     @relation("OnboardingDepartment", fields: [departmentId], references: [id], onDelete: SetNull)
+  directManager  Employee?       @relation("OnboardingDirectManager", fields: [directManagerId], references: [id], onDelete: SetNull)
 
   @@index([requesterId])
   @@index([status])
+  @@index([companyId])
+  @@index([jobApplicationId])
 }
 
 // ---------------------------------------------------------
@@ -1350,12 +1628,18 @@ model Asset {
   returnDate  DateTime?
   status      String    @default("ACTIVE") // ACTIVE, RETURNED, DAMAGED, TRANSFERRED
 
+  // P1-SCOPE (9zb): owning company (DOMAIN_BOUNDARIES §5.4.3 assets). A vacant asset keeps it; an
+  // insert without it takes the holder's legal company (trigger asset_default_company, 9zb).
+  companyId String?
+  company   Company? @relation("AssetCompany", fields: [companyId], references: [id], onDelete: Restrict)
+
   createdAt DateTime  @default(now())
   employee  Employee? @relation(fields: [employeeId], references: [id], onDelete: SetNull)
   updatedAt DateTime  @default(now()) @updatedAt
 
   @@index([employeeId])
   @@index([status])
+  @@index([companyId])
 }
 
 // ---------------------------------------------------------
@@ -1559,6 +1843,7 @@ model Settlement {
 
   employeeId String
   employee   Employee @relation(fields: [employeeId], references: [id], onDelete: Restrict)
+  paidOvertimes OvertimeRequest[] @relation("OvertimePaidInSettlement") // 9x_db_constraints
 
   type              SettlementType
   terminationReason TerminationReason?
@@ -1595,6 +1880,16 @@ model Settlement {
   paymentReference   String? // رقم التحويل أو سند الصرف أو الشيك
   paidAt             DateTime? // تاريخ الصرف الفعلي
   ownerNotes         String? // سبب الرفض أو ملاحظات صاحب العمل
+  /// P1-PAY-A (9zf, BR-PAY-012): HR creator, owner approver, finance payer (three different people).
+  createdById        String?
+  approvedById       String?
+  approvedAt         DateTime?
+  paidById           String?
+  createdBy          User?   @relation("SettlementCreatedBy", fields: [createdById], references: [id], onDelete: Restrict)
+  approvedBy         User?   @relation("SettlementApprovedBy", fields: [approvedById], references: [id], onDelete: Restrict)
+  paidBy             User?   @relation("SettlementPaidBy", fields: [paidById], references: [id], onDelete: Restrict)
+  /// BL-LCY-015 effect log of the owner approval (SettlementEffect, 9zd; replaced the approvalEffects column).
+  effects            SettlementEffect[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @default(now()) @updatedAt
@@ -1681,6 +1976,10 @@ model CertifiedAgency {
   id           String @id @default(uuid())
   agencyNumber String // رقم الوكالة
 
+  // P1-SCOPE (9zb): scope key (DOMAIN_BOUNDARIES §5.4.3); NULL = unknown, visible to unrestricted users only
+  companyId String?
+  company   Company? @relation("CertifiedAgencyCompany", fields: [companyId], references: [id], onDelete: Restrict)
+
   // الأطراف
   principalName String // اسم الموكل
   principalId   String // هوية الموكل
@@ -1701,6 +2000,7 @@ model CertifiedAgency {
 
   @@index([status])
   @@index([endDate])
+  @@index([companyId])
 }
 
 // ==========================================
@@ -1734,6 +2034,15 @@ model PaymentRequest {
   requestedById String? // منشئ الطلب
   approvedById  String? // معتمد الطلب (لا يساوي المنشئ)
   paidById      String? // مسجِّل الدفع
+  /// P1-PAY-A (9zf, §17): the employee the money goes to (cache of the linked record; BR-PAY-001).
+  beneficiaryEmployeeId String?
+  approvedAt            DateTime?
+  paidAt                DateTime?
+  beneficiary           Employee? @relation("PaymentBeneficiary", fields: [beneficiaryEmployeeId], references: [id], onDelete: Restrict)
+
+  requestedBy User? @relation("PaymentRequestedBy", fields: [requestedById], references: [id], onDelete: Restrict)
+  approvedBy  User? @relation("PaymentApprovedBy", fields: [approvedById], references: [id], onDelete: Restrict)
+  paidBy      User? @relation("PaymentPaidBy", fields: [paidById], references: [id], onDelete: Restrict)
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -1876,7 +2185,8 @@ model EmployeeEvaluation {
   updatedAt DateTime @updatedAt
 
   cycle      EvaluationCycle       @relation(fields: [cycleId], references: [id], onDelete: Cascade)
-  employee   Employee              @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+  employee   Employee              @relation(fields: [employeeId], references: [id], onDelete: Restrict)
+  manager    Employee?             @relation("EvaluationManager", fields: [managerId], references: [id], onDelete: Restrict)
   itemScores EvaluationItemScore[]
   approvals  EvaluationApproval[]
 
@@ -1915,6 +2225,7 @@ model EvaluationApproval {
   actionDate   DateTime @default(now())
 
   evaluation EmployeeEvaluation @relation(fields: [evaluationId], references: [id], onDelete: Cascade)
+  approver   User?              @relation("EvaluationApprover", fields: [approverId], references: [id], onDelete: Restrict)
 
   @@index([evaluationId])
 }
@@ -1931,9 +2242,16 @@ model GovPlatform {
   authorizedPerson String? // اسم الشخص المفوض
   notes            String? @db.Text // ملاحظات إضافية
 
+  // P1-SCOPE (9zb): the company whose credentials these are (DOMAIN_BOUNDARIES §5.4.3 gov, EV-5021).
+  // NULL = unknown (legacy row not derivable), visible to unrestricted users only.
+  companyId String?
+  company   Company? @relation("GovPlatformCompany", fields: [companyId], references: [id], onDelete: Restrict)
+
   createdAt       DateTime  @default(now())
   updatedAt       DateTime  @updatedAt
   muqeemCompanies Company[] @relation("CompanyMuqeemPlatform")
+
+  @@index([companyId])
 }
 
 // ---------------------------------------------------------
@@ -2072,6 +2390,10 @@ model MuqeemTransaction {
   createdAt       DateTime  @default(now())
   completedAt     DateTime?
 
+  company     Company?  @relation("MuqeemTransactionCompany", fields: [companyId], references: [id], onDelete: Restrict)
+  employee    Employee? @relation("MuqeemTransactionEmployee", fields: [employeeId], references: [id], onDelete: Restrict)
+  requestedBy User?     @relation("MuqeemTransactionRequestedBy", fields: [requestedById], references: [id], onDelete: Restrict)
+
   @@index([companyId, createdAt])
   @@index([employeeId])
   @@index([entityType, entityId])
@@ -2097,9 +2419,37 @@ model RuleParameter {
   verifiedBy    String?
   createdById   String?
   createdAt     DateTime  @default(now())
+  createdBy     User?     @relation("RuleParameterCreatedBy", fields: [createdById], references: [id], onDelete: Restrict)
 
   @@unique([key, effectiveFrom])
   @@index([domain])
+}
+
+// تجاوز الشركة لقيمة نظامية (P1-RULE): مؤرخ [effectiveFrom, effectiveTo)، ضمن الحد القانوني لكل مفتاح
+// (src/modules/rules/catalogue.ts). الكاتب الوحيد: src/modules/rules/transitions.ts. القارئ: rules.valueAt.
+model CompanyRuleOverride {
+  id            String    @id @default(uuid())
+  companyId     String
+  key           String
+  value         Float
+  effectiveFrom DateTime  @db.Date
+  effectiveTo   DateTime? @db.Date
+  reason        String    @db.Text
+  createdById   String?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @default(now()) @updatedAt
+  revokedAt     DateTime?
+  revokedById   String?
+  /// DEC-PO-126 (9ze): acknowledgement of a value outside the legal bound (below a MIN / above a MAX)
+  belowLegalAckAt      DateTime?
+  belowLegalAckById    String?
+  belowLegalReason     String?   @db.Text
+  /// The legal value the override departs from, at acknowledgement
+  belowLegalLegalValue Float?
+  company       Company   @relation("RuleOverrideCompany", fields: [companyId], references: [id], onDelete: Restrict)
+
+  @@unique([companyId, key, effectiveFrom])
+  @@index([companyId, key])
 }
 
 // افتراضات المنشأة التي لا تنشرها جهة رسمية (أقساط التأمين، كلفة التوظيف، سياسات الرسوم...)
@@ -2113,6 +2463,7 @@ model WorkforceAssumption {
   updatedById String?
   createdAt   DateTime @default(now())
   updatedAt   DateTime @default(now()) @updatedAt
+  updatedBy   User?    @relation("WorkforceAssumptionUpdatedBy", fields: [updatedById], references: [id], onDelete: Restrict)
 
   @@unique([key, companyId])
 }
@@ -2130,6 +2481,7 @@ model WorkforceCalculation {
   outputs       String   @db.Text // JSON
   createdById   String?
   createdAt     DateTime @default(now())
+  createdBy     User?    @relation("WorkforceCalculationCreatedBy", fields: [createdById], references: [id], onDelete: Restrict)
 
   @@index([kind, createdAt])
   @@index([subjectType, subjectId])
@@ -2145,7 +2497,8 @@ model SalaryChange {
   isPlanned     Boolean  @default(false) // مخطط (سيناريو) أم مطبّق فعلاً
   createdById   String?
   createdAt     DateTime @default(now())
-  employee      Employee @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+  employee      Employee @relation(fields: [employeeId], references: [id], onDelete: Restrict)
+  createdBy     User?    @relation("SalaryChangeCreatedBy", fields: [createdById], references: [id], onDelete: Restrict)
 
   @@index([employeeId, effectiveDate])
 }
@@ -2246,6 +2599,7 @@ model DocumentTypeSetting {
   requiresApproval Boolean?
   validityDays     Int?
   signatoryId      String?
+  optionsJson      String? // خيارات النوع للشركة (مثل السماح بالنقل لمدينة أخرى بقرار)، JSON من مفاتيح DocumentTypeDefinition.options
   updatedById      String?
   updatedAt        DateTime @updatedAt
 
@@ -2499,6 +2853,9 @@ model EmployeeChangeOrder {
   transportAllowance Float?
   branchId           String?
   contractEndDate    DateTime?
+  // قرار النقل (الترحيل 9p): الإدارة والمدير المباشر الجديدان (null = بلا تغيير)
+  departmentId       String?
+  directManagerId    String?
   appliedAt       DateTime?
   cancelledAt     DateTime? // أُلغي القرار قبل سريانه
   createdAt       DateTime  @default(now())
@@ -2563,6 +2920,7 @@ model NitaqatCurve {
   createdById String?
   createdAt   DateTime        @default(now())
   activity    NitaqatActivity @relation(fields: [activityKey], references: [key], onDelete: Cascade)
+  createdBy   User?           @relation("NitaqatCurveCreatedBy", fields: [createdById], references: [id], onDelete: Restrict)
 
   @@unique([activityKey, band, year])
 }
@@ -2584,6 +2942,7 @@ model LocalizationDecision {
   notes                String?   @db.Text
   createdById          String?
   createdAt            DateTime  @default(now())
+  createdBy            User?     @relation("LocalizationDecisionCreatedBy", fields: [createdById], references: [id], onDelete: Restrict)
 
   @@index([groupNameAr])
 }
@@ -2598,6 +2957,7 @@ model UserCompanyScope {
 
   user    User    @relation("ScopedUser", fields: [userId], references: [id], onDelete: Cascade)
   company Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  createdBy User?   @relation("UserCompanyScopeCreatedBy", fields: [createdById], references: [id], onDelete: Restrict)
 
   @@id([userId, companyId])
   @@index([companyId])
@@ -2624,6 +2984,11 @@ model HeadcountPlan {
   updatedAt    DateTime          @default(now()) @updatedAt
   positions    PlannedPosition[]
   raises       PlanRaise[]
+  company      Company?          @relation("HeadcountPlanCompany", fields: [companyId], references: [id], onDelete: Restrict)
+  basedOn      HeadcountPlan?    @relation("HeadcountPlanCopy", fields: [basedOnId], references: [id], onDelete: SetNull)
+  copies       HeadcountPlan[]   @relation("HeadcountPlanCopy")
+  createdBy    User?             @relation("HeadcountPlanCreatedBy", fields: [createdById], references: [id], onDelete: Restrict)
+  decidedBy    User?             @relation("HeadcountPlanDecidedBy", fields: [decidedById], references: [id], onDelete: Restrict)
 
   @@index([status, createdAt])
   @@index([companyId])
@@ -2672,4 +3037,458 @@ model PlanRaise {
   plan           HeadcountPlan @relation(fields: [planId], references: [id], onDelete: Cascade)
 
   @@index([planId])
+}
+
+// ---------------------------------------------------------
+// platform: transactional outbox, event consumption, operation keys, immutable audit
+// (P1-FND-EVT, P1-FND-AUDIT; docs/architecture LIFECYCLE_MODEL §2.1-2.4, DOMAIN_BOUNDARIES §5.2).
+// Sole writer: src/modules/platform. Status columns are guarded by CHECK constraints and the
+// immutability rules by triggers in migration 9t_platform_events_audit (Prisma does not model them).
+// ---------------------------------------------------------
+
+/// kind: FACT
+/// Transactional outbox: written by emitEvent(tx) inside the transition's transaction. The fact
+/// columns are immutable and rows are never deleted (trigger); only the dispatch columns change.
+model DomainEvent {
+  id             String    @id @default(uuid())
+  /// Recorded order. Delivery is ordered per (aggregateType, aggregateId) only (LIFECYCLE_MODEL §2.4).
+  seq            BigInt    @unique @default(autoincrement())
+  /// <domain>.<entity>.<pastTenseVerb>, e.g. leave.request.approved
+  type           String
+  aggregateType  String
+  aggregateId    String
+  companyId      String?
+  actorId        String?
+  payload        Json
+  idempotencyKey String    @unique
+  occurredAt     DateTime
+  effectiveDate  DateTime? @db.Date
+  recordedAt     DateTime  @default(now())
+  /// PENDING | DISPATCHED (CHECK). DISPATCHED = every consumer of the type settled (DONE or DEAD).
+  status         String    @default("PENDING")
+  attempts       Int       @default(0)
+  nextAttemptAt  DateTime?
+  leaseUntil     DateTime?
+  dispatchedAt   DateTime?
+
+  consumptions EventConsumption[]
+
+  @@index([status, nextAttemptAt])
+  @@index([aggregateType, aggregateId, seq])
+  @@index([type, recordedAt])
+  @@index([companyId])
+}
+
+/// kind: FACT
+/// One row per (consumer, event): the consumer's effect and this row commit in the same transaction,
+/// so a consumer runs at most once per event however often or concurrently the dispatcher runs.
+model EventConsumption {
+  id            String    @id @default(uuid())
+  consumer      String
+  eventId       String
+  /// DONE | FAILED | DEAD (CHECK). FAILED is retried at nextAttemptAt; DEAD after maxAttempts.
+  status        String
+  /// Named outcome of a DONE consumption: APPLIED, or e.g. RETRO_ROUTED (ADR-0002 #14), NOT_APPLICABLE.
+  outcome       String?
+  attempts      Int       @default(0)
+  lastError     String?   @db.Text
+  nextAttemptAt DateTime?
+  processedAt   DateTime?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @default(now()) @updatedAt
+
+  event DomainEvent @relation(fields: [eventId], references: [id], onDelete: Restrict)
+
+  @@unique([consumer, eventId])
+  @@index([eventId])
+  @@index([status, nextAttemptAt])
+}
+
+/// kind: FACT
+/// Operation keys (LIFECYCLE_MODEL §2.2): a repeated key returns the recorded result, not a second effect.
+model OperationLog {
+  id           String    @id @default(uuid())
+  operationKey String    @unique
+  operation    String
+  actorId      String?
+  companyId    String?
+  /// Hash of the request; the same key with a different fingerprint is refused.
+  fingerprint  String?
+  resultRef    String?
+  result       Json?
+  createdAt    DateTime  @default(now())
+  completedAt  DateTime?
+
+  @@index([operation, createdAt])
+}
+
+/// kind: FACT
+/// Append-only audit with before/after values, written by audit(tx) in the operation's transaction
+/// (UPDATE, DELETE and TRUNCATE refused by trigger). No FK to User on purpose: deleting a user must
+/// never rewrite the trail. The legacy AuditLog stays mutable (User FK ON DELETE SET NULL) until its
+/// writers move here.
+model AuditRecord {
+  id           String   @id @default(uuid())
+  seq          BigInt   @unique @default(autoincrement())
+  /// USER | SYSTEM (CHECK)
+  actorType    String
+  actorId      String?
+  action       String
+  entityType   String
+  entityId     String?
+  companyId    String?
+  before       Json?
+  after        Json?
+  reason       String?  @db.Text
+  operationKey String?
+  ipAddress    String?
+  occurredAt   DateTime @default(now())
+
+  @@index([entityType, entityId])
+  @@index([actorId])
+  @@index([companyId, occurredAt])
+  @@index([operationKey])
+}
+
+// ---------------------------------------------------------
+// platform: data invariants (P1-FND-INV; ARCHITECTURE_INVARIANTS §4.2, §4.3, ADR-0002 #1).
+// Sole writer: src/modules/platform (reconcile + the discrepancy transitions). Status, severity and
+// the two-person columns are guarded by CHECK constraints in migration 9w_invariants_discrepancies.
+// No FK to Company / Employee / User on purpose (same as AuditRecord): a discrepancy survives the
+// row it points to, and companyId NULL is a tenant-level finding (e.g. the document event chain).
+// ---------------------------------------------------------
+
+/// kind: PROJECTION (of the invariant checks; rebuilt by reconcile) + the human classification
+/// One open-or-closed finding of an invariant, keyed by its fingerprint (rule + check + entity + period):
+/// a repeated detection updates the row, never adds one.
+model Discrepancy {
+  id                      String    @id @default(uuid())
+  /// sha256 of ruleId|checkId|entityType|entityId|period (UNIQUE: idempotent reconcile)
+  fingerprint             String    @unique
+  /// INV-… id (ARCHITECTURE_INVARIANTS §4.2)
+  ruleId                  String
+  /// Sub-check of the rule (scripts/lib/reconciliation-checks.mjs)
+  checkId                 String
+  /// Owning module of the invariant (DOMAIN_BOUNDARIES §5.2)
+  domain                  String
+  companyId               String?
+  /// The employee the finding is about (the beneficiary of ADR-0002 #1; the gate scope of a settlement)
+  subjectEmployeeId       String?
+  entityType              String
+  entityId                String
+  /// YYYY-MM, or NULL when the finding has no period
+  period                  String?
+  /// INFO | WARNING | HIGH | BLOCKING (CHECK)
+  severity                String
+  /// Computed at detection from the severity and the rule's blocking scope
+  blocking                Boolean
+  /// Operations this finding blocks while OPEN (the L4 gate scope)
+  blocks                  String[]
+  expectedValue           Json?
+  actualValue             Json?
+  delta                   Json?
+  /// UNCLASSIFIED | EXPECTED_* | … (CHECK: upper-case code)
+  category                String    @default("UNCLASSIFIED")
+  /// OPEN | EXPLAINED | RESOLVED | WAIVED | AUTO_CLOSED (CHECK)
+  status                  String    @default("OPEN")
+  /// NULL | EXPLANATION | WAIVER: waiting for the second person (or the owner confirmation of INV-PAY-03)
+  pendingAction           String?
+  detectedAt              DateTime  @default(now())
+  lastSeenAt              DateTime  @default(now())
+  /// Number of detections: 1 + each reopening (a repeated run of the same finding does not count)
+  occurrences             Int       @default(1)
+  lastRunId               String?
+  ownerUserId             String?
+  explanation             String?   @db.Text
+  explanationRef          String?
+  explainedById           String?
+  explainedAt             DateTime?
+  explanationApprovedById String?
+  explanationApprovedAt   DateTime?
+  waiverReason            String?   @db.Text
+  waivedById              String?
+  waivedAt                DateTime?
+  waiverApprovedById      String?
+  waiverApprovedAt        DateTime?
+  /// SELF_ACT_SINGLE_OPERATOR (ADR-0002 #1): the sole operator explained or waived alone
+  selfActSingleOperator   Boolean   @default(false)
+  /// NULL | PENDING | CONFIRMED | REJECTED (CHECK): owner confirmation over the DEC-PO-022 channel
+  ownerConfirmation       String?
+  ownerConfirmationRef    String?
+  ownerConfirmedAt        DateTime?
+  resolution              String?   @db.Text
+  resolutionRef           String?
+  resolvedAt              DateTime?
+  resolvedById            String?
+  closedAt                DateTime?
+  version                 Int       @default(0)
+  createdAt               DateTime  @default(now())
+  updatedAt               DateTime  @default(now()) @updatedAt
+
+  @@index([companyId, status, severity])
+  @@index([status, blocking])
+  @@index([ruleId, companyId, status])
+  @@index([subjectEmployeeId])
+}
+
+/// kind: FACT
+/// One execution of one invariant for one company (companyId NULL = the tenant-level pass).
+model InvariantRun {
+  id         String   @id @default(uuid())
+  /// Groups the rows of one reconcile call
+  runId      String
+  ruleId     String
+  companyId  String?
+  /// SCHEDULED | MANUAL | PRE_OPERATION (CHECK)
+  trigger    String
+  /// SUCCEEDED | FAILED (CHECK)
+  status     String
+  /// Start of the READ ONLY snapshot the checks read
+  snapshotAt DateTime
+  startedAt  DateTime
+  finishedAt DateTime
+  found      Int      @default(0)
+  opened     Int      @default(0)
+  reopened   Int      @default(0)
+  autoClosed Int      @default(0)
+  /// Per sub-check counts, INFO checks included (they are not recorded as discrepancies)
+  results    Json?
+  error      String?  @db.Text
+  createdAt  DateTime @default(now())
+
+  @@index([runId])
+  @@index([ruleId, companyId, startedAt])
+}
+
+// ---------------------------------------------------------
+// Effective periods (P1-FND-EFF; DOMAIN_MODEL §1.3, ADR-0001 #9, ADR-0002 #3/#8/#12/#13).
+// Uniform shape: validFrom inclusive, validTo exclusive (NULL = open), recordedAt (when the system
+// learnt it), supersededAt + supersedeReason on the replaced row and supersedesId on its successor
+// (no row is ever deleted; void = superseded without a successor), lineageId inherited by every
+// successor, sourceType/sourceId (LEGACY_OPENING for the opening periods of migration 9u).
+// Physical writer: src/modules/platform/effective only (ARCH-012), called by the owning module.
+// Migration 9u_effective_periods adds what Prisma cannot model: the EXCLUDE constraint (no two
+// non-superseded periods of one employee overlap, INV-EFF-01, btree_gist), CHECKs, the partial
+// unique index of the legacy opening, and the append-only triggers.
+// ---------------------------------------------------------
+
+/// kind: FACT
+/// Owner: lifecycle (DOMAIN_BOUNDARIES §5.2). From the first working day to the last working day + 1.
+/// The one named exception to append-only: validTo is edited in place by lifecycle (ADR-0001 #9).
+model EmploymentPeriod {
+  id              String    @id @default(uuid())
+  employeeId      String
+  validFrom       DateTime  @db.Date
+  validTo         DateTime? @db.Date
+  lineageId       String
+  supersedesId    String?   @unique
+  supersededAt    DateTime?
+  /// CORRECTION | CLOSE | VOID (CHECK), set together with supersededAt
+  supersedeReason String?
+  /// LEGACY_OPENING | ONBOARDING | … (CHECK: upper snake case)
+  sourceType      String
+  sourceId        String
+  recordedAt      DateTime  @default(now())
+  /// Actor (user id, or null for the system). No FK on purpose, as AuditRecord (ADR-0003).
+  createdById     String?
+
+  employee     Employee          @relation(fields: [employeeId], references: [id], onDelete: Restrict)
+  supersedes   EmploymentPeriod? @relation("EmploymentPeriodSupersede", fields: [supersedesId], references: [id], onDelete: Restrict)
+  supersededBy EmploymentPeriod? @relation("EmploymentPeriodSupersede")
+
+  @@index([employeeId, validFrom])
+  @@index([lineageId])
+  @@index([sourceType, sourceId])
+}
+
+/// Stored employment states (LIFECYCLE_MODEL §2.3). "On leave" and "overdue return" are computed
+/// (BR-LCY-008), never stored.
+enum EmploymentState {
+  ACTIVE
+  NOTICE
+  TERMINATED
+}
+
+/// kind: FACT
+/// Owner: lifecycle (DOMAIN_BOUNDARIES §5.2). The truth of the employment state (DEC-PO-119,
+/// ARC-LCY-A1): one row per transition, written by lifecycle.transitionEmploymentState only
+/// (ARCH-005), never updated or deleted (trigger, migration 9y); a correction is a new row that
+/// names the row it replaces in supersedesId (ADR-0002 #3). Employee.employmentState / isTerminated /
+/// terminationDate (and, through offboarding, exitReason / exitVoluntary) = the latest row not
+/// superseded, in recording order (INV-LCY-01).
+model EmploymentStateChange {
+  id                  String           @id @default(uuid())
+  employeeId          String
+  /// EmploymentPeriod.lineageId of the employment the change belongs to (ADR-0002 #12). Null only on
+  /// a legacy opening of an employee whose data cannot make a period (legacy.review says why).
+  employmentLineageId String?
+  /// The EmploymentPeriod row of that lineage in force when the change was recorded.
+  periodId            String?
+  /// HIRE | NOTICE | CANCEL_EXIT | NOTICE_END | TERMINATE | TERMINATE_IN_NOTICE | REHIRE | AMEND | VOID | LEGACY_OPENING (CHECK)
+  transition          String
+  fromState           EmploymentState?
+  toState             EmploymentState
+  /// Business date of the change: first working day (HIRE, REHIRE), last working day (exits), decision day (CANCEL_EXIT, VOID).
+  effectiveDate       DateTime         @db.Date
+  /// The projections after the change: last working day, exit reason (ExitReason dictionary), voluntary.
+  terminationDate     DateTime?        @db.Date
+  exitReason          String?
+  exitVoluntary       Boolean?
+  /// Written reason of the actor (audit context; not a projection).
+  reason              String?
+  /// The decision behind the change (EMPLOYEE_FILE, SETTLEMENT, LEAVE_ABSCOND, SYSTEM, LEGACY_OPENING…).
+  sourceType          String
+  sourceId            String
+  /// Legal company of the employee when the change was recorded (company-scope key, ARC §5).
+  companyId           String?
+  /// Requester (user id) or null for the system. No FK on purpose, as AuditRecord (ADR-0003).
+  actorId             String?
+  /// Second person of a two-person act (BR-LCY-012).
+  approvedById        String?
+  /// SELF_ACT_SINGLE_OPERATOR: a two-person act done alone because no eligible second person existed (DEC-PO-035).
+  singleOperator      Boolean          @default(false)
+  operationKey        String           @unique
+  supersedesId        String?          @unique
+  /// Legacy opening only: the projection values found (DEC-PO-051). The review codes are rows of
+  /// EmploymentMigrationReview since 9zd (openings recorded before 9zd still carry legacy.review; the rows are the truth).
+  legacy              Json?
+  recordedAt          DateTime         @default(now())
+  /// Recording order (the "latest" of DEC-PO-119): strictly increasing, also inside one transaction.
+  seq                 BigInt           @unique @default(autoincrement())
+
+  employee     Employee               @relation(fields: [employeeId], references: [id], onDelete: Restrict)
+  supersedes   EmploymentStateChange? @relation("EmploymentStateChangeSupersede", fields: [supersedesId], references: [id], onDelete: Restrict)
+  supersededBy EmploymentStateChange? @relation("EmploymentStateChangeSupersede")
+  migrationReviews EmploymentMigrationReview[]
+
+  @@index([employeeId, recordedAt])
+  @@index([employmentLineageId])
+  @@index([companyId])
+  @@index([sourceType, sourceId])
+}
+
+/// LCY-J1 review items (DEC-PO-051, DEC-PO-128 / ADR-0004 #2): what the opening of an employee's
+/// employment state found that HR must look at (ACTIVE_WITH_TERMINATION_DATE, NOTICE_CANDIDATE…).
+/// Owner lifecycle; written only by the SQL opening lifecycle_open_state (9zd, single definition), one
+/// row per (employee, code). Only the resolution columns may change, once (trigger).
+model EmploymentMigrationReview {
+  id            String    @id @default(uuid())
+  employeeId    String
+  /// The LEGACY_OPENING state change that raised the item.
+  stateChangeId String?
+  /// Review code (CHECK: upper-case identifier).
+  code          String
+  /// The projection values found when the state was opened (before anything was cleared).
+  details       Json      @default("{}")
+  createdAt     DateTime  @default(now())
+  /// HR follow-up (BL-LCY-006): set once, together.
+  resolvedAt    DateTime?
+  /// No FK on purpose, as AuditRecord (ADR-0003).
+  resolvedById  String?
+  resolution    String?
+
+  employee    Employee               @relation(fields: [employeeId], references: [id], onDelete: Restrict)
+  stateChange EmploymentStateChange? @relation(fields: [stateChangeId], references: [id], onDelete: Restrict)
+
+  @@unique([employeeId, code])
+  @@index([code, resolvedAt])
+  @@index([stateChangeId])
+}
+
+/// BL-LCY-015 effect log of a settlement approval (LCY-M1, DEC-PO-128 / ADR-0004 #1): one row per
+/// value the approval changed, with its value before and after, so R1 (settlement.reverse) can restore
+/// it. Owner offboarding; FACT, append-only (trigger); sole writer offboarding.recordSettlementEffects,
+/// called by the approval in its transaction. Unique per (settlement, kind, reference): a repeat adds nothing.
+model SettlementEffect {
+  id           String   @id @default(uuid())
+  settlementId String
+  employeeId   String
+  /// LOAN | OVERTIME | PAYROLL_DRAFT | LEAVE_ACCRUAL | PAYMENT_REQUEST | EMPLOYMENT | LOGIN (CHECK)
+  kind         String
+  /// The row the effect touched (loan, overtime request, payroll, payment request; the employee for employee-level values).
+  refId        String
+  before       Json?
+  after        Json?
+  recordedAt   DateTime @default(now())
+
+  settlement Settlement @relation(fields: [settlementId], references: [id], onDelete: Restrict)
+  employee   Employee   @relation(fields: [employeeId], references: [id], onDelete: Restrict)
+
+  @@unique([settlementId, kind, refId])
+  @@index([employeeId])
+}
+
+/// kind: FACT
+/// Owner: compensation (DOMAIN_BOUNDARIES §5.2). Basic salary and the fixed monthly allowances.
+/// Amounts in SAR with halala precision (Decimal(14,2), DOMAIN_MODEL §1.4).
+model CompensationPeriod {
+  id               String    @id @default(uuid())
+  employeeId       String
+  validFrom        DateTime  @db.Date
+  validTo          DateTime? @db.Date
+  lineageId        String
+  supersedesId     String?   @unique
+  supersededAt     DateTime?
+  supersedeReason  String?
+  sourceType       String
+  sourceId         String
+  recordedAt       DateTime  @default(now())
+  createdById      String?
+  basicSalary      Decimal   @db.Decimal(14, 2)
+  /// Fixed monthly allowances: [{ name, line: HOUSING|TRANSPORT|OTHER, allowanceType, amount, countsTowardGosi, allowanceId }]
+  allowances       Json      @default("[]")
+  /// Explicit GOSI contributory wage; null = basic + allowances flagged countsTowardGosi.
+  gosiBaseOverride Decimal?  @db.Decimal(14, 2)
+
+  employee     Employee            @relation(fields: [employeeId], references: [id], onDelete: Restrict)
+  supersedes   CompensationPeriod? @relation("CompensationPeriodSupersede", fields: [supersedesId], references: [id], onDelete: Restrict)
+  supersededBy CompensationPeriod? @relation("CompensationPeriodSupersede")
+
+  @@index([employeeId, validFrom])
+  @@index([lineageId])
+  @@index([sourceType, sourceId])
+}
+
+/// kind: FACT
+/// Owner: org (DOMAIN_BOUNDARIES §5.2). Minimal set of P1-FND-EFF (ARC-SYS-A3); P3-ORG adds
+/// position, cost centre and work pattern. legalCompanyId is the company-scope key (§5.4.3).
+model AssignmentPeriod {
+  id              String    @id @default(uuid())
+  employeeId      String
+  validFrom       DateTime  @db.Date
+  validTo         DateTime? @db.Date
+  lineageId       String
+  supersedesId    String?   @unique
+  supersededAt    DateTime?
+  supersedeReason String?
+  sourceType      String
+  sourceId        String
+  recordedAt      DateTime  @default(now())
+  createdById     String?
+  legalCompanyId  String
+  actualCompanyId String?
+  branchId        String?
+  departmentId    String?
+  managerId       String?
+  workPatternId   String? // P1-CAL (9z_calendar): the WorkPattern (WorkSchedule) of the assignment
+
+  employee      Employee          @relation("AssignmentEmployee", fields: [employeeId], references: [id], onDelete: Restrict)
+  legalCompany  Company           @relation("AssignmentLegalCompany", fields: [legalCompanyId], references: [id], onDelete: Restrict)
+  actualCompany Company?          @relation("AssignmentActualCompany", fields: [actualCompanyId], references: [id], onDelete: Restrict)
+  branch        Branch?           @relation(fields: [branchId], references: [id], onDelete: Restrict)
+  department    Department?       @relation(fields: [departmentId], references: [id], onDelete: Restrict)
+  manager       Employee?         @relation("AssignmentManager", fields: [managerId], references: [id], onDelete: Restrict)
+  workPattern   WorkSchedule?     @relation("AssignmentWorkPattern", fields: [workPatternId], references: [id], onDelete: Restrict)
+  supersedes    AssignmentPeriod? @relation("AssignmentPeriodSupersede", fields: [supersedesId], references: [id], onDelete: Restrict)
+  supersededBy  AssignmentPeriod? @relation("AssignmentPeriodSupersede")
+
+  @@index([employeeId, validFrom])
+  @@index([lineageId])
+  @@index([sourceType, sourceId])
+  @@index([legalCompanyId])
+  @@index([actualCompanyId])
+  @@index([branchId])
+  @@index([departmentId])
+  @@index([managerId])
+  @@index([workPatternId])
 }

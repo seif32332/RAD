@@ -347,6 +347,8 @@ export const MENU_GROUPS: readonly MenuGroup[] = [
       { href: '/administrations', label: 'الإدارات', iconName: 'Building2', iconClassName: 'text-blue-400', roles: PAGE_ROLES.staff },
       { href: '/branches', label: 'الفروع "مقر العمل"', iconName: 'GitBranch', roles: PAGE_ROLES.staff },
       { href: '/departments', label: 'الأقسام', iconName: 'Layers', roles: PAGE_ROLES.staff },
+      // GET /api/calendar: STAFF (holidays, Ramadan; editing is HR, P1-CAL)
+      { href: '/calendar', label: 'التقويم: العطل ورمضان', iconName: 'CalendarDays', iconClassName: 'text-teal-500', roles: PAGE_ROLES.staff },
     ],
   },
   {
@@ -399,6 +401,8 @@ export const MENU_GROUPS: readonly MenuGroup[] = [
     defaultRoles: ['SUPER_ADMIN', 'COMPANY_ADMIN'],
     items: [
       { href: '/settings/audit-logs', label: 'سجل التدقيق والمراقبة', iconName: 'History', iconClassName: 'text-emerald-400', roles: PAGE_ROLES.admin },
+      // GET /api/settings/integrity: PAYROLL (owner dashboard of data integrity, P1-FND-INV)
+      { href: '/settings/integrity', label: 'سلامة البيانات', iconName: 'ShieldAlert', iconClassName: 'text-rose-400', roles: PAGE_ROLES.payroll },
       { href: '/settings/users', label: 'مستخدمي النظام والصلاحيات', iconName: 'UserPlus', iconClassName: 'text-blue-400', roles: PAGE_ROLES.admin },
       { href: '/settings/permissions', label: 'تخصيص القوائم والصلاحيات', iconName: 'Layers', iconClassName: 'text-rose-400', roles: PAGE_ROLES.admin },
       { href: '/settings', label: 'منطقة الإعدادات العامـة', iconName: 'Settings', roles: PAGE_ROLES.admin },
@@ -517,7 +521,8 @@ const EXPLICIT_PAGE_ACCESS: Readonly<Record<string, readonly AppRole[]>> = {
   '/employees/new': ROLE_GROUPS.HR,
   '/employees/import': ROLE_GROUPS.HR,
   '/employees/*/edit': ROLE_GROUPS.HR,
-  '/companies/new': union(ROLE_GROUPS.ADMIN, ROLE_GROUPS.HR),
+  // POST /api/companies is an owner act (iam company.create, P1-SCOPE).
+  '/companies/new': ROLE_GROUPS.OWNER,
   '/companies/*/edit': union(ROLE_GROUPS.ADMIN, ROLE_GROUPS.HR),
   '/administrations/new': union(ROLE_GROUPS.ADMIN, ROLE_GROUPS.HR),
   '/branches/new': union(ROLE_GROUPS.ADMIN, ROLE_GROUPS.HR),

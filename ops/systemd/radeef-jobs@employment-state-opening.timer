@@ -1,0 +1,12 @@
+# /etc/systemd/system/radeef-jobs@employment-state-opening.timer: daily 02:40 + up to 20 min (P1-LCY
+# LCY-J1: opens the employment state of employees created since the last run).
+[Unit]
+Description=Radeef background job employment-state-opening (schedule)
+
+[Timer]
+OnCalendar=*-*-* 02:40:00 Asia/Riyadh
+RandomizedDelaySec=20min
+Persistent=true
+
+[Install]
+WantedBy=timers.target

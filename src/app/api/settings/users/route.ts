@@ -7,10 +7,15 @@ import { ROLE_GROUPS } from '@/lib/constants';
 import { handleApiError, parseBody } from '@/lib/http';
 import { zBool, zEmail, zOptText, zPassword } from '@/lib/validation';
 import { logAudit } from '@/lib/audit';
+import { ALL_COMPANIES, authz, resolveActor, scopedContext } from '@/modules/iam';
 import { assertPasswordLength, friendlyValidationError } from '../security';
 import { BCRYPT_COST, assertEmailAvailable, checkCreateRole, linkEmployee, safeUserSelect, zEmployeeLink, zRole } from './shared';
 
 export const dynamic = 'force-dynamic';
+
+// P1-SCOPE: tenant-wide (SystemSetting / User / RolePermission / AuditLog have no company): an admin
+// who sees EVERY company only. scopedContext(actor, ALL_COMPANIES) refuses (403) an actor restricted
+// to some companies by UserCompanyScope, whatever his role.
 
 const CreateUserSchema = z.object({
   email: zEmail,
@@ -23,7 +28,9 @@ const CreateUserSchema = z.object({
 
 export async function GET() {
   try {
-    await requireUser(ROLE_GROUPS.ADMIN);
+    const user = await requireUser(ROLE_GROUPS.ADMIN);
+    const ctx = scopedContext(await resolveActor(prisma, user), ALL_COMPANIES);
+    authz.assert(ctx, 'platform.settings.manage');
     const users = await prisma.user.findMany({ select: safeUserSelect, orderBy: { createdAt: 'desc' } });
     return NextResponse.json(users);
   } catch (err) {
@@ -34,6 +41,8 @@ export async function GET() {
 export async function POST(req: Request) {
   try {
     const actor = await requireUser(ROLE_GROUPS.ADMIN);
+    const ctx = scopedContext(await resolveActor(prisma, actor), ALL_COMPANIES);
+    authz.assert(ctx, 'platform.settings.manage');
     const body = await parseBody(req, CreateUserSchema);
 
     const roleError = checkCreateRole(actor, body.role);

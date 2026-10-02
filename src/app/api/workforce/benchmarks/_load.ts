@@ -14,6 +14,8 @@ export interface BenchmarkScope {
   companyId?: string | null;
   branchId?: string | null;
   departmentId?: string | null;
+  /** The caller's companies (P1-SCOPE): employees of these legal companies only; null / undefined = every company. */
+  companyIds?: ReadonlyArray<string> | null;
 }
 
 const DAY_MS = 86400000;
@@ -25,12 +27,13 @@ const COHORT_LOOKBACK_MONTHS = 6;
  * no identity data): the input of scopeDisclosure(), which compares a filtered scope with the wider scopes
  * containing it.
  */
-export async function loadBenchmarkPopulation(opts: { asOf: Date; months: number }): Promise<BmPopulationEmployee[]> {
+export async function loadBenchmarkPopulation(opts: { asOf: Date; months: number; companyIds?: ReadonlyArray<string> | null }): Promise<BmPopulationEmployee[]> {
   const p = benchmarkPeriod(opts.asOf, opts.months);
   return prisma.employee.findMany({
     where: {
       joinDate: { lte: p.toDate },
       OR: [{ isTerminated: false }, { isTerminated: true, terminationDate: { gte: p.fromDate } }],
+      ...(opts.companyIds ? { legalCompanyId: { in: [...opts.companyIds] } } : {}),
     },
     select: { id: true, joinDate: true, isTerminated: true, terminationDate: true, departmentId: true, branchId: true, legalCompanyId: true },
     orderBy: { id: 'asc' },
@@ -43,7 +46,8 @@ export async function loadBenchmarksInput(opts: { asOf: Date; months: number; sc
   const toExclusive = new Date(p.toDate.getTime() + DAY_MS);
   const lookback = new Date(Date.UTC(from.getUTCFullYear(), from.getUTCMonth() - COHORT_LOOKBACK_MONTHS, 1));
   const s = opts.scope;
-  const scoped = !!(s.companyId || s.branchId || s.departmentId);
+  // A restricted caller always reads a filtered population (his companies): every query below is narrowed to it.
+  const scoped = !!(s.companyId || s.branchId || s.departmentId || s.companyIds);
   const notes: string[] = [];
 
   const rows = await prisma.employee.findMany({
@@ -51,6 +55,7 @@ export async function loadBenchmarksInput(opts: { asOf: Date; months: number; sc
       joinDate: { lte: p.toDate },
       OR: [{ isTerminated: false }, { isTerminated: true, terminationDate: null }, { isTerminated: true, terminationDate: { gte: lookback } }],
       ...(s.companyId ? { legalCompanyId: s.companyId } : {}),
+      ...(s.companyIds ? { AND: [{ legalCompanyId: { in: [...s.companyIds] } }] } : {}),
       ...(s.branchId ? { branchId: s.branchId } : {}),
       ...(s.departmentId ? { departmentId: s.departmentId } : {}),
     },
@@ -80,6 +85,7 @@ export async function loadBenchmarksInput(opts: { asOf: Date; months: number; sc
     ...(s.departmentId ? { departmentId: s.departmentId } : {}),
     ...(s.branchId ? { department: { branchId: s.branchId } } : {}),
     ...(s.companyId ? { department: { branch: { companyId: s.companyId }, ...(s.branchId ? { branchId: s.branchId } : {}) } } : {}),
+    ...(s.companyIds ? { companyId: { in: [...s.companyIds] } } : {}),
   };
   if (s.companyId) notes.push('مدة التوظيف: تُنسب طلبات الوظائف إلى الشركة حسب فرع الإدارة الطالبة (لا حسب الكيان النظامي للموظف)');
 
@@ -123,7 +129,7 @@ export async function loadBenchmarksInput(opts: { asOf: Date; months: number; sc
       where: { entityType: 'EMPLOYEE', entityId: idFilter, status: { in: ['PAID', 'COMPLETED'] }, updatedAt: { gte: from, lt: toExclusive }, documentType: { not: null } },
       select: { entityId: true, documentType: true, amount: true, updatedAt: true },
     }),
-    loadAssumptionRows(),
+    loadAssumptionRows(undefined, s.companyIds),
   ]);
 
   const recruitmentCompany = s.companyId ?? null;

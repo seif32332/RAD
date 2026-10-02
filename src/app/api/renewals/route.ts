@@ -17,6 +17,7 @@ import {
   renewalDateKey,
   renewalKey,
 } from '@/lib/alerts';
+import { authz, resolveActor, scopedContext, scopedPrisma } from '@/modules/iam';
 
 export const dynamic = 'force-dynamic';
 
@@ -59,10 +60,16 @@ interface PaymentFlags {
  * Renewal queue: every document inside its alert window (or already expired), plus any
  * document that has a renewal in progress (payment request / pending-payment archive).
  * `?early=true` lists every document regardless of the window (early renewal mode).
+ * P1-SCOPE: every entity (employee, company, branch, vehicle, contract, policy, agency) is read through
+ * the scoped client, so only the documents of the user's companies are listed. The renewal archive and
+ * payment requests (no company key) are only used as flags keyed on those entities.
  */
 export async function GET(req: Request) {
   try {
-    await requireUser(ROLE_GROUPS.GOV);
+    const user = await requireUser(ROLE_GROUPS.GOV);
+    const ctx = scopedContext(await resolveActor(prisma, user));
+    authz.assert(ctx, 'gov.renewal.read');
+    const db = scopedPrisma(ctx);
     const query = parseQuery(req, querySchema);
     const early = query.early === 'true';
     const employeeId = query.employeeId || undefined;
@@ -88,7 +95,7 @@ export async function GET(req: Request) {
         where: { action: 'TERMINATED' },
         select: { entityId: true, documentType: true, oldExpDate: true },
       }),
-      prisma.employee.findMany({
+      db.employee.findMany({
         where: { isTerminated: false, ...(employeeId ? { id: employeeId } : {}) },
         select: {
           id: true,
@@ -104,7 +111,7 @@ export async function GET(req: Request) {
         },
       }),
       // Settlements flagged "[NEEDS_EARLY_RENEWAL]" force the iqama into the queue.
-      prisma.settlement.findMany({
+      db.settlement.findMany({
         where: {
           status: { in: [SETTLEMENT_STATUS.PENDING_APPROVAL, SETTLEMENT_STATUS.OWNER_APPROVED, SETTLEMENT_STATUS.PAID] },
           additionalNotes: { contains: '[NEEDS_EARLY_RENEWAL]' },
@@ -127,10 +134,10 @@ export async function GET(req: Request) {
       }),
       employeeId
         ? Promise.resolve([])
-        : prisma.company.findMany({ select: { id: true, nameArabic: true, commercialRegExp: true, trademarkExpDate: true } }),
+        : db.company.findMany({ select: { id: true, nameArabic: true, commercialRegExp: true, trademarkExpDate: true } }),
       employeeId
         ? Promise.resolve([])
-        : prisma.branch.findMany({
+        : db.branch.findMany({
             select: {
               id: true,
               nameArabic: true,
@@ -145,7 +152,7 @@ export async function GET(req: Request) {
           }),
       employeeId
         ? Promise.resolve([])
-        : prisma.vehicle.findMany({
+        : db.vehicle.findMany({
             where: { isArchived: false },
             select: {
               id: true,
@@ -161,15 +168,15 @@ export async function GET(req: Request) {
           }),
       employeeId
         ? Promise.resolve([])
-        : prisma.legalContract.findMany({ where: { status: 'ACTIVE' }, select: { id: true, title: true, endDate: true } }),
+        : db.legalContract.findMany({ where: { status: 'ACTIVE' }, select: { id: true, title: true, endDate: true } }),
       employeeId
         ? Promise.resolve([])
-        : prisma.medicalInsurance.findMany({
+        : db.medicalInsurance.findMany({
             select: { id: true, insuranceIssuer: true, expiryDate: true, company: { select: { nameArabic: true } } },
           }),
       employeeId
         ? Promise.resolve([])
-        : prisma.certifiedAgency.findMany({
+        : db.certifiedAgency.findMany({
             where: { status: 'ACTIVE' },
             select: { id: true, agencyNumber: true, agentName: true, endDate: true },
           }),

@@ -4,6 +4,7 @@ import { requireUser } from '@/lib/auth';
 import { ROLE_GROUPS } from '@/lib/constants';
 import { handleApiError } from '@/lib/http';
 import { muqeemConfig } from '@/lib/muqeem';
+import { authz, resolveActor, scopedContext, scopedPrisma } from '@/modules/iam';
 
 export const dynamic = 'force-dynamic';
 
@@ -17,13 +18,17 @@ const MUQEEM_NAME_RE = /مقيم|muqeem|muqim/i;
  * GET /api/integrations/muqeem/status (ROLE_GROUPS.GOV)
  * { enabled, configured, usable, missing, canLink, companies: [{ id, name, moiNumber, linked, platformName }],
  *   platforms: [{ id, platformName }] }. Never returns credentials or env values.
+ * P1-SCOPE: the companies and platforms of the user's companies only (scoped client).
  */
 export async function GET() {
   try {
     const user = await requireUser(ROLE_GROUPS.GOV);
+    const ctx = scopedContext(await resolveActor(prisma, user));
+    authz.assert(ctx, 'gov.muqeem.operate');
+    const db = scopedPrisma(ctx);
     const config = muqeemConfig();
     const [companies, platforms] = await Promise.all([
-      prisma.company.findMany({
+      db.company.findMany({
         orderBy: { nameArabic: 'asc' },
         select: {
           id: true,
@@ -33,7 +38,7 @@ export async function GET() {
           muqeemPlatform: { select: { platformName: true } },
         },
       }),
-      prisma.govPlatform.findMany({ orderBy: { platformName: 'asc' }, select: { id: true, platformName: true } }),
+      db.govPlatform.findMany({ orderBy: { platformName: 'asc' }, select: { id: true, platformName: true } }),
     ]);
 
     return NextResponse.json({

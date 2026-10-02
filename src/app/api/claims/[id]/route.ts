@@ -6,16 +6,25 @@ import { conflict, definedOnly, handleApiError, notFound, parseBody, badRequest 
 import { logAudit } from '@/lib/audit';
 import { roundMoney } from '@/lib/money';
 import { ensureRefsExist } from '@/app/api/services/_lib';
-import { claimUpdateSchema, faultSharesValid } from '../_lib';
+import { claimScopeWhere, claimUpdateSchema, faultSharesValid } from '../_lib';
+import { authz, resolveActor, scopedContext, scopedPrisma, type ScopeContext } from '@/modules/iam';
 
 type Ctx = { params: Promise<{ id: string }> };
 
+/** P1-SCOPE: the user's ScopedContext; a claim whose vehicle is of another company is "not found". */
+async function claimContext(user: Awaited<ReturnType<typeof requireUser>>, action: 'logistics.read' | 'logistics.manage'): Promise<ScopeContext> {
+  const ctx = scopedContext(await resolveActor(prisma, user));
+  authz.assert(ctx, action);
+  return ctx;
+}
+
 export async function GET(_req: Request, { params }: Ctx) {
   try {
-    await requireUser(ROLE_GROUPS.STAFF);
+    const user = await requireUser(ROLE_GROUPS.STAFF);
     const { id } = await params;
-    const claim = await prisma.accidentClaim.findUnique({
-      where: { id },
+    const ctx = await claimContext(user, 'logistics.read');
+    const claim = await prisma.accidentClaim.findFirst({
+      where: { id, ...claimScopeWhere(ctx) },
       include: { vehicle: true },
     });
     if (!claim) throw notFound('المطالبة غير موجودة');
@@ -30,10 +39,11 @@ export async function PUT(req: Request, { params }: Ctx) {
     const user = await requireUser(ROLE_GROUPS.LOGISTICS);
     const { id } = await params;
     const body = await parseBody(req, claimUpdateSchema);
+    const ctx = await claimContext(user, 'logistics.manage');
 
     const claim = await prisma.$transaction(async (tx) => {
-      const existing = await tx.accidentClaim.findUnique({
-        where: { id },
+      const existing = await tx.accidentClaim.findFirst({
+        where: { id, ...claimScopeWhere(ctx) },
         select: { id: true, status: true, vehicleId: true, claimAmount: true, updatedAt: true, faultPercentageAgainst: true, faultPercentageFor: true },
       });
       if (!existing) throw notFound('المطالبة غير موجودة');
@@ -44,6 +54,10 @@ export async function PUT(req: Request, { params }: Ctx) {
 
       if (body.vehicleId && body.vehicleId !== existing.vehicleId) {
         await ensureRefsExist(tx, { vehicleIds: [body.vehicleId] });
+        // Moving the claim to a vehicle of another company is refused like an unknown vehicle.
+        if (!(await scopedPrisma(ctx).vehicle.findUnique({ where: { id: body.vehicleId }, select: { id: true } }))) {
+          throw badRequest('المركبة المحددة غير موجودة');
+        }
       }
 
       const data = definedOnly({
@@ -92,9 +106,10 @@ export async function DELETE(req: Request, { params }: Ctx) {
   try {
     const user = await requireUser(ROLE_GROUPS.LOGISTICS);
     const { id } = await params;
+    const ctx = await claimContext(user, 'logistics.manage');
 
     await prisma.$transaction(async (tx) => {
-      const claim = await tx.accidentClaim.findUnique({ where: { id } });
+      const claim = await tx.accidentClaim.findFirst({ where: { id, ...claimScopeWhere(ctx) } });
       if (!claim) throw notFound('المطالبة غير موجودة');
       await tx.accidentClaim.delete({ where: { id } });
       // Full snapshot: claims are financial records, keep what was deleted in the audit trail.

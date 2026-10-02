@@ -2,12 +2,13 @@ import { NextResponse } from 'next/server';
 import { prisma } from '@/lib/prisma';
 import { getClientIp, requireUser } from '@/lib/auth';
 import { ROLE_GROUPS } from '@/lib/constants';
-import { badRequest, conflict, handleApiError, notFound, parseBody } from '@/lib/http';
+import { badRequest, conflict, forbidden, handleApiError, notFound, parseBody } from '@/lib/http';
 import { logAudit } from '@/lib/audit';
 import { today } from '@/lib/dates';
 import { ensureRefsExist } from '@/app/api/services/_lib';
 import type { Prisma } from '@prisma/client';
 import { ASSET_STATUS, SIM_DAMAGE_MESSAGE, assetActionGuard, assetActionSchema } from '../_lib';
+import { ALL_COMPANIES, authz, resolveActor, scopedContext, scopedPrisma } from '@/modules/iam';
 
 type Ctx = { params: Promise<{ id: string }> };
 
@@ -34,11 +35,17 @@ async function holderSnapshot(db: Prisma.TransactionClient, employeeId: string |
  * 'damage' requires a reason (min 5 characters), audited with the holder at the time.
  * 'assign' / 'transfer' refuse (409) an employee whose service has ended.
  * The id may also be a TelecomSim (the GET list merges SIMs held by employees into custody items).
+ * P1-SCOPE: the asset / SIM and the target employee are read through the scoped client (404 outside
+ * the user's companies). A custody move to an employee of another company than the asset's needs an
+ * unrestricted user (cross-company custody, DOMAIN_BOUNDARIES §5.4.3 assets).
  */
 export async function PATCH(req: Request, { params }: Ctx) {
   try {
     const user = await requireUser(ROLE_GROUPS.LOGISTICS);
     const { id } = await params;
+    const ctx = scopedContext(await resolveActor(prisma, user));
+    authz.assert(ctx, 'assets.manage');
+    const db = scopedPrisma(ctx);
     const body = await parseBody(req, assetActionSchema);
     const { action } = body;
     const ip = getClientIp(req);
@@ -47,10 +54,16 @@ export async function PATCH(req: Request, { params }: Ctx) {
       if (!body.employeeId) throw badRequest('يجب تحديد الموظف');
       return body.employeeId;
     };
+    /** The target employee's legal company; 404 outside the user's companies. */
+    const targetCompany = async (employeeId: string): Promise<string | null> => {
+      const e = await db.employee.findUnique({ where: { id: employeeId }, select: { legalCompanyId: true } });
+      if (!e) throw notFound('الموظف المحدد غير موجود');
+      return e.legalCompanyId;
+    };
 
     const [asset, sim] = await Promise.all([
-      prisma.asset.findUnique({ where: { id } }),
-      prisma.telecomSim.findUnique({ where: { id }, select: { id: true, employeeId: true, simNumber: true } }),
+      db.asset.findUnique({ where: { id } }),
+      db.telecomSim.findUnique({ where: { id }, select: { id: true, employeeId: true, simNumber: true } }),
     ]);
 
     // ------------------------------------------------------------ Telecom SIM
@@ -87,6 +100,7 @@ export async function PATCH(req: Request, { params }: Ctx) {
 
       if (action === 'assign' || action === 'transfer') {
         const employeeId = targetEmployeeId();
+        await targetCompany(employeeId);
         await prisma.$transaction(async (tx) => {
           await ensureRefsExist(tx, { employeeIds: [employeeId] }, { activeOnly: true });
           await tx.telecomSim.update({ where: { id }, data: { employeeId } });
@@ -109,6 +123,14 @@ export async function PATCH(req: Request, { params }: Ctx) {
     }
 
     // ------------------------------------------------------------ Regular asset
+    /** Company of the asset after a move to `employeeId` (refused across companies for a scoped user). */
+    const companyAfterMove = async (employeeId: string): Promise<string | null> => {
+      const company = await targetCompany(employeeId);
+      if (asset.companyId && company !== asset.companyId && ctx.companies !== ALL_COMPANIES) {
+        throw forbidden('نقل العهدة إلى موظف في شركة أخرى غير متاح ضمن نطاق صلاحياتك');
+      }
+      return company ?? asset.companyId;
+    };
     const guard = { id, ...assetActionGuard(action) };
     const audit = (details: Record<string, unknown>) => ({
       userId: user.id,
@@ -148,11 +170,12 @@ export async function PATCH(req: Request, { params }: Ctx) {
 
       case 'assign': {
         const employeeId = targetEmployeeId();
+        const companyId = await companyAfterMove(employeeId);
         await prisma.$transaction(async (tx) => {
           await ensureRefsExist(tx, { employeeIds: [employeeId] }, { activeOnly: true });
           const r = await tx.asset.updateMany({
             where: guard,
-            data: { status: ASSET_STATUS.ACTIVE, employeeId, receiveDate: today(), returnDate: null },
+            data: { status: ASSET_STATUS.ACTIVE, employeeId, companyId, receiveDate: today(), returnDate: null },
           });
           if (r.count === 0) throw conflict(STATE_CHANGED);
           await logAudit(audit({ status: ASSET_STATUS.ACTIVE, employeeTo: employeeId }), tx);
@@ -163,6 +186,7 @@ export async function PATCH(req: Request, { params }: Ctx) {
       case 'transfer': {
         const employeeId = targetEmployeeId();
         if (employeeId === asset.employeeId) throw badRequest('العهدة مسندة لهذا الموظف بالفعل');
+        const companyId = await companyAfterMove(employeeId);
         await prisma.$transaction(async (tx) => {
           await ensureRefsExist(tx, { employeeIds: [employeeId] }, { activeOnly: true });
           // 1. Close the current holder's record (kept as history).
@@ -175,6 +199,7 @@ export async function PATCH(req: Request, { params }: Ctx) {
           const created = await tx.asset.create({
             data: {
               employeeId,
+              companyId,
               assetType: asset.assetType,
               description: asset.description,
               receiveDate: today(),

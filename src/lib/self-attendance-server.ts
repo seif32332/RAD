@@ -6,6 +6,7 @@ import type { ScheduleLike } from '@/lib/attendance';
 import { notFound } from '@/lib/http';
 import { resolveEmployeeSchedule } from '@/lib/hr-workflows';
 import { FACE_MODEL } from '@/lib/face';
+import { isOnLeave } from '@/lib/leave-server';
 import {
   FACE_CONSENT_VERSION,
   FACE_PROFILE_WITHDRAWN,
@@ -86,13 +87,14 @@ export interface SelfAttendanceContext {
     id: string;
     branchId: string | null;
     isTerminated: boolean;
-    employmentStatus: string;
     attendanceGeoExempt: boolean;
     attendanceFaceExempt: boolean;
   };
   schedule: ScheduleLike | null;
   fences: NamedFence[];
   plan: PunchPlan;
+  /** An approved leave covers the plan's work day (computed from Leave rows, BR-LCY-008; never stored). */
+  onLeave: boolean;
   /** The Attendance row the plan points at (for display). */
   record: AttendanceDayRow | null;
   faceRequired: boolean;
@@ -115,7 +117,6 @@ export async function loadSelfAttendanceContext(db: Db, employeeId: string, now:
       id: true,
       branchId: true,
       isTerminated: true,
-      employmentStatus: true,
       attendanceGeoExempt: true,
       attendanceFaceExempt: true,
       faceProfile: { select: { model: true, consentVersion: true } },
@@ -132,6 +133,7 @@ export async function loadSelfAttendanceContext(db: Db, employeeId: string, now:
   ]);
   const plan = resolvePunchPlan({ now, schedule, todayKey, ...rows });
   const record = [rows.yesterday, rows.today, rows.tomorrow].find((r) => r?.dayKey === plan.dayKey) ?? null;
+  const onLeave = await isOnLeave(db, employeeId, plan.dayKey);
 
   const { faceProfile, ...emp } = employee;
   const faceRequired = !employee.attendanceFaceExempt;
@@ -152,6 +154,7 @@ export async function loadSelfAttendanceContext(db: Db, employeeId: string, now:
     schedule,
     fences,
     plan,
+    onLeave,
     record,
     faceRequired,
     faceEnrolled: faceProfile?.model === FACE_MODEL,

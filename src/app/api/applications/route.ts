@@ -8,6 +8,7 @@ import { badRequest, conflict, handleApiError, notFound, parseBody } from '@/lib
 import { zId, zOptText, zText } from '@/lib/validation';
 import { logAudit } from '@/lib/audit';
 import { sendMail, type MailResult } from '@/lib/mailer';
+import { authz, resolveActor, scopeWhere, scopedContext, scopedPrisma } from '@/modules/iam';
 import {
   APPLICATION_STATUS,
   APPLICATION_STATUS_VALUES,
@@ -105,13 +106,26 @@ const EMAIL_FAILURE_MESSAGES: Record<NonNullable<MailResult['reason']>, string> 
   SEND_FAILED: 'فشل إرسال البريد للمرشح، يرجى التواصل معه مباشرة',
 };
 
-/** GET: all applications + open vacancies (for the manual "add CV" form). HR only. */
+/**
+ * P1-SCOPE: JobApplication has no company column; its company is its vacancy's (JobRequest.companyId,
+ * §5.4.3 recruitment). Filter of the applications whose vacancy is in the context (a vacancy without a
+ * company is outside every restricted context: fail closed).
+ */
+function applicationScope(ctx: Parameters<typeof scopeWhere>[0]): Prisma.JobApplicationWhereInput {
+  const job = scopeWhere(ctx, 'JobRequest') as Prisma.JobRequestWhereInput | null;
+  return job ? { jobRequest: { is: job } } : {};
+}
+
+/** GET: the applications + open vacancies of the HR user's companies (for the manual "add CV" form). HR only. */
 export async function GET() {
   try {
-    await requireUser(ROLE_GROUPS.HR);
+    const user = await requireUser(ROLE_GROUPS.HR);
+    const ctx = scopedContext(await resolveActor(prisma, user));
+    authz.assert(ctx, 'recruitment.application.read');
+    const db = scopedPrisma(ctx);
     const [applications, activeJobs] = await Promise.all([
-      prisma.jobApplication.findMany({ include: applicationInclude, orderBy: { createdAt: 'desc' } }),
-      prisma.jobRequest.findMany({
+      prisma.jobApplication.findMany({ where: applicationScope(ctx), include: applicationInclude, orderBy: { createdAt: 'desc' } }),
+      db.jobRequest.findMany({
         where: { status: JOB_REQUEST_OPEN_STATUS },
         select: { id: true, jobTitle: true, department: { select: { nameArabic: true } } },
         orderBy: { createdAt: 'desc' },
@@ -135,6 +149,10 @@ export async function GET() {
 export async function POST(req: Request) {
   try {
     const user = await requireUser(ROLE_GROUPS.HR);
+    // P1-SCOPE: HR works on the applications of its companies' vacancies; another company's is "not found".
+    const ctx = scopedContext(await resolveActor(prisma, user));
+    authz.assert(ctx, 'recruitment.application.manage');
+    const inScope = applicationScope(ctx);
     const ip = getClientIp(req);
     const raw = await parseBody(req, z.object({ actionType: z.string().max(50).optional() }).passthrough());
 
@@ -149,7 +167,7 @@ export async function POST(req: Request) {
       const offerForCandidate = status === APPLICATION_STATUS.OFFERED ? (offerText ?? '') : '';
 
       const updated = await prisma.$transaction(async (tx) => {
-        const current = await tx.jobApplication.findUnique({ where: { id }, select: { notes: true } });
+        const current = await tx.jobApplication.findFirst({ where: { id, AND: [inScope] }, select: { notes: true } });
         if (!current) throw notFound('طلب التوظيف غير موجود');
 
         const data: Prisma.JobApplicationUpdateManyMutationInput = { status };
@@ -160,7 +178,7 @@ export async function POST(req: Request) {
 
         // notes in the filter: a concurrent edit makes this a conflict instead of a lost entry.
         const res = await tx.jobApplication.updateMany({
-          where: { id, status: { in: [...APPLICATION_TRANSITIONS[status]] }, notes: current.notes },
+          where: { id, status: { in: [...APPLICATION_TRANSITIONS[status]] }, notes: current.notes, AND: [inScope] },
           data,
         });
         if (res.count === 0) {
@@ -220,7 +238,7 @@ export async function POST(req: Request) {
     if (raw.actionType !== undefined && raw.actionType !== 'CREATE') throw badRequest('إجراء غير معروف');
     const body = createSchema.parse(raw);
 
-    const job = await prisma.jobRequest.findUnique({ where: { id: body.jobRequestId }, select: { status: true } });
+    const job = await scopedPrisma(ctx).jobRequest.findFirst({ where: { id: body.jobRequestId }, select: { status: true } });
     if (!job) throw badRequest('الشاغر الوظيفي غير موجود');
     if (job.status !== JOB_REQUEST_OPEN_STATUS) throw conflict('الشاغر الوظيفي غير مفتوح للتقديم');
 

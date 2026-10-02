@@ -1,4 +1,8 @@
-// Payroll domain logic.
+// Payroll domain logic (legacy code of the payroll module, DOMAIN_BOUNDARIES §5.1: the computation).
+//
+// Every WRITE of payroll money lives in src/modules/payroll (transitions behind money.gateway, P1-PAY-A):
+// this file computes a month (reads) and hands the result to commitPayrollGeneration, and wraps the
+// month approval / payment for the routes. A payroll month belongs to ONE legal company (ARC-PAY-A7).
 //
 // The PURE part (rates, proration, overtime, leave deductions, GOSI, the per-employee payroll
 // line, settlement coverage) lives in src/lib/payroll-core.ts so client components can import
@@ -20,6 +24,7 @@
 //   (re)generated, so APPROVED / PAID rows keep the amount computed when they were generated.
 import { randomUUID } from 'crypto';
 import type { Prisma, PrismaClient } from '@prisma/client';
+import type { MoneyActor, TxClient } from '@/modules/platform';
 import { prisma } from '@/lib/prisma';
 import { roundMoney, sumMoney } from '@/lib/money';
 import { addDays, dateKey, monthRange } from '@/lib/dates';
@@ -27,7 +32,6 @@ import {
   DEDUCTION_PAYABLE_STATUSES,
   LEAVE_STATUS,
   LOAN_DEDUCTIBLE_STATUSES,
-  LOAN_STATUS,
   PAYROLL_STATUS,
   SETTLEMENT_STATUS,
 } from '@/lib/constants';
@@ -42,7 +46,6 @@ import {
   overtimeBasisForEmployee,
   overtimeDueInMonth,
   OVERTIME_BASIS_SELECT,
-  parsePayrollMonthKey,
   parsePayrollSettings,
   payrollMonthKey,
   PAYROLL_SETTING_KEYS,
@@ -55,6 +58,17 @@ import {
   type SalaryLike,
 } from '@/lib/payroll-core';
 import { DEFAULT_GOSI_RATES, pickGosiRate, type GosiRateLike } from '@/lib/gosi';
+import { createRulesReader } from '@/modules/rules';
+import {
+  approvePayrollMonth,
+  commitPayrollGeneration,
+  markPayrollMonthPaid,
+  runPayrollTransaction,
+  type TxRunner,
+  type ApproveMonthResult,
+  type GeneratedLine,
+  type GenerationPlan,
+} from '@/modules/payroll';
 
 export * from '@/lib/payroll-core';
 
@@ -127,114 +141,7 @@ export async function overtimeHolders(db: Tx, payrollIds: ReadonlyArray<string |
   return new Map(rows.map((r) => [r.id, { year: r.year, month: r.month, status: r.status }]));
 }
 
-/** Breakdown column a refunded amount came from. */
-export type RefundKind = 'loan' | 'violation';
-
-/**
- * Recompute a DRAFT payroll's net after its deductions were reduced by `amount` (a released
- * loan installment or violation). The matching breakdown column (loansDeduction /
- * violationsDeduction) is reduced too, so totalDeductions stays the sum of the stored columns.
- */
-export async function refundDraftPayroll(tx: Tx, payrollId: string, amount: number, kind?: RefundKind): Promise<void> {
-  if (!(amount > 0)) return;
-  const p = await tx.payroll.findUnique({
-    where: { id: payrollId },
-    select: {
-      status: true,
-      basicSalary: true,
-      totalAllowances: true,
-      overtimeCost: true,
-      totalDeductions: true,
-      loansDeduction: true,
-      violationsDeduction: true,
-    },
-  });
-  if (!p || p.status !== PAYROLL_STATUS.DRAFT) return;
-  const totalDeductions = Math.max(0, roundMoney(p.totalDeductions - amount));
-  const netSalary = Math.max(0, roundMoney(p.basicSalary + p.totalAllowances + p.overtimeCost - totalDeductions));
-  const data: Prisma.PayrollUpdateInput = { totalDeductions, netSalary };
-  if (kind === 'loan') data.loansDeduction = Math.max(0, roundMoney(p.loansDeduction - amount));
-  if (kind === 'violation') data.violationsDeduction = Math.max(0, roundMoney(p.violationsDeduction - amount));
-  await tx.payroll.update({ where: { id: payrollId }, data });
-}
-
-/** Removes a loan's installments from DRAFT payrolls (e.g. loan forgiven / settled) and refunds those drafts. */
-export async function releaseLoanFromDrafts(tx: Tx, loanId: string): Promise<void> {
-  const rows = await tx.loanInstallment.findMany({
-    where: { loanId, OR: [{ payrollId: null }, { payroll: { status: PAYROLL_STATUS.DRAFT } }] },
-    select: { id: true, payrollId: true, amount: true },
-  });
-  for (const r of rows) {
-    if (r.payrollId) await refundDraftPayroll(tx, r.payrollId, r.amount, 'loan');
-  }
-  if (rows.length) await tx.loanInstallment.deleteMany({ where: { id: { in: rows.map((r) => r.id) } } });
-}
-
-/**
- * Removes a deduction's reservation by a DRAFT payroll (it was waived / rejected / referred)
- * and refunds that draft. No-op for deductions already linked to an approved payroll.
- */
-export async function releaseDeductionFromDraft(
-  tx: Tx,
-  d: { id: string; employeeId: string; amount: number; payrollMonth: string | null; isLinkedToPayroll: boolean },
-): Promise<void> {
-  if (d.isLinkedToPayroll || !d.payrollMonth) return;
-  const ym = parsePayrollMonthKey(d.payrollMonth);
-  if (ym) {
-    const draft = await tx.payroll.findFirst({
-      where: { employeeId: d.employeeId, month: ym.month, year: ym.year, status: PAYROLL_STATUS.DRAFT },
-      select: { id: true },
-    });
-    if (draft) await refundDraftPayroll(tx, draft.id, d.amount, 'violation');
-  }
-  await tx.deduction.updateMany({ where: { id: d.id, isLinkedToPayroll: false }, data: { payrollMonth: null } });
-}
-
-/** Deletes DRAFT payrolls and releases everything they reserved (bonuses, overtime, deductions, loan installments). */
-export async function releaseDraftPayrolls(tx: Tx, payrollIds: string[]): Promise<number> {
-  if (!payrollIds.length) return 0;
-  const drafts = await tx.payroll.findMany({
-    where: { id: { in: payrollIds }, status: PAYROLL_STATUS.DRAFT },
-    select: { id: true, employeeId: true, month: true, year: true },
-  });
-  if (!drafts.length) return 0;
-  const ids = drafts.map((d) => d.id);
-  await tx.allowance.updateMany({ where: { paidInPayrollId: { in: ids }, isPaid: false }, data: { paidInPayrollId: null } });
-  await tx.overtimeRequest.updateMany({ where: { paidInPayrollId: { in: ids } }, data: { paidInPayrollId: null } });
-
-  const byMonth = new Map<string, string[]>();
-  for (const d of drafts) {
-    const key = payrollMonthKey(d.year, d.month);
-    byMonth.set(key, [...(byMonth.get(key) ?? []), d.employeeId]);
-  }
-  for (const [key, employeeIds] of byMonth) {
-    await tx.deduction.updateMany({
-      where: { employeeId: { in: employeeIds }, payrollMonth: key, isLinkedToPayroll: false },
-      data: { payrollMonth: null },
-    });
-  }
-  await tx.loanInstallment.deleteMany({ where: { payrollId: { in: ids } } });
-  const res = await tx.payroll.deleteMany({ where: { id: { in: ids }, status: PAYROLL_STATUS.DRAFT } });
-  return res.count;
-}
-
-/** Deletes an employee's DRAFT payrolls from a given month onwards (used when a settlement is approved). */
-export async function releaseEmployeeDraftsFrom(tx: Tx, employeeId: string, year: number, month: number): Promise<number> {
-  const drafts = await tx.payroll.findMany({
-    where: {
-      employeeId,
-      status: PAYROLL_STATUS.DRAFT,
-      OR: [{ year: { gt: year } }, { year, month: { gte: month } }],
-    },
-    select: { id: true },
-  });
-  return releaseDraftPayrolls(
-    tx,
-    drafts.map((d) => d.id),
-  );
-}
-
-/** Distinct (year, month) that currently have DRAFT payrolls. */
+/** Distinct (year, month) that currently have DRAFT payrolls (of the companies the client sees). */
 export async function draftMonths(db: Tx): Promise<Array<{ year: number; month: number }>> {
   const rows = await db.payroll.findMany({
     where: { status: PAYROLL_STATUS.DRAFT },
@@ -245,122 +152,96 @@ export async function draftMonths(db: Tx): Promise<Array<{ year: number; month: 
   return rows;
 }
 
-/**
- * DRAFT -> APPROVED for every draft of one month, and applies side effects exactly once:
- * loan balances are decremented by the recorded installments (loan COMPLETED at 0),
- * reserved one-off bonuses become isPaid, reserved deductions become isLinkedToPayroll and the
- * overtime the drafts hold (paidInPayrollId) stays linked to the now-approved rows (= paid).
- */
-export async function approvePayrollMonth(
-  tx: Tx,
-  year: number,
-  month: number,
-): Promise<{ count: number; payrollIds: string[]; loansCompleted: number }> {
-  const drafts = await tx.payroll.findMany({
-    where: { year, month, status: PAYROLL_STATUS.DRAFT },
-    select: {
-      id: true,
-      employeeId: true,
-      createdAt: true,
-      employee: {
-        select: {
-          firstNameArabic: true,
-          lastNameArabic: true,
-          basicSalary: true,
-          allowances: { where: { isMonthly: true }, select: { name: true, amount: true, isMonthly: true } },
-          settlements: {
-            where: { status: { not: SETTLEMENT_STATUS.REJECTED } },
-            select: { type: true, status: true, lastWorkingDate: true, createdAt: true, salaryBasis: true, leaveCompensation: true },
-          },
-        },
-      },
-    },
-  });
-  if (!drafts.length) throw conflict(`لا توجد مسودات رواتب بانتظار الاعتماد لشهر ${month}/${year}`);
-  // A draft generated BEFORE a settlement that covers this month would pay what the settlement
-  // pays (last month's working days, settled leave days, overtime / installments it holds):
-  // the month must be regenerated first (generation applies settlementCoverage).
-  const stale = drafts.filter((d) => {
-    const newer = d.employee.settlements.filter((s) => s.createdAt > d.createdAt);
-    return settlementCoversMonth(newer, { basicSalary: d.employee.basicSalary, allowances: d.employee.allowances }, year, month);
-  });
-  if (stale.length) {
-    const names = stale.slice(0, 5).map((d) => `${d.employee.firstNameArabic} ${d.employee.lastNameArabic}`.trim()).join('، ');
-    throw conflict(
-      `أُنشئت تصفية بعد توليد مسودة ${month}/${year} للموظفين: ${names}${stale.length > 5 ? ' وآخرين' : ''}. يرجى إعادة توليد مسير الشهر قبل الاعتماد`,
-    );
-  }
-  const ids = drafts.map((d) => d.id);
-
-  const res = await tx.payroll.updateMany({
-    where: { id: { in: ids }, status: PAYROLL_STATUS.DRAFT },
-    data: { status: PAYROLL_STATUS.APPROVED },
-  });
-  if (res.count !== ids.length) {
-    throw conflict('تم تعديل مسير الرواتب من مستخدم آخر أثناء الاعتماد، يرجى تحديث الصفحة والمحاولة مجدداً');
-  }
-
-  await tx.allowance.updateMany({ where: { paidInPayrollId: { in: ids }, isPaid: false }, data: { isPaid: true } });
-  await tx.deduction.updateMany({
-    where: {
-      employeeId: { in: drafts.map((d) => d.employeeId) },
-      payrollMonth: payrollMonthKey(year, month),
-      isLinkedToPayroll: false,
-      status: { in: [...DEDUCTION_PAYABLE_STATUSES] },
-    },
-    data: { isLinkedToPayroll: true },
-  });
-
-  const installments = await tx.loanInstallment.findMany({
-    where: { payrollId: { in: ids } },
-    select: { loanId: true, amount: true },
-  });
-  const perLoan = new Map<string, number>();
-  for (const i of installments) perLoan.set(i.loanId, roundMoney((perLoan.get(i.loanId) ?? 0) + i.amount));
-  for (const [loanId, amount] of perLoan) {
-    await tx.loan.update({ where: { id: loanId }, data: { remainingAmount: { decrement: amount } } });
-  }
-  let loansCompleted = 0;
-  if (perLoan.size) {
-    const done = await tx.loan.updateMany({
-      where: { id: { in: [...perLoan.keys()] }, remainingAmount: { lte: 0.009 }, isForgiven: false },
-      data: { remainingAmount: 0, status: LOAN_STATUS.COMPLETED },
-    });
-    loansCompleted = done.count;
-  }
-  return { count: res.count, payrollIds: ids, loansCompleted };
+/** Companies that have lines in (year, month), with the month's status (of the companies the client sees). */
+export async function payrollMonthCompanies(db: Tx, year: number, month: number): Promise<Array<{ companyId: string; companyName: string; status: string; drafts: number }>> {
+  const [months, drafts] = await Promise.all([
+    db.payrollMonth.findMany({ where: { year, month }, select: { companyId: true, status: true, company: { select: { nameArabic: true } } }, orderBy: { companyId: 'asc' } }),
+    db.payroll.groupBy({ by: ['companyId'], where: { year, month, status: PAYROLL_STATUS.DRAFT }, _count: { _all: true } }),
+  ]);
+  const byCompany = new Map(drafts.map((d) => [d.companyId, d._count._all]));
+  return months.map((m) => ({ companyId: m.companyId, companyName: m.company.nameArabic, status: m.status, drafts: byCompany.get(m.companyId) ?? 0 }));
 }
 
-/** APPROVED -> PAID for one month. */
-export async function markPayrollMonthPaid(tx: Tx, year: number, month: number): Promise<number> {
-  const res = await tx.payroll.updateMany({
-    where: { year, month, status: PAYROLL_STATUS.APPROVED },
-    data: { status: PAYROLL_STATUS.PAID, paidAt: new Date() },
-  });
-  if (res.count === 0) throw conflict(`لا يوجد مسير معتمد بانتظار الصرف لشهر ${month}/${year}`);
-  return res.count;
+// ---------------------------------------------------------------------------
+// Approval and payment of a company's month (writers: src/modules/payroll, behind money.gateway)
+// ---------------------------------------------------------------------------
+
+/**
+ * The legacy settlement-coverage check of an approval, run in its transaction before any write: a
+ * draft generated BEFORE a settlement that covers this month would pay what the settlement pays (last
+ * month's working days, settled leave days, overtime / installments it holds): regenerate first.
+ */
+function settlementCoveragePrecheck(year: number, month: number) {
+  return async (tx: TxClient, drafts: readonly { id: string; employeeId: string; createdAt: Date }[]) => {
+    const employees = await tx.employee.findMany({
+      where: { id: { in: [...new Set(drafts.map((d) => d.employeeId))] } },
+      select: {
+        id: true,
+        firstNameArabic: true,
+        lastNameArabic: true,
+        basicSalary: true,
+        allowances: { where: { isMonthly: true }, select: { name: true, amount: true, isMonthly: true } },
+        settlements: {
+          where: { status: { not: SETTLEMENT_STATUS.REJECTED } },
+          select: { type: true, status: true, lastWorkingDate: true, createdAt: true, salaryBasis: true, leaveCompensation: true },
+        },
+      },
+    });
+    const byId = new Map(employees.map((e) => [e.id, e]));
+    const stale = drafts.filter((d) => {
+      const e = byId.get(d.employeeId);
+      if (!e) return false;
+      const newer = e.settlements.filter((s) => s.createdAt > d.createdAt);
+      return settlementCoversMonth(newer, { basicSalary: e.basicSalary, allowances: e.allowances }, year, month);
+    });
+    if (stale.length) {
+      const names = stale
+        .slice(0, 5)
+        .map((d) => byId.get(d.employeeId))
+        .map((e) => `${e?.firstNameArabic ?? ''} ${e?.lastNameArabic ?? ''}`.trim())
+        .join('، ');
+      throw conflict(
+        `أُنشئت تصفية بعد توليد مسودة ${month}/${year} للموظفين: ${names}${stale.length > 5 ? ' وآخرين' : ''}. يرجى إعادة توليد مسير الشهر قبل الاعتماد`,
+      );
+    }
+  };
+}
+
+type RunnerClient = TxRunner;
+
+/**
+ * DRAFT → APPROVED for a company's month (payroll.approvePayrollMonth behind money.gateway): the
+ * approver's own line stays DRAFT for someone else; effects applied once (bonuses paid, deductions
+ * linked, loans decremented). One company per call: there is no multi-company approval (§5.4.3).
+ */
+export async function approveCompanyPayrollMonth(
+  _db: RunnerClient,
+  input: { companyId: string; year: number; month: number; actor: MoneyActor; operationKey: string; ipAddress?: string | null },
+): Promise<ApproveMonthResult> {
+  // The root client: the caller checked the company is in the actor's scope, and the transition locks
+  // the employees with raw SQL (ADR-0002 #2), which the scoped client refuses (ARCH-009).
+  return runPayrollTransaction(prisma, (tx) => approvePayrollMonth(tx, { ...input, precheck: settlementCoveragePrecheck(input.year, input.month) }));
+}
+
+/** APPROVED → PAID for a company's month (payroll.markPayrollMonthPaid behind money.gateway). */
+export async function payCompanyPayrollMonth(
+  _db: RunnerClient,
+  input: { companyId: string; year: number; month: number; actor: MoneyActor; operationKey: string; ipAddress?: string | null },
+): Promise<{ count: number; replayed: boolean }> {
+  return runPayrollTransaction(prisma, (tx) => markPayrollMonthPaid(tx, input)); // root client: see approveCompanyPayrollMonth
 }
 
 // ---------------------------------------------------------------------------
 // Generation
 // ---------------------------------------------------------------------------
 
-export interface GeneratedPayrollRow extends PayrollBreakdownColumns {
-  id: string;
-  employeeId: string;
-  month: number;
-  year: number;
-  basicSalary: number;
-  totalAllowances: number;
-  totalDeductions: number;
-  overtimeCost: number;
-  netSalary: number;
-  status: typeof PAYROLL_STATUS.DRAFT;
-}
+export type GeneratedPayrollRow = GeneratedLine;
 
 export interface GeneratePayrollResult {
   rows: GeneratedPayrollRow[];
   skippedFinalized: number;
+  /** Employees skipped because they already have a line this month in another company. */
+  skippedOtherCompany: number;
   replacedDrafts: number;
   /** Lines flagged for review (they are generated anyway: one employee never blocks the run). */
   needsReview: number;
@@ -368,6 +249,10 @@ export interface GeneratePayrollResult {
   provisionalGosi: number;
   /** Flagged lines per review code (a line with several codes counts once per code). */
   reviewCounts: Partial<Record<PayrollReviewFilterKey, number>>;
+  /** null when the company had nobody to pay and nothing to replace (no month opened). */
+  payrollMonthId: string | null;
+  monthStatus: string | null;
+  replayed: boolean;
 }
 
 /**
@@ -382,33 +267,46 @@ function readableIban(value: string | null): string | null {
   }
 }
 
+export interface PlanInput {
+  companyId: string;
+  year: number;
+  month: number;
+  /** Month already approved: only employees without a finalized line get a draft. */
+  supplementary?: boolean;
+  /** Only these employees (the payroll.employment consumer); omitted = the company's whole month. */
+  employeeIds?: readonly string[];
+}
+
+export interface PlanOutcome {
+  plan: GenerationPlan;
+  skippedFinalized: number;
+  skippedOtherCompany: number;
+  provisionalGosi: number;
+}
+
 /**
- * Generates (or regenerates) the DRAFT payroll of a month.
- * - Throws 409 if the month already has APPROVED/PAID payrolls, unless `supplementary` is true,
- *   in which case only employees without a finalized payroll that month get a draft.
- * - Reads are done up front; all writes happen in one transaction with a long timeout,
- *   using createMany / updateMany so hundreds of employees are handled in a few queries.
+ * Computes a generation of one company's month (read only): the DRAFT lines of the company's employees
+ * (legal company), what they reserve, and the drafts they replace. Throws 409 when the company's month
+ * already has approved / paid lines and this is not a supplementary run.
  */
-export async function generatePayrollMonth(
-  db: PrismaClient,
-  year: number,
-  month: number,
-  opts: { supplementary?: boolean } = {},
-): Promise<GeneratePayrollResult> {
+export async function computeGenerationPlan(db: Tx, input: PlanInput): Promise<PlanOutcome> {
+  const { companyId, year, month } = input;
   const { start: monthStart, end: monthEnd } = monthRange(year, month);
   const nextMonthStart = addDays(monthEnd, 1);
   const key = payrollMonthKey(year, month);
   const thisIdx = monthIndex(year, month);
+  const only = input.employeeIds ? [...new Set(input.employeeIds)] : null;
 
-  const existing = await db.payroll.findMany({
-    where: { year, month },
-    select: { id: true, employeeId: true, status: true, isFinalSettlement: true },
-  });
+  const [monthRow, existing] = await Promise.all([
+    db.payrollMonth.findUnique({ where: { companyId_year_month: { companyId, year, month } }, select: { version: true } }),
+    db.payroll.findMany({
+      where: { companyId, year, month, ...(only ? { employeeId: { in: only } } : {}) },
+      select: { id: true, employeeId: true, status: true, isFinalSettlement: true },
+    }),
+  ]);
   const finalized = existing.filter((p) => p.status !== PAYROLL_STATUS.DRAFT);
-  if (finalized.length && !opts.supplementary) {
-    throw conflict(
-      `مسير رواتب شهر ${month}/${year} معتمد أو مصروف مسبقاً (${finalized.length} موظف) ولا يمكن إعادة توليده`,
-    );
+  if (finalized.length && !input.supplementary && !only) {
+    throw conflict(`مسير رواتب شهر ${month}/${year} معتمد أو مصروف مسبقاً (${finalized.length} موظف) ولا يمكن إعادة توليده`);
   }
   const skip = new Set(existing.filter((p) => p.status !== PAYROLL_STATUS.DRAFT || p.isFinalSettlement).map((p) => p.employeeId));
   const draftIds = existing.filter((p) => p.status === PAYROLL_STATUS.DRAFT && !p.isFinalSettlement).map((p) => p.id);
@@ -422,6 +320,8 @@ export async function generatePayrollMonth(
 
   const employees = await db.employee.findMany({
     where: {
+      legalCompanyId: companyId,
+      ...(only ? { id: { in: only } } : {}),
       joinDate: { lte: monthEnd },
       OR: [{ isTerminated: false }, { terminationDate: { gte: monthStart } }],
     },
@@ -434,6 +334,7 @@ export async function generatePayrollMonth(
       joinDate: true,
       isTerminated: true,
       terminationDate: true,
+      legalCompanyId: true,
       // Payment-readiness review flags only (IBAN_MISSING / IBAN_INVALID / CASH).
       ibanNumber: true,
       salaryPaymentMethod: true,
@@ -517,15 +418,28 @@ export async function generatePayrollMonth(
     },
   });
 
+  // One line per employee and month (until BL-PAY-008b prorates a transfer): an employee with a line
+  // of this month in another company (a transfer after that company generated) is skipped here.
+  const elsewhere = new Set(
+    (
+      await db.payroll.findMany({
+        where: { year, month, employeeId: { in: employees.map((e) => e.id) }, OR: [{ companyId: null }, { companyId: { not: companyId } }] },
+        select: { employeeId: true },
+      })
+    ).map((r) => r.employeeId),
+  );
+
   const rows: GeneratedPayrollRow[] = [];
   const installments: Array<{ id: string; loanId: string; payrollId: string; month: number; year: number; amount: number }> = [];
-  const bonusReservations: Array<{ payrollId: string; ids: string[] }> = [];
-  const overtimeReservations: Array<{ payrollId: string; ids: string[] }> = [];
+  const bonusReservations: Array<{ payrollId: string; allowanceIds: string[] }> = [];
+  const overtimeReservations: Array<{ payrollId: string; overtimeIds: string[] }> = [];
   const reservedDeductionIds: string[] = [];
   let provisionalGosi = 0;
+  // Regulatory values per legal company (P1-RULE): read once per generation, overrides included.
+  const rules = createRulesReader(db);
 
   for (const emp of employees) {
-    if (skip.has(emp.id)) continue;
+    if (skip.has(emp.id) || elsewhere.has(emp.id)) continue;
 
     const recurring = emp.allowances.filter((a) => a.isMonthly);
     const salary: SalaryLike = { basicSalary: emp.basicSalary, allowances: recurring };
@@ -567,9 +481,11 @@ export async function generatePayrollMonth(
       return { id: l.id, monthlyInstallment: l.monthlyInstallment, remaining: roundMoney(l.remainingAmount - reservedElsewhere) };
     });
 
+    const law = await rules.laborLaw(emp.legalCompanyId ?? null, monthEnd);
     const line = computePayrollLine({
       year,
       month,
+      sickLeaveLaw: law.sickLeave,
       employee: {
         basicSalary: emp.basicSalary,
         nationality: emp.nationality,
@@ -612,59 +528,99 @@ export async function generatePayrollMonth(
     for (const li of line.loanInstallments) {
       installments.push({ id: randomUUID(), loanId: li.loanId, payrollId: id, month, year, amount: li.amount });
     }
-    if (bonuses.length) bonusReservations.push({ payrollId: id, ids: bonuses.map((b) => b.id) });
-    if (overtimes.length) overtimeReservations.push({ payrollId: id, ids: overtimes.map((o) => o.id) });
+    if (bonuses.length) bonusReservations.push({ payrollId: id, allowanceIds: bonuses.map((b) => b.id) });
+    if (overtimes.length) overtimeReservations.push({ payrollId: id, overtimeIds: overtimes.map((o) => o.id) });
     reservedDeductionIds.push(...deductions.map((d) => d.id));
   }
 
-  const result = await db.$transaction(
-    async (tx) => {
-      const finalizedNow = await tx.payroll.count({ where: { year, month, status: { not: PAYROLL_STATUS.DRAFT } } });
-      if (finalizedNow !== finalized.length) {
-        throw conflict('تم اعتماد مسير هذا الشهر أثناء التوليد، يرجى تحديث الصفحة');
-      }
-      const replacedDrafts = await releaseDraftPayrolls(tx, draftIds);
-      // Orphan installments of this month (their draft was deleted elsewhere).
-      await tx.loanInstallment.deleteMany({ where: { month, year, payrollId: null } });
-
-      if (rows.length) await tx.payroll.createMany({ data: rows });
-      if (installments.length) await tx.loanInstallment.createMany({ data: installments });
-      for (const b of bonusReservations) {
-        await tx.allowance.updateMany({
-          where: { id: { in: b.ids }, isPaid: false },
-          data: { paidInPayrollId: b.payrollId, payrollMonth: month, payrollYear: year },
-        });
-      }
-      // Overtime: only rows still free after the replaced drafts were released. A row approved
-      // into a settlement (or taken by a concurrent generation) since the reads would be paid twice.
-      for (const o of overtimeReservations) {
-        const res = await tx.overtimeRequest.updateMany({
-          where: { id: { in: o.ids }, status: 'APPROVED', paidInPayrollId: null, paidInSettlementId: null },
-          data: { paidInPayrollId: o.payrollId },
-        });
-        if (res.count !== o.ids.length) {
-          throw conflict('تغيّرت طلبات العمل الإضافي أثناء توليد المسير (تصفية أو توليد آخر)، يرجى إعادة التوليد');
-        }
-      }
-      if (reservedDeductionIds.length) {
-        await tx.deduction.updateMany({
-          where: { id: { in: reservedDeductionIds }, isLinkedToPayroll: false },
-          data: { payrollMonth: key },
-        });
-      }
-      return { replacedDrafts };
+  return {
+    plan: {
+      companyId,
+      year,
+      month,
+      ...(only ? { employeeIds: only } : {}),
+      scopeEmployeeIds: employees.map((e) => e.id),
+      supplementary: !!input.supplementary,
+      finalizedCount: finalized.length,
+      version: monthRow?.version ?? 0,
+      replaceDraftIds: draftIds,
+      rows,
+      installments,
+      bonusReservations,
+      overtimeReservations,
+      reservedDeductionIds,
     },
-    { timeout: 60000, maxWait: 10000 },
-  );
+    skippedFinalized: skip.size,
+    skippedOtherCompany: [...elsewhere].filter((id) => !skip.has(id)).length,
+    provisionalGosi,
+  };
+}
 
+/**
+ * Generates (or regenerates) the DRAFT payroll of ONE company's month (payroll.generate, a SYSTEM
+ * operation triggered by `actor`): the computation reads first, then src/modules/payroll commits it in
+ * one transaction behind money.gateway. Only DRAFT lines are replaced; 409 when the month already has
+ * approved / paid lines (unless `supplementary`), or when the month moved since the computation.
+ * The operation key (default: company, month, the month's version, the mode) makes a double click
+ * replay the first result.
+ */
+export async function generatePayrollMonth(
+  db: PrismaClient,
+  input: PlanInput & { actor: MoneyActor; operationKey?: string },
+): Promise<GeneratePayrollResult> {
+  const outcome = await computeGenerationPlan(db, input);
+  const { plan } = outcome;
+  if (!plan.rows.length && !plan.replaceDraftIds.length) {
+    // Nobody to pay and nothing to replace: no month is opened for the company.
+    return {
+      rows: [],
+      skippedFinalized: outcome.skippedFinalized,
+      skippedOtherCompany: outcome.skippedOtherCompany,
+      replacedDrafts: 0,
+      needsReview: 0,
+      provisionalGosi: 0,
+      reviewCounts: {},
+      payrollMonthId: null,
+      monthStatus: null,
+      replayed: false,
+    };
+  }
+  const operationKey = input.operationKey ?? `payroll.generate:${plan.companyId}:${payrollMonthKey(plan.year, plan.month)}:v${plan.version}:${plan.supplementary ? 'supplementary' : 'full'}`;
+  // The plan was computed through the caller's (scoped) client; the commit runs on the root client, which
+  // the employee lock of ADR-0002 #2 needs (raw SQL, refused on a scoped client). Every row it writes
+  // belongs to the plan's company.
+  const committed = await runPayrollTransaction(prisma, (tx) => commitPayrollGeneration(tx, { plan, actor: input.actor, operationKey }));
+  const rows = [...plan.rows];
   return {
     rows,
-    skippedFinalized: skip.size,
-    replacedDrafts: result.replacedDrafts,
+    skippedFinalized: outcome.skippedFinalized,
+    skippedOtherCompany: outcome.skippedOtherCompany,
+    replacedDrafts: committed.replacedDrafts,
     needsReview: rows.filter((r) => r.needsReview).length,
-    provisionalGosi,
+    provisionalGosi: outcome.provisionalGosi,
     reviewCounts: countPayrollReviewKeys(rows),
+    payrollMonthId: committed.payrollMonthId,
+    monthStatus: committed.status,
+    replayed: committed.replayed,
   };
+}
+
+/**
+ * The payroll.employment consumer's regeneration of one employee's line in one company's month, in the
+ * consumer's transaction (BL-PAY-025): recomputed from the current facts and committed with the
+ * consumption (src/modules/payroll/consumers.ts).
+ */
+export async function regenerateEmployeeLineForConsumer(
+  ctx: { tx: TxClient; operationKey: string },
+  target: { companyId: string; year: number; month: number; employeeId: string },
+): Promise<void> {
+  const { plan } = await computeGenerationPlan(ctx.tx, { companyId: target.companyId, year: target.year, month: target.month, employeeIds: [target.employeeId] });
+  await commitPayrollGeneration(ctx.tx, {
+    plan,
+    actor: null,
+    operationKey: `${ctx.operationKey}:${target.companyId}:${payrollMonthKey(target.year, target.month)}`,
+    regenerate: true,
+  });
 }
 
 // ---------------------------------------------------------------------------

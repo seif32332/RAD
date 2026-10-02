@@ -48,6 +48,9 @@ import { approveDeduction, approveLoanStep, rejectDeduction, rejectLoan } from '
 import { assertValidDirectManager, isUniqueViolationOn, nextEmployeeCode } from '@/lib/employee';
 import { ASSET_STATUS } from '@/app/api/assets/_lib';
 import { ensureRefsExist } from '@/app/api/services/_lib';
+import { assertCompaniesInScope, companyScopeWhere, userCompanyScope } from '@/lib/company-scope';
+import { onlyCompanyId, resolveHireCompanies } from '@/lib/onboarding-company';
+import { authz, resolveActor, scopeWhere, scopedContext, scopedPrisma, type ScopeContext } from '@/modules/iam';
 import {
   NATIONALITY_REVIEW_LABEL,
   onboardingDataReviewNote,
@@ -217,6 +220,15 @@ export async function GET() {
       : isPurchasing
         ? [ASSET_REQUEST_STATUS.PENDING_PURCHASING]
         : [];
+    // Company scope of recruitment / onboarding items (ARC-ONB-A4): a scoped HR user sees only the
+    // requests of his companies; a request without a company only reaches unrestricted users.
+    const companyScope = isHr ? await userCompanyScope(prisma, user) : null;
+    // P1-SCOPE: every list goes through the user's ScopedContext (each request follows its employee's
+    // company; asset requests the company of the employee they are for). Owner directives
+    // (OwnerRequest) have no company and are listed as before.
+    const scopeCtx = scopedContext(await resolveActor(prisma, user));
+    authz.assert(scopeCtx, 'hrHub.read');
+    const db = scopedPrisma(scopeCtx);
 
     const [
       pendingLeaves,
@@ -237,7 +249,7 @@ export async function GET() {
       annualLeaveDaysSetting,
     ] = await Promise.all([
       hrOnly(() =>
-        prisma.leave.findMany({
+        db.leave.findMany({
           where: { status: LEAVE_STATUS.PENDING },
           select: {
             id: true,
@@ -280,38 +292,38 @@ export async function GET() {
         }),
       ),
       hubOnly(() =>
-        prisma.loan.findMany({
+        db.loan.findMany({
           where: { status: { in: [LOAN_STATUS.PENDING, LOAN_STATUS.MANAGER_APPROVED] } },
           select: { id: true, amount: true, reason: true, status: true, monthlyInstallment: true, createdAt: true, employee: employeeSelect },
         }),
       ),
       hrOnly(() =>
-        prisma.terminationRequest.findMany({
+        db.terminationRequest.findMany({
           where: { status: SIMPLE_STATUS.PENDING },
           select: { id: true, terminationType: true, reasonDetails: true, createdAt: true, employee: { select: { ...employeeSelect.select, noticePeriodDays: true } } },
         }),
       ),
       hubOnly(() =>
-        prisma.overtimeRequest.findMany({
+        db.overtimeRequest.findMany({
           where: { status: SIMPLE_STATUS.PENDING },
           select: { id: true, type: true, hours: true, amount: true, date: true, reason: true, createdAt: true, employee: employeeSelect },
         }),
       ),
       hubOnly(() =>
-        prisma.workAssignment.findMany({
+        db.workAssignment.findMany({
           where: { status: { in: WORK_ASSIGNMENT_PENDING } },
           select: { id: true, destination: true, startDate: true, endDate: true, status: true, createdAt: true, employee: employeeSelect },
         }),
       ),
       hubOnly(() =>
-        prisma.deduction.findMany({
+        db.deduction.findMany({
           where: { status: { in: DEDUCTION_PENDING_STATUSES } },
           select: { id: true, amount: true, reason: true, createdAt: true, employee: employeeSelect },
         }),
       ),
       hrOnly(() =>
-        prisma.jobRequest.findMany({
-          where: { status: SIMPLE_STATUS.PENDING },
+        db.jobRequest.findMany({
+          where: { status: SIMPLE_STATUS.PENDING, ...companyScopeWhere(companyScope) },
           select: {
             id: true,
             jobTitle: true,
@@ -323,21 +335,21 @@ export async function GET() {
         }),
       ),
       // Full record: the page opens it in the onboarding review/edit modal.
-      hrOnly(() => prisma.onboardingRequest.findMany({ where: { status: SIMPLE_STATUS.PENDING } })),
+      hrOnly(() => db.onboardingRequest.findMany({ where: { status: SIMPLE_STATUS.PENDING, ...companyScopeWhere(companyScope) } })),
       hrOnly(() =>
-        prisma.attendanceCorrection.findMany({
+        db.attendanceCorrection.findMany({
           where: { status: SIMPLE_STATUS.PENDING },
           select: { id: true, date: true, reason: true, isManagerApproved: true, createdAt: true, employee: employeeSelect },
         }),
       ),
       hrOnly(() =>
-        prisma.transferRequest.findMany({
+        db.transferRequest.findMany({
           where: { status: SIMPLE_STATUS.PENDING },
           select: { id: true, toBranchId: true, reason: true, createdAt: true, employee: employeeSelect },
         }),
       ),
-      hrOnly(() => prisma.branch.findMany({ select: { id: true, nameArabic: true } })),
-      hrOnly(() => prisma.department.findMany({ select: { id: true, nameArabic: true } })),
+      hrOnly(() => db.branch.findMany({ select: { id: true, nameArabic: true, companyId: true } })),
+      hrOnly(() => db.department.findMany({ select: { id: true, nameArabic: true, branchId: true } })),
       hrOnly(() =>
         prisma.ownerRequest.findMany({
           where: { status: SIMPLE_STATUS.PENDING },
@@ -346,7 +358,7 @@ export async function GET() {
       ),
       assetRequestStatuses.length
         ? prisma.assetRequest.findMany({
-            where: { status: { in: assetRequestStatuses } },
+            where: { status: { in: assetRequestStatuses }, ...assetRequestScopeWhere(scopeCtx) },
             select: {
               id: true,
               assetType: true,
@@ -358,7 +370,7 @@ export async function GET() {
           })
         : Promise.resolve([]),
       hrOnly(() =>
-        prisma.leave.findMany({
+        db.leave.findMany({
           where: { status: LEAVE_STATUS.APPROVED, actualReturnDate: { not: null }, isReturned: false },
           select: { id: true, actualReturnDate: true, createdAt: true, employee: employeeSelect },
         }),
@@ -368,7 +380,7 @@ export async function GET() {
 
     // Warehouse stock offered when closing a request at the purchasing stage ("صرف من المستودع").
     const vacantAssets = pendingAssetRequests.some((r) => r.status === ASSET_REQUEST_STATUS.PENDING_PURCHASING)
-      ? await prisma.asset.findMany({
+      ? await db.asset.findMany({
           where: { status: { in: [ASSET_STATUS.VACANT, ASSET_STATUS.RETURNED] } },
           select: { id: true, assetType: true, description: true },
           orderBy: { createdAt: 'desc' },
@@ -378,6 +390,20 @@ export async function GET() {
 
     const branchName = new Map(branches.map((b) => [b.id, b.nameArabic]));
     const departmentName = new Map(departments.map((d) => [d.id, d.nameArabic]));
+    // Onboarding review: the companies HR may pick, and the actual company that follows the branch.
+    const companies = pendingOnboardingRequests.length
+      ? await prisma.company.findMany({
+          where: companyScope ? { id: { in: companyScope } } : {},
+          select: { id: true, nameArabic: true },
+          orderBy: { nameArabic: 'asc' },
+        })
+      : [];
+    const branchCompany = new Map(branches.map((b) => [b.id, b.companyId]));
+    const departmentBranch = new Map(departments.map((d) => [d.id, d.branchId]));
+    const orgCompanyOf = (r: { branchId: string | null; departmentId: string | null }): string | null => {
+      const branchId = r.branchId ?? (r.departmentId ? departmentBranch.get(r.departmentId) : undefined);
+      return (branchId && branchCompany.get(branchId)) || null;
+    };
 
     // ----- Employee requests
     const employeeReqs = [
@@ -526,7 +552,7 @@ export async function GET() {
         department: (r.departmentId && departmentName.get(r.departmentId)) || 'غير محدد',
         createdAt: r.createdAt,
         details: `الراتب الأساسي: ${roundMoney(r.basicSalary ?? 0)} ر.س | الجوال: ${r.mobileNumber} | البنك: ${r.bankName || 'غير محدد'}`,
-        customData: r, // full record for the review/edit modal
+        customData: { ...r, orgCompanyId: orgCompanyOf(r) }, // full record for the review/edit modal
       })),
     ].sort(byNewest);
 
@@ -597,6 +623,7 @@ export async function GET() {
       managerRequests: managerReqs,
       deptManagerRequests: deptManagerReqs,
       ownerRequests: ownerReqs,
+      companies,
     });
   } catch (err) {
     return handleApiError(err, 'incoming-requests:GET');
@@ -660,6 +687,9 @@ const onboardingEditsSchema = z.object({
   resumeUrl: zOptText(1000),
   workContractUrl: zOptText(1000),
   healthCertificateUrl: zOptText(1000),
+  /** HR's choice of the new hire's companies (not columns of OnboardingRequest; see resolveHireCompanies). */
+  legalCompanyId: zOptText(100),
+  actualCompanyId: zOptText(100),
 });
 type OnboardingEdits = z.infer<typeof onboardingEditsSchema>;
 
@@ -675,6 +705,38 @@ interface ActionCtx {
 
 function requireGroup(user: AuthUser, group: readonly string[], message?: string) {
   if (!hasRole(user, group)) throw forbidden(message);
+}
+
+/** AssetRequest has no company column: it follows the employee it is for (P1-SCOPE). */
+function assetRequestScopeWhere(ctx: ScopeContext): Prisma.AssetRequestWhereInput {
+  const employee = scopeWhere(ctx, 'Employee');
+  return employee ? { requestedFor: { is: employee } } : {};
+}
+
+/**
+ * P1-SCOPE: the request acted on must be inside the user's ScopedContext, else "not found" before any
+ * workflow helper runs. OWNER_REQUEST has no company (owner directives); ONBOARDING checks its
+ * company itself (assertCompaniesInScope in approveOnboarding / rejectOnboarding).
+ */
+async function assertRequestInScope(ctx: ScopeContext, type: RequestType, id: string): Promise<void> {
+  const db = scopedPrisma(ctx);
+  const select = { id: true } as const;
+  const where = { id };
+  const lookups: Partial<Record<RequestType, () => Promise<unknown>>> = {
+    LEAVE: () => db.leave.findUnique({ where, select }),
+    RETURN_NOTICE: () => db.leave.findUnique({ where, select }),
+    LOAN: () => db.loan.findUnique({ where, select }),
+    DEDUCTION: () => db.deduction.findUnique({ where, select }),
+    TRANSFER: () => db.transferRequest.findUnique({ where, select }),
+    ATTENDANCE_CORRECTION: () => db.attendanceCorrection.findUnique({ where, select }),
+    TERMINATION: () => db.terminationRequest.findUnique({ where, select }),
+    OVERTIME: () => db.overtimeRequest.findUnique({ where, select }),
+    WORK_ASSIGNMENT: () => db.workAssignment.findUnique({ where, select }),
+    HIRING: () => db.jobRequest.findUnique({ where, select }),
+    ASSET_REQUEST: () => prisma.assetRequest.findFirst({ where: { id, ...assetRequestScopeWhere(ctx) }, select }),
+  };
+  const lookup = lookups[type];
+  if (lookup && !(await lookup())) throw notFound();
 }
 
 /** Throws 404 when the row doesn't exist, else 409 (already processed). */
@@ -705,6 +767,9 @@ export async function POST(req: Request) {
       lastWorkingDate: body.lastWorkingDate ?? null,
     };
     if (body.lastWorkingDate && type !== 'TERMINATION') throw badRequest('آخر يوم عمل خاص بطلبات إنهاء الخدمة');
+    const scope = scopedContext(await resolveActor(prisma, user));
+    authz.assert(scope, 'hrHub.decide');
+    await assertRequestInScope(scope, type, ctx.id);
 
     if (type === 'ONBOARDING') {
       if (ctx.approve) {
@@ -982,11 +1047,11 @@ const HANDLERS: Record<Exclude<RequestType, 'ONBOARDING'>, Handler> = {
 // ---------------------------------------------------------------------------
 
 /** Columns of OnboardingRequest that HR may edit during review. */
-function onboardingRequestUpdate(e: OnboardingEdits): Prisma.OnboardingRequestUpdateManyMutationInput {
-  const out: Prisma.OnboardingRequestUpdateManyMutationInput = {};
-  const assign = <K extends keyof Prisma.OnboardingRequestUpdateManyMutationInput>(
+function onboardingRequestUpdate(e: OnboardingEdits): Prisma.OnboardingRequestUncheckedUpdateManyInput {
+  const out: Prisma.OnboardingRequestUncheckedUpdateManyInput = {};
+  const assign = <K extends keyof Prisma.OnboardingRequestUncheckedUpdateManyInput>(
     key: K,
-    value: Prisma.OnboardingRequestUpdateManyMutationInput[K] | undefined,
+    value: Prisma.OnboardingRequestUncheckedUpdateManyInput[K] | undefined,
   ) => {
     if (value !== undefined) out[key] = value;
   };
@@ -1025,20 +1090,28 @@ function onboardingRequestUpdate(e: OnboardingEdits): Prisma.OnboardingRequestUp
 
 const pick = <T,>(edited: T | undefined, stored: T): T => (edited !== undefined ? edited : stored);
 
-async function assertOrgUnitsExist(
+/**
+ * Checks the org units and returns the company they belong to (the branch's, else the department's
+ * branch's, else the administration's; null without any). INV-ORG-01: the department must be in the branch.
+ */
+async function loadOnboardingOrgCompany(
   tx: Tx,
   ids: { branchId: string | null; administrationId: string | null; departmentId: string | null },
-): Promise<void> {
+): Promise<string | null> {
   const [branch, administration, department] = await Promise.all([
-    ids.branchId ? tx.branch.findUnique({ where: { id: ids.branchId }, select: { id: true } }) : Promise.resolve(true),
+    ids.branchId ? tx.branch.findUnique({ where: { id: ids.branchId }, select: { companyId: true } }) : Promise.resolve(null),
     ids.administrationId
-      ? tx.administration.findUnique({ where: { id: ids.administrationId }, select: { id: true } })
-      : Promise.resolve(true),
-    ids.departmentId ? tx.department.findUnique({ where: { id: ids.departmentId }, select: { id: true } }) : Promise.resolve(true),
+      ? tx.administration.findUnique({ where: { id: ids.administrationId }, select: { companyId: true } })
+      : Promise.resolve(null),
+    ids.departmentId
+      ? tx.department.findUnique({ where: { id: ids.departmentId }, select: { branchId: true, branch: { select: { companyId: true } } } })
+      : Promise.resolve(null),
   ]);
-  if (!branch) throw badRequest('الفرع المحدد غير موجود');
-  if (!administration) throw badRequest('الإدارة المحددة غير موجودة');
-  if (!department) throw badRequest('القسم المحدد غير موجود');
+  if (ids.branchId && !branch) throw badRequest('الفرع المحدد غير موجود');
+  if (ids.administrationId && !administration) throw badRequest('الإدارة المحددة غير موجودة');
+  if (ids.departmentId && !department) throw badRequest('القسم المحدد غير موجود');
+  if (ids.branchId && department && department.branchId !== ids.branchId) throw badRequest('القسم المحدد لا يتبع الفرع المختار');
+  return branch?.companyId ?? department?.branch.companyId ?? administration?.companyId ?? null;
 }
 
 const EMPLOYEE_CODE_ATTEMPTS = 5;
@@ -1065,6 +1138,8 @@ async function approveOnboarding(ctx: ActionCtx, edits: OnboardingEdits): Promis
       return await prisma.$transaction(async (tx) => {
         const current = await tx.onboardingRequest.findUnique({ where: { id: ctx.id } });
         if (!current) throw notFound('طلب مباشرة العمل غير موجود');
+        // A request of another company (or of no known company, for a scoped user) is refused first.
+        await assertCompaniesInScope(tx, ctx.user, [current.companyId]);
         if (current.status !== SIMPLE_STATUS.PENDING) throw conflict('تمت معالجة هذا الطلب مسبقاً');
 
         const m = {
@@ -1101,12 +1176,26 @@ async function approveOnboarding(ctx: ActionCtx, edits: OnboardingEdits): Promis
         };
         if (!m.iqamaOrIdNumber) throw badRequest('رقم الهوية / الإقامة مطلوب');
 
-        const [duplicate] = await Promise.all([
+        const [duplicate, orgCompanyId, onlyCompany] = await Promise.all([
           tx.employee.findUnique({ where: { iqamaOrIdNumber: m.iqamaOrIdNumber }, select: { employeeId: true } }),
-          assertOrgUnitsExist(tx, m),
+          loadOnboardingOrgCompany(tx, m),
+          onlyCompanyId(tx),
           assertValidDirectManager(tx, null, m.directManagerId),
         ]);
         if (duplicate) throw conflict(`رقم الهوية / الإقامة مسجل مسبقاً للموظف ${duplicate.employeeId}`);
+
+        // Legal and actual company (P0-05): required, or derived from the branch / the only company.
+        const companies = resolveHireCompanies({
+          orgCompanyId,
+          legalCompanyId: edits.legalCompanyId,
+          actualCompanyId: edits.actualCompanyId,
+          onlyCompanyId: onlyCompany,
+        });
+        if (!companies.ok) throw badRequest(companies.message);
+        const companyIds = [...new Set([companies.legalCompanyId, companies.actualCompanyId])];
+        if ((await tx.company.count({ where: { id: { in: companyIds } } })) !== companyIds.length) throw badRequest('الشركة المحددة غير موجودة');
+        // Scope: both companies of the new hire (a hire across two companies needs both).
+        await assertCompaniesInScope(tx, ctx.user, companyIds);
 
         const placeholderFields = onboardingPlaceholderFields(m);
         const nationality = onboardingNationality(m.nationality);
@@ -1118,7 +1207,12 @@ async function approveOnboarding(ctx: ActionCtx, edits: OnboardingEdits): Promis
 
         const res = await tx.onboardingRequest.updateMany({
           where: { id: ctx.id, status: SIMPLE_STATUS.PENDING },
-          data: { ...onboardingRequestUpdate(edits), status: SIMPLE_STATUS.APPROVED, ...(hrNote ? { hrNote } : {}) },
+          data: {
+            ...onboardingRequestUpdate(edits),
+            companyId: companies.legalCompanyId,
+            status: SIMPLE_STATUS.APPROVED,
+            ...(hrNote ? { hrNote } : {}),
+          },
         });
         if (res.count === 0) throw conflict('تمت معالجة هذا الطلب مسبقاً');
 
@@ -1143,6 +1237,8 @@ async function approveOnboarding(ctx: ActionCtx, edits: OnboardingEdits): Promis
             passportExp: m.passportExp,
             mobileNumber: m.mobileNumber,
             email: m.email,
+            legalCompanyId: companies.legalCompanyId,
+            actualCompanyId: companies.actualCompanyId,
             branchId: m.branchId,
             administrationId: m.administrationId,
             departmentId: m.departmentId,
@@ -1177,6 +1273,9 @@ async function approveOnboarding(ctx: ActionCtx, edits: OnboardingEdits): Promis
                 employeeCode: employee.employeeId,
                 editedFields: Object.keys(onboardingRequestUpdate(edits)),
                 placeholderFields,
+                legalCompanyId: companies.legalCompanyId,
+                actualCompanyId: companies.actualCompanyId,
+                actualCompanyFrom: companies.actualFrom,
               },
               ipAddress: ctx.ip,
             },
@@ -1211,6 +1310,9 @@ async function approveOnboarding(ctx: ActionCtx, edits: OnboardingEdits): Promis
 
 async function rejectOnboarding(ctx: ActionCtx): Promise<void> {
   await prisma.$transaction(async (tx) => {
+    const current = await tx.onboardingRequest.findUnique({ where: { id: ctx.id }, select: { companyId: true } });
+    if (!current) throw notFound('طلب مباشرة العمل غير موجود');
+    await assertCompaniesInScope(tx, ctx.user, [current.companyId]);
     const res = await tx.onboardingRequest.updateMany({
       where: { id: ctx.id, status: SIMPLE_STATUS.PENDING },
       data: { status: SIMPLE_STATUS.REJECTED, ...(ctx.reason ? { hrNote: ctx.reason } : {}) },

@@ -2,17 +2,19 @@ import { NextResponse } from 'next/server';
 import { prisma } from '@/lib/prisma';
 import { getClientIp, requireUser } from '@/lib/auth';
 import { ROLE_GROUPS } from '@/lib/constants';
+import type { Prisma } from '@prisma/client';
 import { conflict, definedOnly, handleApiError, notFound, parseBody } from '@/lib/http';
 import { logAudit } from '@/lib/audit';
-import { employeeBriefSelect, ensureRefsExist, telecomUpdateSchema } from '../../_lib';
+import { employeeBriefSelect, ensureRefsExist, logisticsScope, telecomUpdateSchema } from '../../_lib';
 
 type Ctx = { params: Promise<{ id: string }> };
 
 export async function GET(_req: Request, { params }: Ctx) {
   try {
-    await requireUser(ROLE_GROUPS.STAFF);
+    const user = await requireUser(ROLE_GROUPS.STAFF);
     const { id } = await params;
-    const sim = await prisma.telecomSim.findUnique({
+    const { db } = await logisticsScope(user, 'logistics.read');
+    const sim = await db.telecomSim.findUnique({
       where: { id },
       include: {
         employee: { select: employeeBriefSelect },
@@ -32,8 +34,12 @@ export async function PUT(req: Request, { params }: Ctx) {
     const user = await requireUser(ROLE_GROUPS.LOGISTICS);
     const { id } = await params;
     const body = await parseBody(req, telecomUpdateSchema);
+    const { db } = await logisticsScope(user, 'logistics.manage');
 
-    const sim = await prisma.$transaction(async (tx) => {
+    // Scoped transaction (P1-SCOPE): another company's SIM is "not found"; references and the new
+    // company must be of the user's companies.
+    const sim = await db.$transaction(async (scopedTx) => {
+      const tx = scopedTx as unknown as Prisma.TransactionClient;
       const existing = await tx.telecomSim.findUnique({ where: { id }, select: { id: true, employeeId: true } });
       if (!existing) throw notFound('الشريحة غير موجودة');
 
@@ -44,7 +50,7 @@ export async function PUT(req: Request, { params }: Ctx) {
           employeeIds: [body.employeeId],
         }),
         body.simNumber
-          ? tx.telecomSim.findFirst({ where: { simNumber: body.simNumber, id: { not: id } }, select: { id: true } })
+          ? prisma.telecomSim.findFirst({ where: { simNumber: body.simNumber, id: { not: id } }, select: { id: true } })
           : null,
       ]);
       if (duplicate) throw conflict('رقم الشريحة مسجل مسبقاً');
@@ -84,8 +90,10 @@ export async function DELETE(req: Request, { params }: Ctx) {
   try {
     const user = await requireUser(ROLE_GROUPS.LOGISTICS);
     const { id } = await params;
+    const { db } = await logisticsScope(user, 'logistics.manage');
 
-    await prisma.$transaction(async (tx) => {
+    await db.$transaction(async (scopedTx) => {
+      const tx = scopedTx as unknown as Prisma.TransactionClient;
       const sim = await tx.telecomSim.findUnique({
         where: { id },
         select: { simNumber: true, provider: true, employeeId: true },

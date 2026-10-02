@@ -1,0 +1,11 @@
+# /etc/systemd/system/radeef-jobs@outbox-dispatch.timer: daily 04:30 + up to 25 min, after the digest
+[Unit]
+Description=Radeef background job outbox-dispatch (schedule)
+
+[Timer]
+OnCalendar=*-*-* 04:30:00 Asia/Riyadh
+RandomizedDelaySec=25min
+Persistent=true
+
+[Install]
+WantedBy=timers.target

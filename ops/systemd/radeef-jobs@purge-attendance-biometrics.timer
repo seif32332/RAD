@@ -1,0 +1,11 @@
+# /etc/systemd/system/radeef-jobs@purge-attendance-biometrics.timer: daily 04:50 + up to 20 min (PDPL retention, RUNBOOK 5.3)
+[Unit]
+Description=Radeef background job purge-attendance-biometrics (schedule)
+
+[Timer]
+OnCalendar=*-*-* 04:50:00 Asia/Riyadh
+RandomizedDelaySec=20min
+Persistent=true
+
+[Install]
+WantedBy=timers.target

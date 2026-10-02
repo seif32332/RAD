@@ -1,0 +1,136 @@
+{
+  "_about": [
+    "Ratchet baseline of ARCHITECTURE_INVARIANTS §4.1.3: inherited violations as { rule: { file: count } }.",
+    "It may only shrink. After fixing violations run `npm run arch:baseline` (shrink only).",
+    "Adding an entry needs an ADR: `npm run arch:baseline -- --grow ADR-00xx` logs it under \"growth\".",
+    "allowances: standing exceptions granted by an ADR for a tagged pattern under a path prefix."
+  ],
+  "rules": {
+    "ARCH-001.dir": {
+      "src/lib/employee-shared.ts": 1,
+      "src/lib/employee.ts": 2,
+      "src/lib/finance.ts": 3,
+      "src/lib/workforce/report-pdf.ts": 4
+    },
+    "ARCH-002": {
+      "src/app/api/attendance-hub/route.ts": 2,
+      "src/app/api/employees/[id]/muqeem/renewal-record.ts": 1,
+      "src/app/api/employees/[id]/muqeem/route.ts": 1,
+      "src/app/api/incoming-requests/route.ts": 10,
+      "src/app/api/integrations/muqeem/residents/apply/route.ts": 1,
+      "src/app/api/manager-portal/route.ts": 5,
+      "src/app/api/owner-portal/circulars/route.ts": 1,
+      "src/app/api/payments/[id]/route.ts": 1,
+      "src/app/api/payroll-hub/route.ts": 2,
+      "src/app/api/renewals/action/route.ts": 5,
+      "src/app/api/settings/users/[id]/route.ts": 1,
+      "src/app/api/settings/users/shared.ts": 2,
+      "src/app/api/settlements/[id]/muqeem/route.ts": 3,
+      "src/app/api/settlements/route.ts": 2,
+      "src/app/api/workforce/plans/_lib/actions.ts": 2,
+      "src/app/api/workforce/rules/route.ts": 1,
+      "src/lib/documents/candidate.ts": 2,
+      "src/lib/documents/change-orders.ts": 4,
+      "src/lib/documents/notify.ts": 1,
+      "src/lib/documents/settings.ts": 2,
+      "src/lib/finance.ts": 5,
+      "src/lib/hr-workflows.ts": 20,
+      "src/lib/muqeem/transactions.ts": 1
+    },
+    "ARCH-003": {
+      "src/app/api/employees/gosi-review/route.ts": 1,
+      "src/app/api/incoming-requests/route.ts": 1,
+      "src/lib/finance.ts": 1,
+      "src/lib/hr-workflows.ts": 1
+    },
+    "ARCH-004": {
+      "src/app/api/incoming-requests/route.ts": 1,
+      "src/app/api/settlements/route.ts": 2,
+      "src/lib/finance.ts": 4
+    },
+    "ARCH-007": {
+      "src/app/api/dept-manager/route.ts": 1,
+      "src/app/api/portal/route.ts": 1,
+      "src/app/api/workforce/_lib/saudization-schemas.ts": 1,
+      "src/app/documents/page.tsx": 1,
+      "src/app/leaves/new/page.tsx": 1,
+      "src/lib/access.ts": 1,
+      "src/lib/alerts.ts": 3,
+      "src/lib/documents/service.ts": 4,
+      "src/lib/documents/types.ts": 1,
+      "src/lib/leave.ts": 8,
+      "src/lib/payroll-core.ts": 2,
+      "src/lib/workforce/exit-cost.ts": 4,
+      "src/lib/workforce/nitaqat.ts": 1,
+      "src/lib/workforce/planning.ts": 1
+    },
+    "ARCH-008": {
+      "scripts/create-admin.mjs": 3,
+      "scripts/encrypt-gov-passwords.mjs": 2,
+      "scripts/lib/reconciliation-checks.mjs": 1,
+      "scripts/register-legacy-uploads.mjs": 1,
+      "scripts/seed-demo.mjs": 22,
+      "scripts/seed-nitaqat.mjs": 6,
+      "scripts/tenant-stats.mjs": 2
+    },
+    "ARCH-009": {
+      "scripts/lib/reconciliation-checks.mjs": 2,
+      "scripts/tenant-stats.mjs": 2,
+      "src/app/api/employees/[id]/muqeem/renewal-record.ts": 1,
+      "src/app/api/health/route.ts": 1,
+      "src/app/api/manager-portal/route.ts": 1,
+      "src/app/api/owner-portal/payments/route.ts": 1,
+      "src/app/api/owner-reports/route.ts": 1,
+      "src/app/api/workforce/benchmarks/_load.ts": 1,
+      "src/lib/documents/events.ts": 1,
+      "src/lib/documents/service.ts": 2,
+      "src/lib/employee.ts": 2,
+      "src/lib/hr-workflows.ts": 1,
+      "src/lib/payroll.ts": 1
+    },
+    "ARCH-011": {
+      "src/app/api/payroll-hub/route.ts": 1,
+      "src/app/api/settlements/route.ts": 3,
+      "src/app/settlements/page.tsx": 1,
+      "src/lib/finance.ts": 2,
+      "src/lib/payroll-core.ts": 6,
+      "src/lib/payroll.ts": 7
+    },
+    "ARCH-013": {
+      "src/lib/gosi.ts": 2,
+      "src/lib/payroll-core.ts": 6,
+      "src/lib/settlement.ts": 13
+    },
+    "ARCH-016.test": {
+      "src/app/api/auth/me/route.ts": 1,
+      "src/app/api/documents/[id]/pdf/route.ts": 1,
+      "src/app/api/documents/[id]/recipients/route.ts": 1,
+      "src/app/api/documents/[id]/route.ts": 1,
+      "src/app/api/documents/requests/[id]/route.ts": 1,
+      "src/app/api/documents/requests/route.ts": 1,
+      "src/app/api/documents/settings/route.ts": 1,
+      "src/app/api/settings/profile/route.ts": 1
+    },
+    "ARCH-019": {
+      "scripts/seed-demo.mjs": 1,
+      "src/app/api/assets/[id]/route.ts": 4,
+      "src/app/api/assets/route.ts": 1,
+      "src/app/api/employees/gosi-review/route.ts": 1,
+      "src/app/api/integrations/muqeem/residents/apply/route.ts": 1,
+      "src/app/api/portal/attendance/punch/route.ts": 1,
+      "src/app/api/settings/users/[id]/route.ts": 1,
+      "src/app/api/settlements/[id]/muqeem/route.ts": 1
+    }
+  },
+  "allowances": [
+    {
+      "rule": "ARCH-003",
+      "tag": "employment-state-fallback",
+      "pathPrefix": "src/modules/lifecycle/",
+      "adr": "ADR-0002 #5",
+      "until": "Release C (LCY-M2)",
+      "note": "employmentState ?? (isTerminated…) fallback (BR-LCY-013) inside lifecycle readers only"
+    }
+  ],
+  "growth": []
+}

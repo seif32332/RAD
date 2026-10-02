@@ -6,6 +6,7 @@ import { ROLE_GROUPS } from '@/lib/constants';
 import { handleApiError, parseBody, parseQuery, badRequest } from '@/lib/http';
 import { logAudit } from '@/lib/audit';
 import { isSaudiNationalityValue } from '@/lib/employee';
+import { authz, resolveActor, scopedContext, scopedPrisma } from '@/modules/iam';
 
 export const dynamic = 'force-dynamic';
 
@@ -19,7 +20,8 @@ export const dynamic = 'force-dynamic';
  *                                    (source mentions "ترحيل آلي"): to be re-confirmed from a document
  * POST /api/employees/gosi-review  { items: [{ employeeId, regime: 'OLD'|'NEW', source }] }
  *        Confirms one or many employees (bulk = several items). The source is required.
- * Access: PAYROLL group (HR + finance / payroll admins).
+ * Access: PAYROLL group (HR + finance / payroll admins), inside the user's companies (P1-SCOPE: an
+ * employee of another company is neither listed nor confirmable).
  */
 
 /** Marker written by the migration that pre-filled OLD from the hire date (see prisma migration backfill). */
@@ -29,10 +31,12 @@ const querySchema = z.object({ scope: z.enum(['unknown', 'auto']).optional() });
 
 export async function GET(req: Request) {
   try {
-    await requireUser(ROLE_GROUPS.PAYROLL);
+    const user = await requireUser(ROLE_GROUPS.PAYROLL);
     const { scope = 'unknown' } = parseQuery(req, querySchema);
+    const ctx = scopedContext(await resolveActor(prisma, user));
+    authz.assert(ctx, 'employee.read');
 
-    const rows = await prisma.employee.findMany({
+    const rows = await scopedPrisma(ctx).employee.findMany({
       where: {
         isTerminated: false,
         ...(scope === 'auto'
@@ -83,8 +87,11 @@ export async function POST(req: Request) {
     const { items } = await parseBody(req, confirmSchema);
     const ids = [...new Set(items.map((i) => i.employeeId))];
     if (ids.length !== items.length) throw badRequest('الموظف مكرر في الطلب');
+    const ctx = scopedContext(await resolveActor(prisma, user));
+    authz.assert(ctx, 'employee.gosi.confirm');
 
-    const found = await prisma.employee.findMany({
+    // An employee of another company counts as missing: nothing is written (all or nothing).
+    const found = await scopedPrisma(ctx).employee.findMany({
       where: { id: { in: ids } },
       select: { id: true, employeeId: true, gosiRegime: true, gosiRegistrationSource: true, nationality: true, isTerminated: true },
     });

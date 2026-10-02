@@ -1,18 +1,19 @@
 import { NextResponse } from 'next/server';
-import { prisma } from '@/lib/prisma';
 import { getClientIp, requireUser } from '@/lib/auth';
 import { ROLE_GROUPS } from '@/lib/constants';
+import type { Prisma } from '@prisma/client';
 import { definedOnly, handleApiError, notFound, parseBody } from '@/lib/http';
 import { logAudit } from '@/lib/audit';
-import { ensureRefsExist, utilityUpdateSchema } from '../../_lib';
+import { ensureRefsExist, logisticsScope, utilityUpdateSchema } from '../../_lib';
 
 type Ctx = { params: Promise<{ id: string }> };
 
 export async function GET(_req: Request, { params }: Ctx) {
   try {
-    await requireUser(ROLE_GROUPS.STAFF);
+    const user = await requireUser(ROLE_GROUPS.STAFF);
     const { id } = await params;
-    const meter = await prisma.utilityMeter.findUnique({
+    const { db } = await logisticsScope(user, 'logistics.read');
+    const meter = await db.utilityMeter.findUnique({
       where: { id },
       include: {
         legalCompany: { select: { id: true, nameArabic: true } },
@@ -32,8 +33,11 @@ export async function PUT(req: Request, { params }: Ctx) {
     const user = await requireUser(ROLE_GROUPS.LOGISTICS);
     const { id } = await params;
     const body = await parseBody(req, utilityUpdateSchema);
+    const { db } = await logisticsScope(user, 'logistics.manage');
 
-    const meter = await prisma.$transaction(async (tx) => {
+    // Scoped transaction (P1-SCOPE): another company's meter is "not found".
+    const meter = await db.$transaction(async (scopedTx) => {
+      const tx = scopedTx as unknown as Prisma.TransactionClient;
       const existing = await tx.utilityMeter.findUnique({ where: { id }, select: { id: true } });
       if (!existing) throw notFound('العداد غير موجود');
       await ensureRefsExist(tx, {
@@ -67,8 +71,10 @@ export async function DELETE(req: Request, { params }: Ctx) {
   try {
     const user = await requireUser(ROLE_GROUPS.LOGISTICS);
     const { id } = await params;
+    const { db } = await logisticsScope(user, 'logistics.manage');
 
-    await prisma.$transaction(async (tx) => {
+    await db.$transaction(async (scopedTx) => {
+      const tx = scopedTx as unknown as Prisma.TransactionClient;
       const meter = await tx.utilityMeter.findUnique({
         where: { id },
         select: { meterCode: true, meterNumber: true, accountNumber: true },

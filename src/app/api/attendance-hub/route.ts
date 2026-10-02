@@ -11,6 +11,7 @@ import { logAudit } from '@/lib/audit';
 import { ATTENDANCE_SOURCE, ATTENDANCE_STATUS, buildPunches, computeLateEarly, normalizeTimeOfDay } from '@/lib/attendance';
 import { assertCanManageEmployee, resolveEmployeeSchedule } from '@/lib/hr-workflows';
 import { discardBiometricImage } from '@/lib/biometric-storage';
+import { authz, resolveActor, scopedContext, scopedPrisma } from '@/modules/iam';
 
 export const dynamic = 'force-dynamic';
 
@@ -32,17 +33,25 @@ const employeeSelect = {
   department: { select: { nameArabic: true } },
 } as const;
 
+/** P1-SCOPE: HR's ScopedContext; every read and write of the hub goes through the scoped client. */
+async function hubDb(user: Awaited<ReturnType<typeof requireUser>>, action: 'attendance.read' | 'attendance.manage') {
+  const ctx = scopedContext(await resolveActor(prisma, user));
+  authz.assert(ctx, action);
+  return scopedPrisma(ctx);
+}
+
 export async function GET() {
   try {
-    await requireUser(ROLE_GROUPS.HR);
+    const user = await requireUser(ROLE_GROUPS.HR);
+    const db = await hubDb(user, 'attendance.read');
     const [attendances, employees, schedules] = await Promise.all([
-      prisma.attendance.findMany({
+      db.attendance.findMany({
         include: { employee: { select: employeeSelect } },
         orderBy: { date: 'desc' },
         take: 500, // Limit history for performance
       }),
-      prisma.employee.findMany({ select: employeeSelect, orderBy: { firstNameArabic: 'asc' } }),
-      prisma.workSchedule.findMany({ include: { branch: { select: { id: true, nameArabic: true } } } }),
+      db.employee.findMany({ select: employeeSelect, orderBy: { firstNameArabic: 'asc' } }),
+      db.workSchedule.findMany({ include: { branch: { select: { id: true, nameArabic: true } } } }),
     ]);
     return NextResponse.json({ attendances, employees, schedules });
   } catch (err) {
@@ -100,12 +109,13 @@ export async function POST(req: Request) {
     const user = await requireUser(ROLE_GROUPS.HR);
     const body = await parseBody(req, bodySchema);
     const ipAddress = getClientIp(req);
+    const db = await hubDb(user, 'attendance.manage');
 
     if (body.actionType === 'UPDATE_BIOMETRIC') {
       const { id, biometricId } = body.payload;
       let updated;
       try {
-        updated = await prisma.employee.update({
+        updated = await db.employee.update({
           where: { id },
           data: { biometricId: biometricId ?? null },
           select: { id: true, employeeId: true, biometricId: true },
@@ -130,7 +140,7 @@ export async function POST(req: Request) {
     if (body.actionType === 'SET_ATTENDANCE_EXEMPTIONS') {
       const { employeeId, geoExempt, faceExempt } = body.payload;
       const reason = body.payload.reason?.trim() || null;
-      const before = await prisma.employee.findUnique({
+      const before = await db.employee.findUnique({
         where: { id: employeeId },
         select: { ...scopeSelect, attendanceGeoExempt: true, attendanceFaceExempt: true, attendanceExemptReason: true },
       });
@@ -142,7 +152,7 @@ export async function POST(req: Request) {
       if (faceExempt && !before.attendanceFaceExempt && !roleIn(user.role, ROLE_GROUPS.OWNER)) {
         throw forbidden('الاستثناء من التحقق من الوجه يعتمده مالك المنشأة فقط');
       }
-      const updated = await prisma.employee.update({
+      const updated = await db.employee.update({
         where: { id: employeeId },
         data: { attendanceGeoExempt: geoExempt, attendanceFaceExempt: faceExempt, attendanceExemptReason: geoExempt || faceExempt ? reason : null },
         select: { id: true, attendanceGeoExempt: true, attendanceFaceExempt: true, attendanceExemptReason: true },
@@ -165,12 +175,12 @@ export async function POST(req: Request) {
 
     if (body.actionType === 'RESET_FACE') {
       const { employeeId } = body.payload;
-      const emp = await prisma.employee.findUnique({ where: { id: employeeId }, select: { ...scopeSelect, faceProfile: { select: { id: true, model: true, photoStoredName: true } } } });
+      const emp = await db.employee.findUnique({ where: { id: employeeId }, select: { ...scopeSelect, faceProfile: { select: { id: true, model: true, photoStoredName: true } } } });
       if (!emp) throw notFound('الموظف غير موجود');
       await assertCanManageEmployee(prisma, user, emp);
       if (!emp.faceProfile) throw conflict('لا توجد صورة وجه مسجلة لهذا الموظف');
       // Also re-opens enrollment after the employee withdrew consent (the 'withdrawn' marker row).
-      await prisma.faceProfile.delete({ where: { id: emp.faceProfile.id } });
+      await db.faceProfile.delete({ where: { id: emp.faceProfile.id } });
       await discardBiometricImage(emp.faceProfile.photoStoredName);
       await logAudit({
         userId: user.id,
@@ -191,9 +201,11 @@ export async function POST(req: Request) {
     if (!day) throw badRequest('تاريخ غير صالح');
     if (!p.checkIn && !p.checkOut) throw badRequest('يرجى إدخال وقت الحضور أو الانصراف');
     const date = new Date(`${day}T00:00:00.000Z`);
+    // The employee must be in the user's companies (another company's employee is "not found").
+    if (!(await db.employee.findUnique({ where: { id: p.employeeId }, select: { id: true } }))) throw notFound('الموظف غير موجود');
     const [{ schedule }, existing] = await Promise.all([
       resolveEmployeeSchedule(prisma, p.employeeId),
-      prisma.attendance.findUnique({
+      db.attendance.findUnique({
         where: { employeeId_date: { employeeId: p.employeeId, date } },
         select: { checkIn: true, checkOut: true, checkInSource: true, checkOutSource: true },
       }),
@@ -220,7 +232,7 @@ export async function POST(req: Request) {
       earlyMinutes: minutes.earlyLeaveMin,
     };
 
-    const saved = await prisma.attendance.upsert({
+    const saved = await db.attendance.upsert({
       where: { employeeId_date: { employeeId: p.employeeId, date } },
       create: { employeeId: p.employeeId, date, ...values },
       update: values,

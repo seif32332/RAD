@@ -5,6 +5,14 @@
 // Scope: HR/ADMIN act on every employee. A BRANCH_MANAGER acts on their branch (and direct
 // reports), a DEPT_MANAGER on their department (and direct reports) — see managedEmployeesWhere /
 // assertCanManageEmployee in src/lib/hr-workflows.ts.
+//
+// P1-SCOPE: HR and logistics staff work in their ScopedContext (their companies), BRANCH_MANAGER /
+// DEPT_MANAGER in their TeamContext (their team inside their own legal company), an employee in his
+// SelfContext. Reads go through the scoped client; an employee of a company outside the context is
+// "not found" (404), one of the user's companies outside his team stays 403.
+import { randomUUID } from 'crypto';
+import { createDeduction, runPayrollTransaction } from '@/modules/payroll';
+import { moneyActorOf } from '@/modules/platform';
 import { NextResponse } from 'next/server';
 import { z } from 'zod';
 import type { Prisma } from '@prisma/client';
@@ -18,6 +26,17 @@ import { roundMoney } from '@/lib/money';
 import { logAudit } from '@/lib/audit';
 import { assertCanManageEmployee, managedEmployeesWhere, recordLeaveReturn } from '@/lib/hr-workflows';
 import { normalizeNationality } from '@/lib/employee';
+import { deriveRequestCompanyId } from '@/lib/onboarding-company';
+import { resolveTeamContext } from '@/lib/employee-scope';
+import {
+  authz,
+  resolveActor,
+  scopeWhere,
+  scopedContext,
+  scopedPrisma,
+  type ScopedContext,
+  type TeamContext,
+} from '@/modules/iam';
 
 export const dynamic = 'force-dynamic';
 
@@ -34,25 +53,50 @@ const nameSelect = { select: { firstNameArabic: true, lastNameArabic: true } } a
 const fullName = (e: { firstNameArabic: string | null; lastNameArabic: string | null } | null | undefined) =>
   e ? `${e.firstNameArabic ?? ''} ${e.lastNameArabic ?? ''}`.trim() : '';
 
-const scopeSelect = { id: true, directManagerId: true, branchId: true, departmentId: true, isTerminated: true } as const;
+const scopeSelect = { id: true, directManagerId: true, branchId: true, departmentId: true, isTerminated: true, legalCompanyId: true } as const;
 
-/** Loads the employee and throws 403 unless the user may act on them. */
-async function loadManagedEmployee(user: AuthUser, employeeId: string) {
-  const employee = await prisma.employee.findUnique({ where: { id: employeeId }, select: scopeSelect });
+const TEAM_ROLES: readonly string[] = ['BRANCH_MANAGER', 'DEPT_MANAGER'];
+
+interface PortalScope {
+  /** Company layer: the user's companies (UserCompanyScope; all for the owner). */
+  staff: ScopedContext;
+  /** The context the user works in: TeamContext for the two manager roles, else `staff`. */
+  ctx: ScopedContext | TeamContext;
+}
+
+async function portalScope(user: AuthUser): Promise<PortalScope> {
+  const actor = await resolveActor(prisma, user);
+  const staff = scopedContext(actor);
+  return { staff, ctx: TEAM_ROLES.includes(user.role) ? await resolveTeamContext(prisma, actor) : staff };
+}
+
+/**
+ * Loads the employee and throws unless the user may act on them: 404 for an employee of another
+ * company, 403 for one of the user's companies outside his team (P1-SCOPE).
+ */
+async function loadManagedEmployee(user: AuthUser, scope: PortalScope, employeeId: string) {
+  const employee = await scopedPrisma(scope.staff).employee.findUnique({ where: { id: employeeId }, select: scopeSelect });
   if (!employee) throw notFound('الموظف غير موجود');
   await assertCanManageEmployee(prisma, user, employee);
+  authz.assert(
+    scope.ctx,
+    'managerPortal.request.create',
+    { companyId: employee.legalCompanyId, employeeId: employee.id, directManagerId: employee.directManagerId, branchId: employee.branchId, departmentId: employee.departmentId },
+    'هذا الموظف ليس ضمن نطاق إدارتك',
+  );
   if (employee.isTerminated) throw badRequest('لا يمكن رفع طلب لموظف منتهية خدماته');
   return employee;
 }
 
 /**
  * The Employee recorded as the requester. Normally the logged-in manager's own employee file;
- * an account without an employee file (e.g. the system admin) may pass an existing employee id.
+ * an account without an employee file (e.g. the system admin) may pass an existing employee id
+ * of his companies.
  */
-async function resolveRequesterId(user: AuthUser, requested: string | null | undefined): Promise<string> {
+async function resolveRequesterId(user: AuthUser, scope: PortalScope, requested: string | null | undefined): Promise<string> {
   if (user.employeeId) return user.employeeId;
   if (requested) {
-    const exists = await prisma.employee.findUnique({ where: { id: requested }, select: { id: true } });
+    const exists = await scopedPrisma(scope.staff).employee.findUnique({ where: { id: requested }, select: { id: true } });
     if (exists) return exists.id;
   }
   throw forbidden('حسابك غير مرتبط بملف موظف، لا يمكن رفع الطلب باسمك');
@@ -68,9 +112,11 @@ export async function GET(req: Request) {
 
     if (action === 'get_employees') {
       const user = await requireUser(ASSET_REQUEST_ROLES);
-      // Logistics staff (not managers) raise asset requests for any employee: names only.
+      const { ctx } = await portalScope(user);
+      authz.assert(ctx, 'managerPortal.read');
+      // Logistics staff (not managers) raise asset requests for any employee of their companies: names only.
       const scope = hasRole(user, ROLE_GROUPS.MANAGERS) ? await managedEmployeesWhere(prisma, user) : null;
-      const emps = await prisma.employee.findMany({
+      const emps = await scopedPrisma(ctx).employee.findMany({
         where: { isTerminated: false, ...(scope ?? {}) },
         select: { id: true, employeeId: true, firstNameArabic: true, lastNameArabic: true, jobTitle: true },
         orderBy: [{ firstNameArabic: 'asc' }, { lastNameArabic: 'asc' }],
@@ -79,12 +125,15 @@ export async function GET(req: Request) {
     }
 
     const user = await requireUser(ROLE_GROUPS.MANAGERS);
+    const { ctx } = await portalScope(user);
+    authz.assert(ctx, 'managerPortal.read');
+    const db = scopedPrisma(ctx);
     const scope = await managedEmployeesWhere(prisma, user);
     const employeeWhere = scope ? { employee: scope } : {};
 
     if (action === 'get_leaves') {
       // Approved leaves still awaiting a return notice.
-      const leaves = await prisma.leave.findMany({
+      const leaves = await db.leave.findMany({
         where: { status: LEAVE_STATUS.APPROVED, isReturned: false, actualReturnDate: null, ...employeeWhere },
         select: {
           id: true,
@@ -104,45 +153,47 @@ export async function GET(req: Request) {
 
     if (action === 'get_history') {
       const requesterWhere = scope ? { requester: scope } : {};
+      // AssetRequest has no company key: filtered on the employee it is for (the context's employees).
+      const assetEmployee = scopeWhere(ctx, 'Employee') as Prisma.EmployeeWhereInput | null;
       const [overtimes, deducts, tasks, jobReqs, onboardingReqs, returnNotices, assetReqs] = await Promise.all([
-        prisma.overtimeRequest.findMany({
+        db.overtimeRequest.findMany({
           where: employeeWhere,
           select: { id: true, type: true, hours: true, amount: true, status: true, createdAt: true, employee: nameSelect },
           orderBy: { createdAt: 'desc' },
           take: HISTORY_TAKE,
         }),
-        prisma.deduction.findMany({
+        db.deduction.findMany({
           where: employeeWhere,
           select: { id: true, amount: true, reason: true, status: true, createdAt: true, employee: nameSelect },
           orderBy: { createdAt: 'desc' },
           take: HISTORY_TAKE,
         }),
-        prisma.workAssignment.findMany({
+        db.workAssignment.findMany({
           where: employeeWhere,
           select: { id: true, destination: true, status: true, createdAt: true, employee: nameSelect },
           orderBy: { createdAt: 'desc' },
           take: HISTORY_TAKE,
         }),
-        prisma.jobRequest.findMany({
+        db.jobRequest.findMany({
           where: requesterWhere,
           select: { id: true, jobTitle: true, status: true, createdAt: true },
           orderBy: { createdAt: 'desc' },
           take: HISTORY_TAKE,
         }),
-        prisma.onboardingRequest.findMany({
+        db.onboardingRequest.findMany({
           where: requesterWhere,
           select: { id: true, fullNameArabic: true, status: true, createdAt: true },
           orderBy: { createdAt: 'desc' },
           take: HISTORY_TAKE,
         }),
-        prisma.leave.findMany({
+        db.leave.findMany({
           where: { actualReturnDate: { not: null }, ...employeeWhere },
           select: { id: true, actualReturnDate: true, isReturned: true, createdAt: true, employee: nameSelect },
           orderBy: { createdAt: 'desc' },
           take: HISTORY_TAKE,
         }),
         prisma.assetRequest.findMany({
-          where: scope ? { requestedFor: scope } : {},
+          where: { AND: [scope ? { requestedFor: scope } : {}, assetEmployee ? { requestedFor: { is: assetEmployee } } : {}] },
           select: { id: true, assetType: true, description: true, status: true, createdAt: true, requestedFor: nameSelect },
           orderBy: { createdAt: 'desc' },
           take: HISTORY_TAKE,
@@ -340,10 +391,16 @@ export async function POST(req: Request) {
     if (data.actionType !== 'REQUEST_ASSET' && !hasRole(user, ROLE_GROUPS.MANAGERS)) throw forbidden();
     const ip = getClientIp(req);
     const supervisorId = user.employeeId ?? user.id;
+    // Employees (self-service asset request) have no staff scope: their branch builds its own context.
+    const scope = hasRole(user, ROLE_GROUPS.STAFF) ? await portalScope(user) : null;
+    const staffScope = (): PortalScope => {
+      if (!scope) throw forbidden();
+      return scope;
+    };
 
     switch (data.actionType) {
       case 'ASSIGN_OVERTIME': {
-        await loadManagedEmployee(user, data.employeeId);
+        await loadManagedEmployee(user, staffScope(), data.employeeId);
         const isHours = data.type === 'HOURS';
         const hours = isHours ? data.hours ?? 0 : 0;
         const amount = isHours ? 0 : roundMoney(data.amount ?? 0);
@@ -366,7 +423,7 @@ export async function POST(req: Request) {
       }
 
       case 'ASSIGN_WORK_TASK': {
-        await loadManagedEmployee(user, data.employeeId);
+        await loadManagedEmployee(user, staffScope(), data.employeeId);
         if (daysBetween(data.startDate, data.endDate) < 0) throw badRequest('تاريخ النهاية يجب أن يكون بعد تاريخ البداية أو مساوياً له');
         const created = await prisma.workAssignment.create({
           data: {
@@ -384,30 +441,49 @@ export async function POST(req: Request) {
       }
 
       case 'ASSIGN_PENALTY': {
-        await loadManagedEmployee(user, data.employeeId);
+        await loadManagedEmployee(user, staffScope(), data.employeeId);
         const amount = roundMoney(data.amount);
         if (!(amount > 0)) throw badRequest('مبلغ الخصم يجب أن يكون أكبر من صفر');
-        const created = await prisma.deduction.create({
-          data: {
-            employeeId: data.employeeId,
-            date: today(),
-            amount,
-            reason: data.reason,
-            status: DEDUCTION_STATUS.PENDING_AMOUNT_APPROVAL,
-            hasFinancialImpact: true,
-            issuedBy: user.name,
-          },
-        });
+        // payroll.createDeduction behind money.gateway: a violation waiting for HR's amount approval.
+        const created = await runPayrollTransaction(prisma, (tx) =>
+          createDeduction(tx, {
+            actor: { ...moneyActorOf(user), name: user.name },
+            operationKey: `deduction.create:${req.headers.get('idempotency-key')?.trim() || randomUUID()}`,
+            ipAddress: ip,
+            data: {
+              employeeId: data.employeeId,
+              amount,
+              date: today(),
+              reason: data.reason,
+              category: 'ATTENDANCE',
+              violationType: null,
+              occurrenceNumber: 1,
+              severity: 'LOW',
+              deductionDays: 0,
+              dailySalary: null,
+              hasFinancialImpact: true,
+              issuedBy: user.name,
+              status: DEDUCTION_STATUS.PENDING_AMOUNT_APPROVAL,
+              lawArticle: null,
+            },
+          }),
+        );
         await logAudit({ userId: user.id, action: 'CREATE', entityType: 'DEDUCTION', entityId: created.id, details: { employeeId: data.employeeId, amount, status: created.status }, ipAddress: ip });
         return NextResponse.json({ message: 'تم إرسال المخالفة للموارد البشرية لاعتمادها', data: created });
       }
 
       case 'REQUEST_HIRING': {
-        const requesterId = await resolveRequesterId(user, data.requesterId);
+        const s = staffScope();
+        const requesterId = await resolveRequesterId(user, s, data.requesterId);
         const requester = await prisma.employee.findUnique({ where: { id: requesterId }, select: { departmentId: true } });
+        // Scope key (BL-ONB-012): the company of the department's branch, when it can be derived; it
+        // must be one of the context's companies (P1-SCOPE, 403).
+        const companyId = await deriveRequestCompanyId(prisma, { departmentId: requester?.departmentId });
+        if (companyId) authz.assert(s.ctx, 'recruitment.jobRequest.create', { companyId }, 'هذه الشركة خارج نطاق صلاحياتك');
         const created = await prisma.jobRequest.create({
           data: {
             requesterId,
+            companyId,
             departmentId: requester?.departmentId ?? null,
             jobTitle: data.jobTitle,
             jobType: data.jobType,
@@ -421,6 +497,10 @@ export async function POST(req: Request) {
       }
 
       case 'RETURN_FROM_LEAVE': {
+        // A leave of an employee outside the context is "not found" (the workflow re-checks the team).
+        if (!(await scopedPrisma(staffScope().ctx).leave.findUnique({ where: { id: data.leaveId }, select: { id: true } }))) {
+          throw notFound('الإجازة غير موجودة');
+        }
         const updated = await prisma.$transaction(async (tx) => {
           // Lock the leave row so a double submit cannot record (and audit) the return twice, then
           // refuse a second notice while the first one awaits HR confirmation.
@@ -433,7 +513,8 @@ export async function POST(req: Request) {
       }
 
       case 'SUBMIT_ONBOARDING': {
-        const requesterId = await resolveRequesterId(user, data.requesterId);
+        const s = staffScope();
+        const requesterId = await resolveRequesterId(user, s, data.requesterId);
         const iqama = data.iqamaOrIdNumber.trim();
         const [existingEmployee, openRequest] = await Promise.all([
           prisma.employee.findUnique({ where: { iqamaOrIdNumber: iqama }, select: { id: true } }),
@@ -441,9 +522,18 @@ export async function POST(req: Request) {
         ]);
         if (existingEmployee) throw conflict('رقم الهوية / الإقامة مسجل مسبقاً لموظف في النظام');
         if (openRequest) throw conflict('يوجد طلب مباشرة قائم بنفس رقم الهوية / الإقامة');
+        // Scope key (BL-ONB-012): the company of the chosen branch, when it can be derived. HR sets the
+        // legal and actual company at approval.
+        const companyId = await deriveRequestCompanyId(prisma, {
+          branchId: data.branchId,
+          departmentId: data.departmentId,
+          administrationId: data.administrationId,
+        });
+        if (companyId) authz.assert(s.ctx, 'onboarding.request.create', { companyId }, 'هذه الشركة خارج نطاق صلاحياتك');
 
         const onboarding: Prisma.OnboardingRequestUncheckedCreateInput = {
           requesterId,
+          companyId,
           fullNameArabic: data.fullNameArabic,
           lastNameArabic: data.lastNameArabic ?? null,
           firstNameEnglish: data.firstNameEnglish ?? null,
@@ -486,9 +576,13 @@ export async function POST(req: Request) {
         // Self-service (employee portal): an employee may only request an asset for themselves.
         if (!hasRole(user, ASSET_REQUEST_ROLES) && !isSelf) throw forbidden('يمكنك طلب عهدة لنفسك فقط');
         if (hasRole(user, ROLE_GROUPS.MANAGERS) && !isSelf) {
-          await loadManagedEmployee(user, data.employeeId);
+          await loadManagedEmployee(user, staffScope(), data.employeeId);
         } else {
-          const target = await prisma.employee.findUnique({ where: { id: data.employeeId }, select: { id: true, isTerminated: true } });
+          // Self: his own file; logistics staff: an employee of their companies (404 otherwise).
+          const targetArgs = { where: { id: data.employeeId }, select: { id: true, isTerminated: true } } as const;
+          const target = isSelf
+            ? await prisma.employee.findUnique(targetArgs)
+            : await scopedPrisma(staffScope().staff).employee.findUnique(targetArgs);
           if (!target) throw notFound('الموظف غير موجود');
           if (target.isTerminated) throw badRequest('لا يمكن رفع طلب لموظف منتهية خدماته');
         }

@@ -27,6 +27,23 @@ import {
   type SalaryLike,
 } from '@/lib/payroll-core';
 import { computeLeaveBalance, type LeaveBalanceLeave } from '@/lib/leave';
+import { catalogueLaborLaw, type AnnualLeaveLaw, type EosLaw } from '@/modules/rules';
+
+/** Art. 84/85 values of the catalogue (P1-RULE); the settlement route passes the company's law. */
+export const DEFAULT_EOS_LAW: Readonly<EosLaw> = catalogueLaborLaw().eos;
+
+/**
+ * The full art. 84 award before any art. 85 share: `firstPeriodMonthsPerYear` month's wage per year
+ * of the first `firstPeriodYears` years, `laterMonthsPerYear` after, fractions prorated.
+ */
+export function fullEndOfServiceAward(monthlySalary: number, years: number, law: Readonly<EosLaw> = DEFAULT_EOS_LAW): number {
+  if (!(years > 0) || !(monthlySalary > 0)) return 0;
+  const first = Math.min(years, law.firstPeriodYears);
+  const later = Math.max(0, years - law.firstPeriodYears);
+  return years <= law.firstPeriodYears
+    ? monthlySalary * law.firstPeriodMonthsPerYear * years
+    : monthlySalary * law.firstPeriodMonthsPerYear * first + monthlySalary * law.laterMonthsPerYear * later;
+}
 
 export const SETTLEMENT_TYPES = ['LEAVE_SETTLEMENT', 'END_OF_SERVICE'] as const;
 export type SettlementTypeValue = (typeof SETTLEMENT_TYPES)[number];
@@ -117,15 +134,17 @@ export function endOfServiceAward(
   monthlySalary: number,
   years: number,
   reason: TerminationReasonValue | null | undefined,
+  law: Readonly<EosLaw> = DEFAULT_EOS_LAW,
 ): number {
   if (!(years > 0) || !(monthlySalary > 0)) return 0;
   if (reason === 'PROBATION' || reason === 'ARTICLE_80') return 0;
-  const raw = years <= 5 ? monthlySalary * 0.5 * years : monthlySalary * 0.5 * 5 + monthlySalary * (years - 5);
+  const raw = fullEndOfServiceAward(monthlySalary, years, law);
   if (reason && isCounselPendingReason(reason)) return roundMoney(raw);
   if (reason === 'RESIGNATION') {
-    if (years < 2) return 0;
-    if (years < 5) return roundMoney(raw / 3);
-    if (years < 10) return roundMoney((raw * 2) / 3);
+    // Art. 85: none, a third, two thirds, the full award.
+    if (years < law.resignationNoneBelowYears) return 0;
+    if (years < law.resignationThirdBelowYears) return roundMoney(raw / 3);
+    if (years < law.resignationTwoThirdsBelowYears) return roundMoney((raw * 2) / 3);
     return roundMoney(raw);
   }
   return roundMoney(raw);
@@ -160,6 +179,8 @@ export function accruedLeaveBalance(opts: {
   currentLeaveEnd?: Date | null;
   /** SystemSetting `annual_leave_days` (company policy above the statutory minimum). */
   annualLeaveDaysSetting?: number | null;
+  /** Art. 109 values of the employee's company (rules.laborLawFor); default: the catalogue's. */
+  law?: Readonly<AnnualLeaveLaw>;
 }): number {
   if (!opts.joinDate || !dateKey(opts.joinDate) || !dateKey(opts.asOf)) return 0;
   const near = (a: Date | null | undefined, b: Date | null | undefined) =>
@@ -187,6 +208,7 @@ export function accruedLeaveBalance(opts: {
     asOf: opts.asOf,
     leaves,
     annualLeaveDaysSetting: opts.annualLeaveDaysSetting ?? null,
+    law: opts.law,
   });
   return balance.accrued - balance.taken;
 }
@@ -234,6 +256,8 @@ export interface SettlementInput {
   annualLeaveDaysSetting?: number | null;
   /** SystemSetting `exit_reentry_visa_fee` (base fee for leaves up to 60 days). */
   visaBaseFee?: number | null;
+  /** Labour-law values of the employee's company on the last working day (rules.laborLawFor); default: the catalogue's. */
+  law?: { eos: Readonly<EosLaw>; annualLeave: Readonly<AnnualLeaveLaw> };
 }
 
 export interface SettlementBreakdown {
@@ -275,7 +299,7 @@ export function computeSettlement(input: SettlementInput): SettlementBreakdown {
 
   const years = yearsOfService(emp.joinDate, lastDate);
   const endOfServiceAmount =
-    input.type === 'END_OF_SERVICE' ? endOfServiceAward(salaryUsed, years, input.terminationReason ?? null) : 0;
+    input.type === 'END_OF_SERVICE' ? endOfServiceAward(salaryUsed, years, input.terminationReason ?? null, input.law?.eos) : 0;
 
   const accrued = accruedLeaveBalance({
     joinDate: emp.joinDate,
@@ -285,6 +309,7 @@ export function computeSettlement(input: SettlementInput): SettlementBreakdown {
     currentLeaveStart: input.leaveStartDate ?? null,
     currentLeaveEnd: input.leaveEndDate ?? null,
     annualLeaveDaysSetting: input.annualLeaveDaysSetting ?? null,
+    law: input.law?.annualLeave,
   });
   const accruedDays = Math.round(accrued * 100) / 100; // page shows/sends toFixed(2)
   const requestedDays = input.type === 'LEAVE_SETTLEMENT' ? Math.max(0, input.requestedLeaveDays ?? 0) : 0;

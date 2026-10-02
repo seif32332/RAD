@@ -5,6 +5,7 @@ import { getClientIp, requireUser } from '@/lib/auth';
 import { ROLE_GROUPS } from '@/lib/constants';
 import { handleApiError, jsonError, notFound, parseBody } from '@/lib/http';
 import { featureSettlePath, reconcileTransaction } from '@/lib/muqeem';
+import { authz, resolveActor, scopedContext, scopedPrisma } from '@/modules/iam';
 
 export const dynamic = 'force-dynamic';
 
@@ -39,14 +40,17 @@ const BodySchema = z.discriminatedUnion('status', [
  * because settling them here would leave the visa / iqama / settlement in its old state and the next
  * request from that screen would pay for a second operation.
  * 409 also when the transaction is not undetermined (e.g. already reconciled).
+ * P1-SCOPE: a transaction of a company outside the user's scope is "not found" (404, scoped client).
  */
 export async function POST(req: Request, { params }: Ctx) {
   try {
     const user = await requireUser(ROLES);
+    const ctx = scopedContext(await resolveActor(prisma, user));
+    authz.assert(ctx, 'gov.muqeem.operate');
     const { id } = await params;
     const body = await parseBody(req, BodySchema);
 
-    const row = await prisma.muqeemTransaction.findUnique({ where: { id }, select: { operation: true, employeeId: true } });
+    const row = await scopedPrisma(ctx).muqeemTransaction.findUnique({ where: { id }, select: { operation: true, employeeId: true } });
     if (!row) throw notFound('عملية مقيم غير موجودة');
     const feature = featureSettlePath(row.operation, row.employeeId);
     if (feature) {

@@ -9,6 +9,7 @@ import { handleApiError, parseBody } from '@/lib/http';
 import { solveSchema } from '../../_lib/saudization-schemas';
 import { runSolve } from '../../_lib/saudization';
 import { auditViewOnce, limitOrThrow } from '../../_lib/server';
+import { workforceScope } from '../../_lib/scope';
 
 export const dynamic = 'force-dynamic';
 
@@ -17,7 +18,8 @@ export async function POST(req: Request) {
     const user = await requireUser(ROLE_GROUPS.WORKFORCE);
     const p = await parseBody(req, solveSchema);
     limitOrThrow(user, 'solve', 20, 60_000);
-    const out = await runSolve(p, user.role);
+    // P1-SCOPE: a company outside the caller's scope is "not found".
+    const out = await runSolve(p, user.role, await workforceScope(user));
     await auditViewOnce(user, 'WorkforceSaudizationSolve', { companyId: p.companyId, targetBand: p.targetBand, byDate: out.result.byDate }, getClientIp(req));
     return NextResponse.json(out);
   } catch (err) {

@@ -1,9 +1,16 @@
-// Financial workflow state machines: loans, deductions (penalties) and settlements.
+// Financial workflows: loans, deductions (penalties) and settlements — the role and team checks of the
+// screens, in front of the money writers (P1-PAY-A, ARCH-004):
+//   - loans and deductions: src/modules/payroll transitions (behind money.gateway);
+//   - payment requests: src/modules/finance transitions;
+//   - settlements: the Settlement row is still written here (offboarding's table; it moves with P3-OFF),
+//     each write inside its own registered gateway operation (settlement.*, listed legacy writers), and
+//     the settlement's money effects go through their owners: payroll (drafts dropped, loans paid off),
+//     time (overtime reservations), finance (the payment request), lifecycle (the exit) and offboarding
+//     (the effect log, passed in as ctx.recordEffects: offboarding sits above payroll, §5.3).
 //
-// Every helper runs inside a caller-provided transaction, guards the previous status
-// atomically (updateMany ... where status in [...]) and throws conflict() (409) when the
-// record was already processed, so double clicks / concurrent requests can never apply
-// side effects twice. Missing records throw notFound() (404).
+// Every function runs inside a caller-provided transaction. The transitions are guarded (updateMany
+// where status in [...]) and keyed (operation key: a repeat replays the first result; another user's
+// second decision is a 409), so double clicks / concurrent requests never apply side effects twice.
 //
 // Loan approval chain (matches src/app/loans/page.tsx):
 //   PENDING --MANAGER--> MANAGER_APPROVED --HR--> HR_APPROVED
@@ -20,15 +27,13 @@ import 'server-only';
 import type { Prisma } from '@prisma/client';
 import type { AuthUser } from '@/lib/auth';
 import { logAudit } from '@/lib/audit';
-import { enforceMakerChecker } from '@/app/api/payments/maker-checker';
 import { decryptField } from '@/lib/crypto';
 import { conflict, forbidden, notFound, badRequest } from '@/lib/http';
-import { roundMoney, sumMoney } from '@/lib/money';
-import { today } from '@/lib/dates';
+import { roundMoney } from '@/lib/money';
+import { addDays, dateKey, today } from '@/lib/dates';
 import {
   DEDUCTION_PENDING_STATUSES,
   DEDUCTION_STATUS,
-  LOAN_DEDUCTIBLE_STATUSES,
   LOAN_PENDING_STATUSES,
   LOAN_STATUS,
   PAYROLL_STATUS,
@@ -44,13 +49,14 @@ import {
   overtimeDueInSettlement,
   overtimeHolders,
   overtimeLegacyCutoff,
-  releaseDeductionFromDraft,
-  releaseEmployeeDraftsFrom,
-  releaseLoanFromDrafts,
 } from '@/lib/payroll';
 import { monthOf } from '@/lib/settlement';
 import { dailyRate } from '@/lib/payroll-core';
 import { TERMINATION_TO_EXIT_REASON, type EmployeeExitReason } from '@/lib/workforce/reasons';
+import * as payroll from '@/modules/payroll';
+import { createPaymentRequest, payPaymentRequest } from '@/modules/finance';
+import { assertNoBlockingDiscrepancies, defineMoneyOperation, moneyActorOf, runMoneyOperation, type TxClient } from '@/modules/platform';
+import { linkOvertimeToSettlement, unlinkOvertimeFromSettlement } from '@/modules/time';
 
 /** Article 70: a single disciplinary deduction may not exceed five days' wage. */
 export const MAX_PENALTY_DAYS = 5;
@@ -62,7 +68,10 @@ export function assertWithinPenaltyCap(amount: number, dailyWage: number): void 
   }
 }
 import { assertCanManageEmployee } from '@/lib/hr-workflows';
-import { deactivateEmployeeUser, type DeactivateResult } from '@/lib/access';
+import { resolveActor, scopedContext } from '@/modules/iam';
+import { lifecycleCompanies, transitionEmploymentState, type TransitionOutcome } from '@/modules/lifecycle';
+// Types only: offboarding sits above finance (§5.3); the approval gets the log writer from its caller.
+import type { RecordSettlementEffects, SettlementEffectInput } from '@/modules/offboarding';
 
 type Tx = Prisma.TransactionClient;
 
@@ -98,62 +107,38 @@ export function exitFieldsForTermination(
   return { exitReason, exitVoluntary: EXIT_VOLUNTARY_DEFAULT[exitReason] };
 }
 
-/** Optional request context for audit logging. */
+/** Optional request context: audit IP and the operation key (Idempotency-Key, else derived). */
 export interface FinanceCtx {
   ipAddress?: string | null;
+  operationKey?: string | null;
 }
 
-export type LoanStage = 'MANAGER' | 'HR' | 'FINANCE' | 'OWNER';
+export type LoanStage = payroll.LoanStage;
 
 function requireRole(user: AuthUser, group: readonly string[]): void {
   if (!roleIn(user.role, group)) throw forbidden();
 }
 
-async function guardFailed(exists: Promise<unknown>, message: string): Promise<never> {
-  if (!(await exists)) throw notFound();
-  throw conflict(message);
+/** The caller's key, else (transition, entity, user): a repeat by the same user replays, another user's is a new decision. */
+function keyOf(ctx: FinanceCtx | undefined, ...parts: string[]): string {
+  return ctx?.operationKey?.trim() || parts.join(':');
 }
 
 // ---------------------------------------------------------------------------
 // Loans
 // ---------------------------------------------------------------------------
 
-const LOAN_STAGE_RULES: Record<
-  LoanStage,
-  { from: readonly string[]; roles: readonly string[]; data: (now: Date) => Prisma.LoanUpdateManyMutationInput }
-> = {
-  MANAGER: {
-    from: [LOAN_STATUS.PENDING],
-    roles: [...new Set([...ROLE_GROUPS.MANAGERS, ...ROLE_GROUPS.PAYROLL])],
-    data: (now) => ({ status: LOAN_STATUS.MANAGER_APPROVED, isManagerApproved: true, managerApprovedAt: now }),
-  },
-  HR: {
-    from: [LOAN_STATUS.PENDING, LOAN_STATUS.MANAGER_APPROVED],
-    roles: ROLE_GROUPS.PAYROLL,
-    data: (now) => ({ status: LOAN_STATUS.HR_APPROVED, isHrApproved: true, hrApprovedAt: now }),
-  },
-  FINANCE: {
-    from: [LOAN_STATUS.FINANCE_TRANSFERRED],
-    roles: ROLE_GROUPS.PAYROLL,
-    data: (now) => ({ status: LOAN_STATUS.FINANCE_APPROVED, isFinanceApproved: true, financeApprovedAt: now }),
-  },
-  OWNER: {
-    // Not HR_APPROVED: the loan already went to finance (a second owner approval must be a 409).
-    from: [LOAN_STATUS.PENDING, LOAN_STATUS.MANAGER_APPROVED],
-    roles: ROLE_GROUPS.OWNER,
-    data: (now) => ({
-      status: LOAN_STATUS.HR_APPROVED,
-      isManagerApproved: true,
-      managerApprovedAt: now,
-      isHrApproved: true,
-      hrApprovedAt: now,
-    }),
-  },
+const LOAN_STAGE_ROLES: Record<LoanStage, readonly string[]> = {
+  MANAGER: [...new Set([...ROLE_GROUPS.MANAGERS, ...ROLE_GROUPS.PAYROLL])],
+  HR: ROLE_GROUPS.PAYROLL,
+  FINANCE: ROLE_GROUPS.PAYROLL,
+  OWNER: ROLE_GROUPS.OWNER,
 };
 
-/** Loan statuses from which a stage applies (pure view of LOAN_STAGE_RULES). */
+/** Loan statuses from which a stage applies (pure view of payroll's loanStageRule). */
 export function loanStageFromStatuses(stage: LoanStage): readonly string[] {
-  return LOAN_STAGE_RULES[stage]?.from ?? [];
+  if (!LOAN_STAGE_ROLES[stage]) return [];
+  return payroll.loanStageRule(stage, '-', new Date(0))?.from ?? [];
 }
 
 /** Branch / department managers (not HR / payroll / owner) act only on loans of their team. */
@@ -180,26 +165,13 @@ async function assertLoanScope(tx: Tx, loanId: string, user: AuthUser): Promise<
   await assertCanManageEmployee(tx, user, loan.employee);
 }
 
-/** Advances a loan one approval step. Returns the updated loan. */
+/** Advances a loan one approval step (payroll.approveLoanStep; never on one's own loan). */
 export async function approveLoanStep(tx: Tx, loanId: string, stage: LoanStage, user: AuthUser, ctx: FinanceCtx = {}) {
-  const rule = LOAN_STAGE_RULES[stage];
-  if (!rule) throw badRequest('مرحلة اعتماد غير معروفة');
-  requireRole(user, rule.roles);
+  const roles = LOAN_STAGE_ROLES[stage];
+  if (!roles) throw badRequest('مرحلة اعتماد غير معروفة');
+  requireRole(user, roles);
   await assertLoanScope(tx, loanId, user);
-  const now = new Date();
-  const res = await tx.loan.updateMany({
-    where: { id: loanId, status: { in: [...rule.from] } },
-    data: rule.data(now),
-  });
-  if (res.count === 0) {
-    await guardFailed(tx.loan.findUnique({ where: { id: loanId }, select: { id: true } }), 'تمت معالجة هذه المرحلة من طلب السلفة مسبقاً أو أن الطلب ليس في المرحلة الصحيحة');
-  }
-  const loan = await tx.loan.findUniqueOrThrow({ where: { id: loanId } });
-  await logAudit(
-    { userId: user.id, action: 'APPROVE', entityType: 'LOAN', entityId: loanId, details: { stage, status: loan.status }, ipAddress: ctx.ipAddress },
-    tx,
-  );
-  return loan;
+  return payroll.approveLoanStep(tx, { actor: moneyActorOf(user), loanId, stage, operationKey: keyOf(ctx, 'loan.approve', stage, loanId, user.id), ipAddress: ctx.ipAddress });
 }
 
 /**
@@ -209,134 +181,19 @@ export async function approveLoanStep(tx: Tx, loanId: string, stage: LoanStage, 
 export async function rejectLoan(tx: Tx, loanId: string, user: AuthUser, reason?: string | null, ctx: FinanceCtx = {}) {
   requireRole(user, [...new Set([...ROLE_GROUPS.MANAGERS, ...ROLE_GROUPS.PAYROLL])]);
   await assertLoanScope(tx, loanId, user);
-  const res = await tx.loan.updateMany({
-    where: { id: loanId, status: { in: loanRejectableStatuses(user.role) } },
-    data: { status: LOAN_STATUS.REJECTED },
-  });
-  if (res.count === 0) {
-    await guardFailed(tx.loan.findUnique({ where: { id: loanId }, select: { id: true } }), 'لا يمكن رفض السلفة: تمت معالجتها مسبقاً');
-  }
-  const loan = await tx.loan.findUniqueOrThrow({ where: { id: loanId } });
-  await logAudit(
-    { userId: user.id, action: 'REJECT', entityType: 'LOAN', entityId: loanId, details: { reason: reason ?? null }, ipAddress: ctx.ipAddress },
-    tx,
-  );
-  return loan;
+  return payroll.rejectLoan(tx, { actor: moneyActorOf(user), loanId, from: loanRejectableStatuses(user.role), reason, operationKey: keyOf(ctx, 'loan.reject', loanId, user.id), ipAddress: ctx.ipAddress });
 }
 
-/** Finance attaches the transfer receipt: HR_APPROVED -> FINANCE_TRANSFERRED. */
+/** Finance attaches the transfer receipt: HR_APPROVED -> FINANCE_TRANSFERRED (not by an approver of the loan). */
 export async function markLoanTransferred(tx: Tx, loanId: string, receiptUrl: string | null, user: AuthUser, ctx: FinanceCtx = {}) {
   requireRole(user, ROLE_GROUPS.FINANCE);
-  const now = new Date();
-  const res = await tx.loan.updateMany({
-    where: {
-      id: loanId,
-      isFinanceTransferred: false,
-      OR: [
-        { status: LOAN_STATUS.HR_APPROVED },
-        // Legacy rows: HR approval recorded only in the flag (old incoming-requests flow).
-        { status: { in: [LOAN_STATUS.PENDING, LOAN_STATUS.MANAGER_APPROVED] }, isHrApproved: true },
-      ],
-    },
-    data: {
-      status: LOAN_STATUS.FINANCE_TRANSFERRED,
-      isFinanceTransferred: true,
-      financeTransferredAt: now,
-      receiptUrl: receiptUrl ?? null,
-    },
-  });
-  if (res.count === 0) {
-    await guardFailed(
-      tx.loan.findUnique({ where: { id: loanId }, select: { id: true } }),
-      'لا يمكن تسجيل التحويل: السلفة لم تعتمد من الموارد البشرية أو تم تحويلها مسبقاً',
-    );
-  }
-  const loan = await tx.loan.findUniqueOrThrow({ where: { id: loanId } });
-  await logAudit(
-    { userId: user.id, action: 'UPDATE', entityType: 'LOAN', entityId: loanId, details: { status: loan.status, receiptUrl }, ipAddress: ctx.ipAddress },
-    tx,
-  );
-  return loan;
+  return payroll.markLoanTransferred(tx, { actor: moneyActorOf(user), loanId, receiptUrl, operationKey: keyOf(ctx, 'loan.transfer', loanId, user.id), ipAddress: ctx.ipAddress });
 }
 
 /** Company forgives the remaining balance of an active loan. Draft payroll installments are released. */
 export async function forgiveLoan(tx: Tx, loanId: string, user: AuthUser, ctx: FinanceCtx = {}) {
   requireRole(user, ROLE_GROUPS.PAYROLL);
-  const before = await tx.loan.findUnique({ where: { id: loanId }, select: { remainingAmount: true } });
-  if (!before) throw notFound();
-  const res = await tx.loan.updateMany({
-    where: { id: loanId, isForgiven: false, remainingAmount: { gt: 0 }, status: { in: [...LOAN_DEDUCTIBLE_STATUSES] } },
-    data: { isForgiven: true, remainingAmount: 0, status: LOAN_STATUS.FORGIVEN },
-  });
-  if (res.count === 0) throw conflict('لا يمكن إسقاط السلفة: ليست سلفة نشطة أو تم إسقاطها/سدادها مسبقاً');
-  await releaseLoanFromDrafts(tx, loanId);
-  const loan = await tx.loan.findUniqueOrThrow({ where: { id: loanId } });
-  await logAudit(
-    {
-      userId: user.id,
-      action: 'UPDATE',
-      entityType: 'LOAN',
-      entityId: loanId,
-      details: { forgiven: true, forgivenAmount: before.remainingAmount },
-      ipAddress: ctx.ipAddress,
-    },
-    tx,
-  );
-  return loan;
-}
-
-/**
- * Pays off an employee's active loans through a settlement (called at owner approval, AFTER
- * the drafts from the settlement's last month onwards were dropped).
- * Installments still held by the remaining DRAFT payrolls (earlier months) stay on the loan:
- * remainingAmount becomes exactly those installments, which payroll collects when the drafts are
- * approved (the loan then completes). Everything else is paid by the settlement; a loan with
- * nothing held by drafts is COMPLETED immediately.
- * Returns the amount the settlement collects (= outstandingLoansForSettlement at this moment).
- */
-export async function settleEmployeeLoans(
-  tx: Tx,
-  employeeId: string,
-  user: AuthUser,
-  ctx: FinanceCtx = {},
-): Promise<{ count: number; collected: number }> {
-  const loans = await tx.loan.findMany({
-    where: { employeeId, isForgiven: false, remainingAmount: { gt: 0 }, status: { in: [...LOAN_DEDUCTIBLE_STATUSES] } },
-    select: {
-      id: true,
-      remainingAmount: true,
-      installments: { where: { payroll: { status: PAYROLL_STATUS.DRAFT } }, select: { amount: true } },
-    },
-  });
-  const settled: Array<{ id: string; collected: number; leftForPayroll: number }> = [];
-  for (const l of loans) {
-    const held = Math.min(l.remainingAmount, sumMoney(l.installments.map((i) => i.amount)));
-    const collected = Math.max(0, roundMoney(l.remainingAmount - held));
-    if (held > 0.009) {
-      await tx.loan.updateMany({ where: { id: l.id, isForgiven: false }, data: { remainingAmount: roundMoney(held) } });
-    } else {
-      await tx.loan.updateMany({
-        where: { id: l.id, isForgiven: false },
-        data: { remainingAmount: 0, status: LOAN_STATUS.COMPLETED },
-      });
-    }
-    settled.push({ id: l.id, collected, leftForPayroll: roundMoney(held) });
-  }
-  const collected = sumMoney(settled.map((s) => s.collected));
-  if (settled.length) {
-    await logAudit(
-      {
-        userId: user.id,
-        action: 'UPDATE',
-        entityType: 'LOAN',
-        entityId: employeeId,
-        details: { settledBySettlement: settled },
-        ipAddress: ctx.ipAddress,
-      },
-      tx,
-    );
-  }
-  return { count: settled.length, collected };
+  return payroll.forgiveLoan(tx, { actor: moneyActorOf(user), loanId, operationKey: keyOf(ctx, 'loan.forgive', loanId, user.id), ipAddress: ctx.ipAddress });
 }
 
 // ---------------------------------------------------------------------------
@@ -345,24 +202,17 @@ export async function settleEmployeeLoans(
 
 const DEDUCTION_APPROVABLE = [...DEDUCTION_PENDING_STATUSES, DEDUCTION_STATUS.PENDING_WAIVE_APPROVAL];
 
-const deductionGuardSelect = {
-  id: true,
-  employeeId: true,
-  amount: true,
-  status: true,
-  payrollMonth: true,
-  isLinkedToPayroll: true,
-} as const;
+const deductionActor = (user: AuthUser) => ({ ...moneyActorOf(user), name: user.name });
 
 /**
  * HR approves a manager-issued violation (optionally pricing it) or refuses a waive request:
- * pending -> DEDUCTED (due in the next payroll).
+ * pending -> DEDUCTED (due in the next payroll). Never on one's own penalty.
  */
 export async function approveDeduction(
   tx: Tx,
   deductionId: string,
   user: AuthUser,
-  opts: { amount?: number; ipAddress?: string | null } = {},
+  opts: { amount?: number; ipAddress?: string | null; operationKey?: string | null } = {},
 ) {
   requireRole(user, ROLE_GROUPS.PAYROLL);
   const amount = opts.amount !== undefined ? roundMoney(opts.amount) : undefined;
@@ -374,74 +224,100 @@ export async function approveDeduction(
   });
   if (!current) throw notFound('المخالفة غير موجودة');
   assertWithinPenaltyCap(amount ?? current.amount, dailyRate(current.employee));
-  const res = await tx.deduction.updateMany({
-    where: { id: deductionId, status: { in: DEDUCTION_APPROVABLE }, isLinkedToPayroll: false },
-    data: {
-      status: DEDUCTION_STATUS.DEDUCTED,
-      approvedBy: user.name,
-      approvedAt: new Date(),
-      ...(amount !== undefined ? { amount, hasFinancialImpact: amount > 0 } : {}),
-    },
+  return payroll.approveDeduction(tx, {
+    actor: deductionActor(user),
+    deductionId,
+    amount,
+    from: DEDUCTION_APPROVABLE,
+    operationKey: keyOf(opts, 'deduction.approve', deductionId, user.id, amount !== undefined ? String(amount) : '-'),
+    ipAddress: opts.ipAddress,
   });
-  if (res.count === 0) {
-    await guardFailed(tx.deduction.findUnique({ where: { id: deductionId }, select: { id: true } }), 'تمت معالجة هذه المخالفة مسبقاً');
-  }
-  const d = await tx.deduction.findUniqueOrThrow({ where: { id: deductionId } });
-  await logAudit(
-    { userId: user.id, action: 'APPROVE', entityType: 'DEDUCTION', entityId: deductionId, details: { status: d.status, amount: d.amount }, ipAddress: opts.ipAddress },
-    tx,
-  );
-  return d;
 }
 
 /** HR refuses a manager-issued violation (-> REJECTED) or accepts a waive request (-> WAIVED). */
 export async function rejectDeduction(tx: Tx, deductionId: string, user: AuthUser, reason?: string | null, ctx: FinanceCtx = {}) {
   requireRole(user, ROLE_GROUPS.PAYROLL);
-  const current = await tx.deduction.findUnique({ where: { id: deductionId }, select: deductionGuardSelect });
-  if (!current) throw notFound();
-  const isWaiveRequest = current.status === DEDUCTION_STATUS.PENDING_WAIVE_APPROVAL;
-  const next = isWaiveRequest ? DEDUCTION_STATUS.WAIVED : DEDUCTION_STATUS.REJECTED;
-  const res = await tx.deduction.updateMany({
-    where: { id: deductionId, status: { in: DEDUCTION_APPROVABLE }, isLinkedToPayroll: false },
-    data: { status: next, approvedBy: user.name, approvedAt: new Date() },
-  });
-  if (res.count === 0) throw conflict('تمت معالجة هذه المخالفة مسبقاً');
-  await releaseDeductionFromDraft(tx, current);
-  const d = await tx.deduction.findUniqueOrThrow({ where: { id: deductionId } });
-  await logAudit(
-    { userId: user.id, action: 'REJECT', entityType: 'DEDUCTION', entityId: deductionId, details: { status: next, reason: reason ?? null }, ipAddress: ctx.ipAddress },
-    tx,
-  );
-  return d;
+  return payroll.rejectDeduction(tx, { actor: deductionActor(user), deductionId, from: DEDUCTION_APPROVABLE, reason, operationKey: keyOf(ctx, 'deduction.reject', deductionId, user.id), ipAddress: ctx.ipAddress });
 }
 
 /** HR waives a penalty completely (any state except already deducted in an approved payroll). */
 export async function waiveDeduction(tx: Tx, deductionId: string, user: AuthUser, ctx: FinanceCtx = {}) {
   requireRole(user, ROLE_GROUPS.PAYROLL);
-  const current = await tx.deduction.findUnique({ where: { id: deductionId }, select: deductionGuardSelect });
-  if (!current) throw notFound();
-  if (current.isLinkedToPayroll) throw conflict('لا يمكن إسقاط المخالفة لأنها خُصمت في مسير رواتب معتمد');
-  const res = await tx.deduction.updateMany({
-    where: {
-      id: deductionId,
-      isLinkedToPayroll: false,
-      status: { notIn: [DEDUCTION_STATUS.WAIVED, DEDUCTION_STATUS.REJECTED] },
-    },
-    data: { status: DEDUCTION_STATUS.WAIVED, approvedBy: user.name, approvedAt: new Date() },
-  });
-  if (res.count === 0) throw conflict('المخالفة مُسقطة أو مرفوضة مسبقاً');
-  await releaseDeductionFromDraft(tx, current);
-  const d = await tx.deduction.findUniqueOrThrow({ where: { id: deductionId } });
-  await logAudit(
-    { userId: user.id, action: 'UPDATE', entityType: 'DEDUCTION', entityId: deductionId, details: { status: DEDUCTION_STATUS.WAIVED }, ipAddress: ctx.ipAddress },
-    tx,
-  );
-  return d;
+  return payroll.waiveDeduction(tx, { actor: deductionActor(user), deductionId, operationKey: keyOf(ctx, 'deduction.waive', deductionId, user.id), ipAddress: ctx.ipAddress });
 }
 
 // ---------------------------------------------------------------------------
-// Settlements
+// Settlements (the Settlement row: offboarding's, listed legacy writer until P3-OFF)
 // ---------------------------------------------------------------------------
+
+interface SettlementSubject {
+  settlementId: string;
+}
+
+async function settlementEmployee(tx: TxClient, input: SettlementSubject) {
+  const s = await tx.settlement.findUnique({ where: { id: input.settlementId }, select: { employeeId: true } });
+  return s ? [s.employeeId] : [];
+}
+
+/**
+ * The owner's approval of a settlement (BR-PAY-012): never the settlement of the approver himself
+ * (BR-PAY-001), and not by the HR user who created it. Writes the Settlement row and the leave accrual
+ * start (the named source of §2 "settlement.approve يكتب leaveAccrualStartDate").
+ */
+export const SETTLEMENT_APPROVE = defineMoneyOperation<SettlementSubject>({
+  name: 'settlement.approve',
+  owner: 'offboarding',
+  act: 'APPROVE',
+  source: 'USER',
+  writes: { Settlement: '*' },
+  beneficiaries: settlementEmployee,
+  legacySite: 'src/lib/finance.ts',
+});
+
+/** HR files a settlement (a request: the owner approves it); createdById recorded (BR-PAY-012). */
+export const SETTLEMENT_CREATE = defineMoneyOperation<{ employeeId: string }>({
+  name: 'settlement.create',
+  owner: 'offboarding',
+  act: 'REQUEST',
+  source: 'USER',
+  writes: { Settlement: '*' },
+  legacySite: 'src/app/api/settlements/route.ts',
+});
+
+/** The owner's notes or finance's receipt on a settlement (no amount, no status). */
+export const SETTLEMENT_NOTE = defineMoneyOperation<SettlementSubject>({
+  name: 'settlement.note',
+  owner: 'offboarding',
+  act: 'REQUEST',
+  source: 'USER',
+  writes: { Settlement: ['ownerNotes', 'transferReceiptUrl'] },
+  legacySite: 'src/app/api/settlements/route.ts',
+});
+
+/** The owner's rejection (the reserved overtime is released through time). */
+export const SETTLEMENT_REJECT = defineMoneyOperation<SettlementSubject>({
+  name: 'settlement.reject',
+  owner: 'offboarding',
+  act: 'REJECT',
+  source: 'USER',
+  writes: { Settlement: ['status', 'ownerNotes'] },
+  legacySite: 'src/lib/finance.ts',
+});
+
+/** Finance records the payment: not the employee, not the creator nor the approver (BR-PAY-012). */
+export const SETTLEMENT_PAY = defineMoneyOperation<SettlementSubject>({
+  name: 'settlement.pay',
+  owner: 'offboarding',
+  act: 'PAY',
+  source: 'USER',
+  writes: { Settlement: ['status', 'transferReceiptUrl', 'paymentMethod', 'paymentReference', 'paidAt', 'paidById'] },
+  beneficiaries: settlementEmployee,
+  approvers: async (tx, input) => {
+    const s = await tx.settlement.findUnique({ where: { id: input.settlementId }, select: { approvedById: true, createdById: true } });
+    return s ? [s.approvedById, s.createdById] : [];
+  },
+  legacySite: 'src/lib/finance.ts',
+});
 
 function safeDecrypt(v: string | null | undefined): string | null {
   try {
@@ -498,9 +374,10 @@ interface SettlementForApproval {
  * - overtime it reserved that a payroll paid meanwhile (the draft holding it was approved) is
  *   released (paidInSettlementId = null) and subtracted,
  * - overtime approved since the creation that no payroll will pay is reserved and added.
+ * The reservations are written by time (linkOvertimeToSettlement / unlinkOvertimeFromSettlement).
  * Returns the amount difference (added - released).
  */
-async function settleOvertime(tx: Tx, settlement: SettlementForApproval, lastDay: Date): Promise<{ adjustment: number; released: number; added: number }> {
+async function settleOvertime(tx: Tx, settlement: SettlementForApproval, lastDay: Date, operationKey: string): Promise<{ adjustment: number; released: number; added: number }> {
   const legacyCutoff = await overtimeLegacyCutoff();
   const [employee, settings] = await Promise.all([
     tx.employee.findUniqueOrThrow({
@@ -544,15 +421,14 @@ async function settleOvertime(tx: Tx, settlement: SettlementForApproval, lastDay
       added = roundMoney(added + overtimeAmount(ot, employee, settings, basis));
     }
   }
-  if (release.length) {
-    await tx.overtimeRequest.updateMany({ where: { id: { in: release }, paidInSettlementId: settlement.id }, data: { paidInSettlementId: null } });
-  }
+  if (release.length) await unlinkOvertimeFromSettlement(tx, { settlementId: settlement.id, overtimeIds: release, operationKey });
   if (add.length) {
-    const res = await tx.overtimeRequest.updateMany({
-      where: { id: { in: add }, paidInSettlementId: null },
-      data: { paidInSettlementId: settlement.id },
+    await linkOvertimeToSettlement(tx, {
+      settlementId: settlement.id,
+      overtimeIds: add,
+      operationKey,
+      conflictMessage: 'تغيّرت طلبات العمل الإضافي للموظف أثناء الاعتماد، يرجى المحاولة مجدداً',
     });
-    if (res.count !== add.length) throw conflict('تغيّرت طلبات العمل الإضافي للموظف أثناء الاعتماد، يرجى المحاولة مجدداً');
   }
   // A settlement never pays more overtime back than it recorded.
   const adjustment = roundMoney(added - Math.min(released, settlement.overtimeAmount ?? 0));
@@ -561,10 +437,11 @@ async function settleOvertime(tx: Tx, settlement: SettlementForApproval, lastDay
 
 /**
  * Settlement approval side effects on payroll, loans and overtime, in a deterministic order:
- * 1. drafts from the last working month onwards are dropped (END_OF_SERVICE: that month is paid
- *    by the settlement; LEAVE_SETTLEMENT: they must be regenerated to exclude the settled days);
- *    their overtime reservations are released;
- * 2. loans are paid off except the installments held by the remaining (earlier) drafts;
+ * 1. drafts from the last working month onwards are dropped (payroll.dropEmployeeDraftsFrom;
+ *    END_OF_SERVICE: that month is paid by the settlement; LEAVE_SETTLEMENT: they must be regenerated
+ *    to exclude the settled days); their overtime reservations are released;
+ * 2. loans are paid off except the installments held by the remaining (earlier) drafts
+ *    (payroll.settleLoansForSettlement);
  * 3. the loans deduction is recomputed with the same formula as at creation
  *    (outstandingLoansForSettlement) and compared with Settlement.loansDeduction (legacy rows:
  *    the CREATE audit entry); the difference (installments payroll collected in between, loans
@@ -576,12 +453,11 @@ async function settleLoansOvertimeAndDrafts(
   tx: Tx,
   settlement: SettlementForApproval,
   lastDay: Date,
-  user: AuthUser,
-  ctx: FinanceCtx,
-): Promise<{ totalSettlement: number; loansDeduction: number; loansAdjustment: number; overtimeAdjustment: number }> {
+  operationKey: string,
+): Promise<{ totalSettlement: number; loansDeduction: number; loansAdjustment: number; overtimeAdjustment: number; data: Prisma.SettlementUpdateInput }> {
   const { year, month } = monthOf(lastDay);
-  await releaseEmployeeDraftsFrom(tx, settlement.employeeId, year, month);
-  const { collected } = await settleEmployeeLoans(tx, settlement.employeeId, user, ctx);
+  await payroll.dropEmployeeDraftsFrom(tx, { employeeId: settlement.employeeId, year, month, operationKey });
+  const { collected } = await payroll.settleLoansForSettlement(tx, { employeeId: settlement.employeeId, operationKey });
 
   const data: Prisma.SettlementUpdateInput = {};
   let totalSettlement = roundMoney(settlement.totalSettlement ?? 0);
@@ -599,7 +475,7 @@ async function settleLoansOvertimeAndDrafts(
 
   let overtimeAdjustment = 0;
   if (settlement.type === 'END_OF_SERVICE' && settlement.overtimeAmount !== null) {
-    overtimeAdjustment = (await settleOvertime(tx, settlement, lastDay)).adjustment;
+    overtimeAdjustment = (await settleOvertime(tx, settlement, lastDay, operationKey)).adjustment;
     if (Math.abs(overtimeAdjustment) >= 0.01) {
       totalSettlement = roundMoney(totalSettlement + overtimeAdjustment);
       data.overtimeAmount = Math.max(0, roundMoney(settlement.overtimeAmount + overtimeAdjustment));
@@ -608,107 +484,234 @@ async function settleLoansOvertimeAndDrafts(
   }
 
   if (Math.abs(loansAdjustment) >= 0.01 || Math.abs(overtimeAdjustment) >= 0.01) data.totalSettlement = totalSettlement;
-  if (Object.keys(data).length) await tx.settlement.update({ where: { id: settlement.id }, data });
-  return { totalSettlement, loansDeduction: collected, loansAdjustment, overtimeAdjustment };
+  // Written by approveSettlement together with the effect log (one settlement write).
+  return { totalSettlement, loansDeduction: collected, loansAdjustment, overtimeAdjustment, data };
 }
 
 /**
- * Owner approval: PENDING_APPROVAL -> OWNER_APPROVED. Resets the leave accrual, terminates the
- * employee (END_OF_SERVICE) and deactivates their login in the same transaction
- * (deactivateEmployeeUser, honouring SystemSetting terminated_access_days), drops draft payrolls from the last working month, pays off the
- * loans and re-checks the overtime (settleLoansOvertimeAndDrafts, which may adjust the total)
- * and creates exactly one PaymentRequest for finance with the final total.
+ * What a settlement approval may change for the employee (BL-LCY-015 effect log, lcy-to-be.md
+ * BR-LCY-014): loans, draft payrolls, overtime reservations, leave accrual start, employment
+ * projections and the login. Read before and after the approval's effects.
  */
-export async function approveSettlement(tx: Tx, settlementId: string, user: AuthUser, notes?: string | null, ctx: FinanceCtx = {}) {
-  requireRole(user, ROLE_GROUPS.OWNER);
-  const res = await tx.settlement.updateMany({
-    where: { id: settlementId, status: SETTLEMENT_STATUS.PENDING_APPROVAL },
-    data: { status: SETTLEMENT_STATUS.OWNER_APPROVED, ...(notes !== undefined ? { ownerNotes: notes } : {}) },
-  });
-  if (res.count === 0) {
-    await guardFailed(
-      tx.settlement.findUnique({ where: { id: settlementId }, select: { id: true } }),
-      'تم اتخاذ قرار بشأن هذه التصفية مسبقاً',
-    );
-  }
-  const settlement = await tx.settlement.findUniqueOrThrow({
-    where: { id: settlementId },
-    include: {
-      employee: { select: { id: true, firstNameArabic: true, lastNameArabic: true, employeeId: true, bankName: true, ibanNumber: true } },
-    },
-  });
-  const emp = settlement.employee;
+async function approvalSnapshot(tx: Tx, employeeId: string) {
+  const [employee, loans, drafts, overtime] = await Promise.all([
+    tx.employee.findUniqueOrThrow({
+      where: { id: employeeId },
+      select: {
+        leaveAccrualStartDate: true,
+        employmentState: true,
+        isTerminated: true,
+        terminationDate: true,
+        exitReason: true,
+        exitVoluntary: true,
+        user: { select: { id: true, isActive: true, documentsOnlyUntil: true } },
+      },
+    }),
+    tx.loan.findMany({ where: { employeeId }, select: { id: true, remainingAmount: true, status: true, isForgiven: true }, orderBy: { id: 'asc' } }),
+    tx.payroll.findMany({ where: { employeeId, status: PAYROLL_STATUS.DRAFT }, select: { id: true, year: true, month: true }, orderBy: { id: 'asc' } }),
+    tx.overtimeRequest.findMany({ where: { employeeId }, select: { id: true, paidInSettlementId: true }, orderBy: { id: 'asc' } }),
+  ]);
+  return { employee, loans, drafts, overtime };
+}
 
-  const lastDay = settlement.lastWorkingDate ?? today();
-  // The accrued leave balance was paid in this settlement.
-  await tx.employee.update({ where: { id: emp.id }, data: { leaveAccrualStartDate: today() } });
-  let access: DeactivateResult | null = null;
-  let exitRecorded: ReturnType<typeof exitFieldsForTermination> = null;
-  if (settlement.type === 'END_OF_SERVICE') {
-    await tx.employee.update({
-      where: { id: emp.id },
-      data: { employmentStatus: 'EXCLUDED', isTerminated: true, terminationDate: lastDay },
-    });
-    // Structured exit (workforce engine): prefilled from the settlement reason, but a reason HR
-    // already recorded on the employee file is never overwritten (guarded by exitReason: null).
-    const exit = exitFieldsForTermination(settlement.terminationReason);
-    if (exit) {
-      const set = await tx.employee.updateMany({ where: { id: emp.id, exitReason: null }, data: exit });
-      if (set.count > 0) exitRecorded = exit;
+type ApprovalSnapshot = Awaited<ReturnType<typeof approvalSnapshot>>;
+
+/**
+ * The effect log of the approval (SettlementEffect rows, BL-LCY-015): every changed value with its
+ * before and after. Loans, overtime reservations and dropped drafts reference their row; the leave
+ * accrual, the employment projections and the login reference the employee and are listed only when
+ * they changed (the employment also when a state change was recorded); the payment request always.
+ * Migration 9zd moved the former approvalEffects column with the same rules.
+ */
+function settlementEffects(
+  employeeId: string,
+  before: ApprovalSnapshot,
+  after: ApprovalSnapshot,
+  extra: { paymentRequestId: string | null; paymentRequestCreated: boolean; employment: TransitionOutcome | null },
+): SettlementEffectInput[] {
+  const out: SettlementEffectInput[] = [];
+  const same = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b);
+  const loan = (l: ApprovalSnapshot['loans'][number]) => ({ remainingAmount: l.remainingAmount, status: l.status, isForgiven: l.isForgiven });
+  const afterLoans = new Map(after.loans.map((l) => [l.id, l]));
+  for (const b of before.loans) {
+    const a = afterLoans.get(b.id);
+    if (!a || !same(loan(a), loan(b))) out.push({ kind: 'LOAN', refId: b.id, before: loan(b), after: a ? loan(a) : null });
+  }
+  const afterOt = new Map(after.overtime.map((o) => [o.id, o.paidInSettlementId]));
+  for (const o of before.overtime) {
+    if (afterOt.has(o.id) && afterOt.get(o.id) !== o.paidInSettlementId) {
+      out.push({ kind: 'OVERTIME', refId: o.id, before: { paidInSettlementId: o.paidInSettlementId }, after: { paidInSettlementId: afterOt.get(o.id) ?? null } });
     }
-    // DEC-002: the terminated employee's login stops working (same transaction; honours the
-    // terminated_access_days grace period, default 0 = immediate, sessions revoked).
-    access = await deactivateEmployeeUser(tx, emp.id, {
-      reason: `اعتماد تصفية نهاية الخدمة ${settlementId}`,
-      actorId: user.id,
-      ipAddress: ctx.ipAddress ?? null,
-    });
   }
-  const effects = await settleLoansOvertimeAndDrafts(tx, settlement, lastDay, user, ctx);
-
-  const existingPayment = await tx.paymentRequest.findFirst({
-    where: { entityType: 'SETTLEMENT', entityId: settlementId, status: { not: 'RETURNED' } },
-    select: { id: true },
+  const kept = new Set(after.drafts.map((d) => d.id));
+  for (const d of before.drafts) if (!kept.has(d.id)) out.push({ kind: 'PAYROLL_DRAFT', refId: d.id, before: { year: d.year, month: d.month }, after: null });
+  const accrual = (x: ApprovalSnapshot['employee']) => ({ leaveAccrualStartDate: dateKey(x.leaveAccrualStartDate) });
+  if (!same(accrual(before.employee), accrual(after.employee))) {
+    out.push({ kind: 'LEAVE_ACCRUAL', refId: employeeId, before: accrual(before.employee), after: accrual(after.employee) });
+  }
+  if (extra.paymentRequestId) {
+    out.push({ kind: 'PAYMENT_REQUEST', refId: extra.paymentRequestId, before: null, after: { paymentRequestId: extra.paymentRequestId, created: extra.paymentRequestCreated } });
+  }
+  const emp = (x: ApprovalSnapshot['employee']) => ({
+    employmentState: x.employmentState,
+    isTerminated: x.isTerminated,
+    terminationDate: dateKey(x.terminationDate),
+    exitReason: x.exitReason,
+    exitVoluntary: x.exitVoluntary,
   });
-  if (!existingPayment) {
-    await tx.paymentRequest.create({
-      data: {
-        title: `تصفية مستحقات - ${emp.firstNameArabic} ${emp.lastNameArabic}`,
-        reason: `اعتماد تصفية مستحقات. رقم الموظف: ${emp.employeeId}`,
-        amount: Math.max(0, effects.totalSettlement),
-        accountNumber: `تحويل بنكي | بنك: ${emp.bankName || '-'} | آيبان: ${safeDecrypt(emp.ibanNumber) || '-'}`,
-        status: 'PENDING_FINANCE',
-        requestedById: user.id,
-        approvedById: user.id,
-        entityId: settlement.id,
-        entityType: 'SETTLEMENT',
-      },
+  const changed = extra.employment?.changed ? extra.employment : null;
+  if (changed || !same(emp(before.employee), emp(after.employee))) {
+    out.push({
+      kind: 'EMPLOYMENT',
+      refId: employeeId,
+      before: emp(before.employee),
+      after: { ...emp(after.employee), stateChangeId: changed?.stateChangeId ?? null, transition: changed?.transition ?? null },
     });
   }
+  const login = (x: ApprovalSnapshot['employee']) => (x.user ? { isActive: x.user.isActive, documentsOnlyUntil: x.user.documentsOnlyUntil?.toISOString() ?? null } : null);
+  if (!same(login(before.employee), login(after.employee))) out.push({ kind: 'LOGIN', refId: employeeId, before: login(before.employee), after: login(after.employee) });
+  return out;
+}
 
-  await logAudit(
-    {
-      userId: user.id,
-      action: 'APPROVE',
-      entityType: 'SETTLEMENT',
-      entityId: settlementId,
-      details: {
-        status: SETTLEMENT_STATUS.OWNER_APPROVED,
-        total: effects.totalSettlement,
-        loansDeduction: effects.loansDeduction,
-        loansAdjustment: effects.loansAdjustment,
-        overtimeAdjustment: effects.overtimeAdjustment,
-        userDeactivated: access?.deactivated ?? false,
-        accessGraceDays: access?.graceDays ?? 0,
-        exitReasonRecorded: exitRecorded?.exitReason ?? null,
-        exitVoluntaryRecorded: exitRecorded?.exitVoluntary ?? null,
-        notes: notes ?? null,
-      },
-      ipAddress: ctx.ipAddress,
-    },
+/** The approval's context: the settlement effect log writer of offboarding (routes pass recordSettlementEffects). */
+export interface SettlementApprovalCtx extends FinanceCtx {
+  recordEffects: RecordSettlementEffects;
+}
+
+/**
+ * Owner approval: PENDING_APPROVAL -> OWNER_APPROVED (settlement.approve behind money.gateway: not
+ * one's own settlement, not by its creator). Resets the leave accrual, exits the employee
+ * (END_OF_SERVICE) through lifecycle.transitionEmploymentState (T1 / T3, or nothing for the same last
+ * day; the login ends only when the employee becomes TERMINATED, with the terminated_access_days
+ * grace), drops draft payrolls from the last working month, pays off the loans and re-checks the
+ * overtime (settleLoansOvertimeAndDrafts, which may adjust the total), files exactly one
+ * PaymentRequest for finance with the final total (requester = the HR creator, approver = the owner,
+ * BR-PAY-012), and records every effect with its previous value (SettlementEffect rows through
+ * ctx.recordEffects = offboarding.recordSettlementEffects, same transaction, BL-LCY-015) so a later
+ * reversal (R1) can restore them. The L4 gate (settlement.approve, that employee) runs first.
+ */
+export async function approveSettlement(tx: Tx, settlementId: string, user: AuthUser, notes: string | null | undefined, ctx: SettlementApprovalCtx) {
+  requireRole(user, ROLE_GROUPS.OWNER);
+  const operationKey = keyOf(ctx, 'settlement.approve', settlementId);
+  const head = await tx.settlement.findUnique({ where: { id: settlementId }, select: { employeeId: true, createdById: true, employee: { select: { legalCompanyId: true } } } });
+  if (!head) throw notFound('التصفية غير موجودة');
+  if (head.employee.legalCompanyId) {
+    await assertNoBlockingDiscrepancies(tx, { operation: 'settlement.approve', companyId: head.employee.legalCompanyId, employeeIds: [head.employeeId] });
+  }
+  const actor = moneyActorOf(user);
+  const creatorIsApprover = !!head.createdById && head.createdById === user.id;
+  return runMoneyOperation(
     tx,
+    SETTLEMENT_APPROVE,
+    {
+      actor,
+      input: { settlementId },
+      operationKey,
+      companyId: head.employee.legalCompanyId,
+      decision: creatorIsApprover ? { ok: false, reasons: ['SAME_PERSON_TWICE'], selfAct: false } : undefined,
+    },
+    async (w) => {
+      const now = new Date();
+      const res = await w.settlement.updateMany({
+        where: { id: settlementId, status: SETTLEMENT_STATUS.PENDING_APPROVAL },
+        data: { status: SETTLEMENT_STATUS.OWNER_APPROVED, approvedById: user.id, approvedAt: now, ...(notes !== undefined ? { ownerNotes: notes } : {}) },
+      });
+      if (res.count === 0) throw conflict('تم اتخاذ قرار بشأن هذه التصفية مسبقاً');
+      const settlement = await w.settlement.findUniqueOrThrow({
+        where: { id: settlementId },
+        include: {
+          employee: { select: { id: true, firstNameArabic: true, lastNameArabic: true, employeeId: true, bankName: true, ibanNumber: true, exitReason: true, exitVoluntary: true, legalCompanyId: true } },
+        },
+      });
+      const emp = settlement.employee;
+      const before = await approvalSnapshot(w, emp.id);
+
+      const lastDay = settlement.lastWorkingDate ?? today();
+      // The accrued leave balance was paid in this settlement. End of service: accrual restarts the day
+      // after the last working day while it is still ahead (the employee works until then, BR-LCY-011).
+      const accrualStart = settlement.type === 'END_OF_SERVICE' && lastDay.getTime() > today().getTime() ? addDays(lastDay, 1) : today();
+      await w.employee.update({ where: { id: emp.id }, data: { leaveAccrualStartDate: accrualStart } });
+      let employment: TransitionOutcome | null = null;
+      if (settlement.type === 'END_OF_SERVICE') {
+        // Structured exit: a reason already recorded on the employee is kept, else the settlement's.
+        const exit = exitFieldsForTermination(settlement.terminationReason);
+        const scope = await resolveActor(w, user);
+        employment = await transitionEmploymentState(w, {
+          employeeId: emp.id,
+          command: 'EXIT',
+          date: lastDay,
+          exitReason: emp.exitReason ?? exit?.exitReason ?? null,
+          exitVoluntary: emp.exitReason ? emp.exitVoluntary : (exit?.exitVoluntary ?? null),
+          reason: `اعتماد تصفية نهاية الخدمة ${settlementId}`,
+          source: { type: 'SETTLEMENT', id: settlementId },
+          actor: { type: 'USER', id: user.id },
+          operationKey: `settlement.approve:${settlementId}:employment`,
+          companyIds: lifecycleCompanies(scopedContext(scope)),
+          access: { ipAddress: ctx.ipAddress ?? null },
+        });
+      }
+      const effects = await settleLoansOvertimeAndDrafts(w, settlement, lastDay, operationKey);
+
+      const existingPayment = await w.paymentRequest.findFirst({
+        where: { entityType: 'SETTLEMENT', entityId: settlementId, status: { not: 'RETURNED' } },
+        select: { id: true },
+      });
+      let paymentRequestId = existingPayment?.id ?? null;
+      if (!existingPayment) {
+        const created = await createPaymentRequest(w, {
+          actor,
+          title: `تصفية مستحقات - ${emp.firstNameArabic} ${emp.lastNameArabic}`,
+          reason: `اعتماد تصفية مستحقات. رقم الموظف: ${emp.employeeId}`,
+          amount: Math.max(0, effects.totalSettlement),
+          accountNumber: `تحويل بنكي | بنك: ${emp.bankName || '-'} | آيبان: ${safeDecrypt(emp.ibanNumber) || '-'}`,
+          status: 'PENDING_FINANCE',
+          // BR-PAY-012: the linked request's requester is the HR creator, its approver the owner.
+          requestedById: settlement.createdById ?? null,
+          approvedById: user.id,
+          beneficiaryEmployeeId: emp.id,
+          entityId: settlement.id,
+          entityType: 'SETTLEMENT',
+          companyId: emp.legalCompanyId,
+          operationKey: `${operationKey}:paymentRequest`,
+          ipAddress: ctx.ipAddress,
+        });
+        paymentRequestId = created.id;
+      }
+
+      const after = await approvalSnapshot(w, emp.id);
+      await w.settlement.update({ where: { id: settlement.id }, data: effects.data });
+      await ctx.recordEffects(w, {
+        settlementId: settlement.id,
+        effects: settlementEffects(emp.id, before, after, { paymentRequestId, paymentRequestCreated: !existingPayment, employment }),
+      });
+      const access = employment?.access ?? null;
+      const exitRecorded = employment?.changed ? { exitReason: employment.exitReason, exitVoluntary: employment.exitVoluntary } : null;
+
+      await logAudit(
+        {
+          userId: user.id,
+          action: 'APPROVE',
+          entityType: 'SETTLEMENT',
+          entityId: settlementId,
+          details: {
+            status: SETTLEMENT_STATUS.OWNER_APPROVED,
+            total: effects.totalSettlement,
+            loansDeduction: effects.loansDeduction,
+            loansAdjustment: effects.loansAdjustment,
+            overtimeAdjustment: effects.overtimeAdjustment,
+            userDeactivated: access?.deactivated ?? false,
+            accessGraceDays: access?.graceDays ?? 0,
+            exitReasonRecorded: exitRecorded?.exitReason ?? null,
+            exitVoluntaryRecorded: exitRecorded?.exitVoluntary ?? null,
+            notes: notes ?? null,
+          },
+          ipAddress: ctx.ipAddress,
+        },
+        w,
+      );
+      return w.settlement.findUniqueOrThrow({ where: { id: settlementId } });
+    },
   );
-  return tx.settlement.findUniqueOrThrow({ where: { id: settlementId } });
 }
 
 /**
@@ -717,38 +720,40 @@ export async function approveSettlement(tx: Tx, settlementId: string, user: Auth
  */
 export async function rejectSettlement(tx: Tx, settlementId: string, user: AuthUser, notes?: string | null, ctx: FinanceCtx = {}) {
   requireRole(user, ROLE_GROUPS.OWNER);
-  const res = await tx.settlement.updateMany({
-    where: { id: settlementId, status: SETTLEMENT_STATUS.PENDING_APPROVAL },
-    data: { status: SETTLEMENT_STATUS.REJECTED, ...(notes !== undefined ? { ownerNotes: notes } : {}) },
-  });
-  if (res.count === 0) {
-    await guardFailed(
-      tx.settlement.findUnique({ where: { id: settlementId }, select: { id: true } }),
-      'تم اتخاذ قرار بشأن هذه التصفية مسبقاً',
+  const operationKey = keyOf(ctx, 'settlement.reject', settlementId, user.id);
+  return runMoneyOperation(tx, SETTLEMENT_REJECT, { actor: moneyActorOf(user), input: { settlementId }, operationKey }, async (w) => {
+    const res = await w.settlement.updateMany({
+      where: { id: settlementId, status: SETTLEMENT_STATUS.PENDING_APPROVAL },
+      data: { status: SETTLEMENT_STATUS.REJECTED, ...(notes !== undefined ? { ownerNotes: notes } : {}) },
+    });
+    if (res.count === 0) {
+      const exists = await w.settlement.findUnique({ where: { id: settlementId }, select: { id: true } });
+      if (!exists) throw notFound();
+      throw conflict('تم اتخاذ قرار بشأن هذه التصفية مسبقاً');
+    }
+    const releasedOvertime = await unlinkOvertimeFromSettlement(w, { settlementId, operationKey });
+    await logAudit(
+      {
+        userId: user.id,
+        action: 'REJECT',
+        entityType: 'SETTLEMENT',
+        entityId: settlementId,
+        details: { notes: notes ?? null, releasedOvertime: releasedOvertime.released },
+        ipAddress: ctx.ipAddress,
+      },
+      w,
     );
-  }
-  const releasedOvertime = await tx.overtimeRequest.updateMany({
-    where: { paidInSettlementId: settlementId },
-    data: { paidInSettlementId: null },
+    return w.settlement.findUniqueOrThrow({ where: { id: settlementId } });
   });
-  await logAudit(
-    {
-      userId: user.id,
-      action: 'REJECT',
-      entityType: 'SETTLEMENT',
-      entityId: settlementId,
-      details: { notes: notes ?? null, releasedOvertime: releasedOvertime.count },
-      ipAddress: ctx.ipAddress,
-    },
-    tx,
-  );
-  return tx.settlement.findUniqueOrThrow({ where: { id: settlementId } });
 }
 
 /**
  * Finance confirms the transfer: OWNER_APPROVED -> PAID, with the payment proof (method, reference,
- * actual day) the settlement statement's discharge refers to. The linked PaymentRequest is marked
- * PAID too; a LEAVE_SETTLEMENT puts the employee ON_LEAVE.
+ * actual day) the settlement statement's discharge refers to (settlement.pay behind money.gateway:
+ * the payer is not the employee, the HR creator nor the approving owner, BR-PAY-012; the L4 gate of
+ * that employee first). The linked PaymentRequest is paid too (finance.payPaymentRequest, same rules).
+ * Paying a LEAVE_SETTLEMENT does not touch the employee: "on leave" is computed from the approved
+ * Leave rows (BR-LCY-008, BL-LCY-002), and ON_LEAVE is never stored (EV-3016, EV-3017).
  */
 export async function markSettlementPaid(
   tx: Tx,
@@ -759,41 +764,45 @@ export async function markSettlementPaid(
   proof: SettlementPaymentProof,
 ) {
   requireRole(user, ROLE_GROUPS.FINANCE);
-  const res = await tx.settlement.updateMany({
-    where: { id: settlementId, status: SETTLEMENT_STATUS.OWNER_APPROVED },
-    data: {
-      status: SETTLEMENT_STATUS.PAID,
-      ...(receiptUrl ? { transferReceiptUrl: receiptUrl } : {}),
-      paymentMethod: proof.paymentMethod,
-      paymentReference: proof.paymentReference,
-      paidAt: paidAtDate(proof.paidAt),
-    },
-  });
-  if (res.count === 0) {
-    await guardFailed(
-      tx.settlement.findUnique({ where: { id: settlementId }, select: { id: true } }),
-      'لا يمكن تأكيد الصرف: التصفية غير معتمدة من صاحب العمل أو تم صرفها مسبقاً',
+  const operationKey = keyOf(ctx, 'settlement.pay', settlementId, user.id);
+  const head = await tx.settlement.findUnique({ where: { id: settlementId }, select: { employeeId: true, employee: { select: { legalCompanyId: true } } } });
+  if (!head) throw notFound();
+  if (head.employee?.legalCompanyId) {
+    await assertNoBlockingDiscrepancies(tx, { operation: 'settlement.pay', companyId: head.employee.legalCompanyId, employeeIds: [head.employeeId] });
+  }
+  const actor = moneyActorOf(user);
+  return runMoneyOperation(tx, SETTLEMENT_PAY, { actor, input: { settlementId }, operationKey, companyId: head.employee?.legalCompanyId ?? null }, async (w) => {
+    const res = await w.settlement.updateMany({
+      where: { id: settlementId, status: SETTLEMENT_STATUS.OWNER_APPROVED },
+      data: {
+        status: SETTLEMENT_STATUS.PAID,
+        ...(receiptUrl ? { transferReceiptUrl: receiptUrl } : {}),
+        paymentMethod: proof.paymentMethod,
+        paymentReference: proof.paymentReference,
+        paidAt: paidAtDate(proof.paidAt),
+        paidById: user.id,
+      },
+    });
+    if (res.count === 0) throw conflict('لا يمكن تأكيد الصرف: التصفية غير معتمدة من صاحب العمل أو تم صرفها مسبقاً');
+    const settlement = await w.settlement.findUniqueOrThrow({ where: { id: settlementId } });
+    const openPayments = await w.paymentRequest.findMany({
+      where: { entityType: 'SETTLEMENT', entityId: settlementId, status: 'PENDING_FINANCE' },
+      select: { id: true },
+      orderBy: { id: 'asc' },
+    });
+    for (const payment of openPayments) {
+      await payPaymentRequest(w, {
+        actor,
+        paymentRequestId: payment.id,
+        receiptUrl: receiptUrl ?? settlement.transferReceiptUrl ?? `settlement:${settlementId}`,
+        operationKey: `${operationKey}:payment:${payment.id}`,
+        ipAddress: ctx.ipAddress,
+      });
+    }
+    await logAudit(
+      { userId: user.id, action: 'UPDATE', entityType: 'SETTLEMENT', entityId: settlementId, details: { status: SETTLEMENT_STATUS.PAID, receiptUrl, ...proof }, ipAddress: ctx.ipAddress },
+      w,
     );
-  }
-  const settlement = await tx.settlement.findUniqueOrThrow({ where: { id: settlementId } });
-  // Maker-checker: whoever approved the payout (requestedById) may not also record it as paid.
-  const openPayments = await tx.paymentRequest.findMany({
-    where: { entityType: 'SETTLEMENT', entityId: settlementId, status: { in: ['PENDING_OWNER', 'PENDING_FINANCE'] } },
-    select: { id: true, requestedById: true },
+    return settlement;
   });
-  for (const payment of openPayments) {
-    await enforceMakerChecker(tx, 'PAY', user, payment, ctx.ipAddress ?? null);
-  }
-  await tx.paymentRequest.updateMany({
-    where: { id: { in: openPayments.map((p) => p.id) } },
-    data: { status: 'PAID', paidById: user.id, ...(receiptUrl ? { receiptUrl } : {}) },
-  });
-  if (settlement.type === 'LEAVE_SETTLEMENT') {
-    await tx.employee.update({ where: { id: settlement.employeeId }, data: { employmentStatus: 'ON_LEAVE' } });
-  }
-  await logAudit(
-    { userId: user.id, action: 'UPDATE', entityType: 'SETTLEMENT', entityId: settlementId, details: { status: SETTLEMENT_STATUS.PAID, receiptUrl, ...proof }, ipAddress: ctx.ipAddress },
-    tx,
-  );
-  return settlement;
 }

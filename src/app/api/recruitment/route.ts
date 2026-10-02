@@ -7,6 +7,9 @@ import { ROLE_GROUPS } from '@/lib/constants';
 import { badRequest, conflict, forbidden, handleApiError, notFound, parseBody } from '@/lib/http';
 import { zId, zText } from '@/lib/validation';
 import { logAudit } from '@/lib/audit';
+import { resolveTeamContext } from '@/lib/employee-scope';
+import { authz, resolveActor, scopeWhere, scopedContext, scopedPrisma } from '@/modules/iam';
+import { deriveRequestCompanyId } from '@/lib/onboarding-company';
 import { JOB_REQUEST_STATUS, JOB_REQUEST_TRANSITIONS, JOB_TYPES } from './shared';
 
 export const dynamic = 'force-dynamic';
@@ -35,19 +38,25 @@ const updateStatusSchema = z.object({
 
 /**
  * GET: job requests + dropdown metadata.
- * HR/owner see everything. Branch/department managers see the requests they raised or that
- * belong to their department, and can only pick themselves as the requester.
+ * HR/owner see the requests of their companies (P1-FND-SCOPE: ScopedContext over UserCompanyScope).
+ * Branch/department managers work in their TeamContext (their own legal company): they see the
+ * requests they raised or that belong to their department, and can only pick themselves as the requester.
+ * Every query goes through the scoped client, so a row of a company outside the context never leaves.
  */
 export async function GET() {
   try {
     const user = await requireUser(ROLE_GROUPS.MANAGERS);
     const isHr = hasRole(user, ROLE_GROUPS.HR);
+    const actor = await resolveActor(prisma, user);
+    const ctx = isHr ? scopedContext(actor) : await resolveTeamContext(prisma, actor);
+    authz.assert(ctx, 'recruitment.jobRequest.read');
+    const db = scopedPrisma(ctx);
 
     let where: Prisma.JobRequestWhereInput = {};
     let managersWhere: Prisma.EmployeeWhereInput = { isTerminated: false };
     if (!isHr) {
       const employeeId = await requireEmployeeId(user);
-      const me = await prisma.employee.findUnique({ where: { id: employeeId }, select: { departmentId: true } });
+      const me = await db.employee.findUnique({ where: { id: employeeId }, select: { departmentId: true } });
       where = {
         OR: [{ requesterId: employeeId }, ...(me?.departmentId ? [{ departmentId: me.departmentId }] : [])],
       };
@@ -55,13 +64,13 @@ export async function GET() {
     }
 
     const [jobRequests, managers, departments] = await Promise.all([
-      prisma.jobRequest.findMany({ where, include: jobRequestInclude, orderBy: { createdAt: 'desc' } }),
-      prisma.employee.findMany({
+      db.jobRequest.findMany({ where, include: jobRequestInclude, orderBy: { createdAt: 'desc' } }),
+      db.employee.findMany({
         where: managersWhere,
         select: { id: true, firstNameArabic: true, lastNameArabic: true, employeeId: true },
         orderBy: { firstNameArabic: 'asc' },
       }),
-      prisma.department.findMany({ select: { id: true, nameArabic: true }, orderBy: { nameArabic: 'asc' } }),
+      db.department.findMany({ select: { id: true, nameArabic: true }, orderBy: { nameArabic: 'asc' } }),
     ]);
 
     return NextResponse.json({ jobRequests, metadata: { managers, departments } });
@@ -84,14 +93,18 @@ export async function POST(req: Request) {
       if (!hasRole(user, ROLE_GROUPS.HR)) throw forbidden('اعتماد طلبات التوظيف من صلاحية الموارد البشرية');
       const { id, status } = updateStatusSchema.parse(raw).payload;
       const allowedFrom = JOB_REQUEST_TRANSITIONS[status];
+      // P1-FND-SCOPE: HR decides only requests of its companies; another company's request is "not found".
+      const ctx = scopedContext(await resolveActor(prisma, user));
+      authz.assert(ctx, 'recruitment.jobRequest.decide', undefined, 'اعتماد طلبات التوظيف من صلاحية الموارد البشرية');
+      const inScope: Prisma.JobRequestWhereInput = scopeWhere(ctx, 'JobRequest') ?? {};
 
       const updated = await prisma.$transaction(async (tx) => {
         const res = await tx.jobRequest.updateMany({
-          where: { id, status: { in: [...allowedFrom] } },
+          where: { id, status: { in: [...allowedFrom] }, AND: [inScope] },
           data: { status },
         });
         if (res.count === 0) {
-          const exists = await tx.jobRequest.findUnique({ where: { id }, select: { id: true } });
+          const exists = await tx.jobRequest.findFirst({ where: { id, AND: [inScope] }, select: { id: true } });
           if (!exists) throw notFound('طلب التوظيف غير موجود');
           throw conflict('لا يمكن تغيير حالة الطلب من حالته الحالية، يرجى تحديث الصفحة');
         }
@@ -120,17 +133,27 @@ export async function POST(req: Request) {
       ? body.requesterId || (await requireEmployeeId(user))
       : await requireEmployeeId(user);
 
+    // P1-SCOPE: HR raises requests in its ScopedContext, the other managers in their TeamContext; the
+    // requester and the department must be inside it ("not found" otherwise).
+    const actor = await resolveActor(prisma, user);
+    const ctx = hasRole(user, ROLE_GROUPS.HR) ? scopedContext(actor) : await resolveTeamContext(prisma, actor);
+    authz.assert(ctx, 'recruitment.jobRequest.create');
+    const db = scopedPrisma(ctx);
     const [requester, department] = await Promise.all([
-      prisma.employee.findUnique({ where: { id: requesterId }, select: { id: true, isTerminated: true } }),
-      prisma.department.findUnique({ where: { id: body.departmentId }, select: { id: true } }),
+      db.employee.findUnique({ where: { id: requesterId }, select: { id: true, isTerminated: true } }),
+      db.department.findUnique({ where: { id: body.departmentId }, select: { id: true } }),
     ]);
     if (!requester || requester.isTerminated) throw badRequest('الموظف رافع الطلب غير موجود');
     if (!department) throw badRequest('الإدارة المحددة غير موجودة');
+    // Scope key (BL-ONB-012): the company of the department's branch; a scoped user only raises requests for his companies.
+    const companyId = await deriveRequestCompanyId(prisma, { departmentId: body.departmentId });
+    if (companyId) authz.assert(ctx, 'recruitment.jobRequest.create', { companyId }, 'هذه الشركة خارج نطاق صلاحياتك');
 
     const created = await prisma.$transaction(async (tx) => {
       const row = await tx.jobRequest.create({
         data: {
           requesterId,
+          companyId,
           departmentId: body.departmentId,
           jobTitle: body.jobTitle,
           jobType: body.jobType,

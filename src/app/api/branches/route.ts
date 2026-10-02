@@ -8,6 +8,7 @@ import { zText, zId } from '@/lib/validation';
 import { roundMoney } from '@/lib/money';
 import { logAudit } from '@/lib/audit';
 import { branchFieldsSchema } from '@/lib/employee';
+import { authz, resolveActor, scopedContext, scopedPrisma } from '@/modules/iam';
 
 export const dynamic = 'force-dynamic';
 
@@ -15,13 +16,16 @@ const WRITERS = [...new Set([...ROLE_GROUPS.ADMIN, ...ROLE_GROUPS.HR])];
 
 const listQuery = z.object({ companyId: z.string().trim().max(100).optional() });
 
-// GET - all branches (optionally ?companyId=)
+// GET - the branches of the user's companies (optionally ?companyId=). P1-SCOPE: another company's
+// branches are never listed.
 export async function GET(req: Request) {
   try {
-    await requireUser(ROLE_GROUPS.STAFF);
+    const user = await requireUser(ROLE_GROUPS.STAFF);
     const { companyId } = parseQuery(req, listQuery);
+    const ctx = scopedContext(await resolveActor(prisma, user));
+    authz.assert(ctx, 'org.read');
 
-    const branches = await prisma.branch.findMany({
+    const branches = await scopedPrisma(ctx).branch.findMany({
       where: companyId ? { companyId } : undefined,
       include: {
         company: { select: { nameArabic: true } },
@@ -46,11 +50,15 @@ export async function POST(req: Request) {
   try {
     const user = await requireUser(WRITERS);
     const b = await parseBody(req, createSchema);
+    // P1-SCOPE: a branch is created only in one of the user's companies (403 otherwise).
+    const ctx = scopedContext(await resolveActor(prisma, user));
+    authz.assert(ctx, 'org.manage', { companyId: b.companyId });
+    const db = scopedPrisma(ctx);
 
     const [company, administration] = await Promise.all([
-      prisma.company.findUnique({ where: { id: b.companyId }, select: { id: true } }),
+      db.company.findUnique({ where: { id: b.companyId }, select: { id: true } }),
       b.administrationId
-        ? prisma.administration.findUnique({ where: { id: b.administrationId }, select: { id: true, companyId: true } })
+        ? db.administration.findUnique({ where: { id: b.administrationId }, select: { id: true, companyId: true } })
         : Promise.resolve(null),
     ]);
     if (!company) throw badRequest('الشركة المحددة غير موجودة');
@@ -58,7 +66,7 @@ export async function POST(req: Request) {
       throw badRequest('الإدارة المحددة غير موجودة أو لا تتبع الشركة المختارة');
     }
 
-    const branch = await prisma.branch.create({
+    const branch = await db.branch.create({
       data: {
         ...definedOnly({
           ...b,

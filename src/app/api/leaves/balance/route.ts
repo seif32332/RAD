@@ -7,9 +7,11 @@ import { z } from 'zod';
 import { prisma } from '@/lib/prisma';
 import { requireEmployeeId, requireUser } from '@/lib/auth';
 import { ROLE_GROUPS, roleIn } from '@/lib/constants';
-import { forbidden, handleApiError, parseQuery } from '@/lib/http';
+import { forbidden, handleApiError, notFound, parseQuery } from '@/lib/http';
 import { zId, zOptDate } from '@/lib/validation';
 import { assertCanManageEmployee, getEmployeeLeaveBalance } from '@/lib/hr-workflows';
+import { resolveTeamContext } from '@/lib/employee-scope';
+import { authz, resolveActor, scopedContext, scopedPrisma } from '@/modules/iam';
 
 export const dynamic = 'force-dynamic';
 
@@ -23,9 +25,16 @@ export async function GET(req: Request) {
     const q = parseQuery(req, query);
     let employeeId: string;
     if (q.employeeId && roleIn(user.role, BALANCE_READ_ANY)) {
+      // P1-SCOPE: an employee of another company is "not found".
+      const ctx = scopedContext(await resolveActor(prisma, user));
+      authz.assert(ctx, 'leave.request.read');
+      if (!(await scopedPrisma(ctx).employee.findUnique({ where: { id: q.employeeId }, select: { id: true } }))) throw notFound('الموظف غير موجود');
       employeeId = q.employeeId;
     } else if (q.employeeId && q.employeeId !== user.employeeId && roleIn(user.role, ROLE_GROUPS.MANAGERS)) {
-      const employee = await prisma.employee.findUnique({
+      // P1-SCOPE: the manager's TeamContext (his own company): outside it = same 403 as out of team.
+      const ctx = await resolveTeamContext(prisma, await resolveActor(prisma, user));
+      authz.assert(ctx, 'leave.request.read');
+      const employee = await scopedPrisma(ctx).employee.findUnique({
         where: { id: q.employeeId },
         select: { id: true, directManagerId: true, branchId: true, departmentId: true },
       });

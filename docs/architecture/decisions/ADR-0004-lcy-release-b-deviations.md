@@ -1,0 +1,21 @@
+# ADR-0004: P1-LCY Release B — where the implementation departs from lcy-to-be.md, and why
+
+- **Date:** 2026-09-28
+- **Status:** PARTLY ACCEPTED (2026-09-28, DEC-PO-128). The owner chose to build the separate tables now instead of the stored-field workarounds: `SettlementEffect` (offboarding) replaces `Settlement.approvalEffects`, and `EmploymentMigrationReview` (lifecycle) replaces the review values in `EmploymentStateChange.legacy`. The other points stand as written.
+- **Source:** implementation of master-plan package P1-LCY (BL-LCY-001, 015, 003, 010, 016, 011), `lcy-to-be.md` v8.1 as amended by `arc-conformance.md` ARC-LCY-A1..A7.
+
+Each point below is a place where the READY design and the constitution (or the current state of the code) disagree. The implementation follows the constitution and records the gap here.
+
+| # | Design says | Implemented | Why | Proposed decision |
+|---|---|---|---|---|
+| 1 | `SettlementEffect` table (LCY-M1) | `Settlement.approvalEffects` JSON column, written once in the approval transaction (trigger refuses any later change) | A new model must first be owned in DOMAIN_BOUNDARIES §5.2 (ARCH-002.owner); only an ADR can add it | Accept the column, or add `SettlementEffect` to offboarding in §5.2 and move the log when R1 (`settlement.reverse`, after BL-PAY-001) is built |
+| 2 | `EmploymentMigrationReview` table | The found values and review codes are kept in `EmploymentStateChange.legacy` of the opening row | Same as #1 (lifecycle owns EmploymentStateChange already) | Accept; BL-LCY-006 (HR review list) reads `legacy.review` |
+| 3 | Release B turns a future-dated exit into NOTICE | `NOTICE_STATE_RELEASED = false`: a future last day keeps today's meaning (TERMINATED with that date). The machine supports NOTICE and is tested with it; T2 and its job exist | Payroll prorates only a terminated employee (payroll.ts); NOTICE before BL-LCY-012 (after BL-PAY-006 / 025) would pay the whole exit month (RT-LCY-102). The design itself makes BL-LCY-012 a precondition of "enabling NOTICE" | BL-LCY-012 flips the gate and converts the NOTICE_CANDIDATE openings by D1 |
+| 4 | `transitionEmploymentState` writes `exitReason` / `exitVoluntary` | The reason is recorded on the fact; the Employee columns are projected by offboarding (`projectExitReason`, same transaction in the routes, and the `offboarding.exitReasonProjection` consumer of `employment.*`) | SOURCE_OF_TRUTH / config: offboarding is the projector of the exit columns (ARCH-003) | Accept (ExitCase of P3-OFF becomes the truth, ARC-OFF-A3) |
+| 5 | Protected-leave guard inside the transition (BR-LCY-004) | Stays in the exit commands (employee file, absconding) | lifecycle sits below leave (§5.3) and cannot read Leave (ARCH-001) | Accept; offboarding commands (ARC-OFF-A2) keep it |
+| 6 | Settlement precondition of T4 (lcy-to-be.md:251) | Not checked by lifecycle | Settlement is offboarding's, above lifecycle | The T4 caller (BL-LCY-008 / onboarding) checks it until BL-LEV-001 lifts it |
+| 7 | T4 sets joinDate / leaveAccrualStartDate / payrollReady | Not written by lifecycle | joinDate is people's column, accrual leave's, payrollReady compensation's (ARC-LCY-A4: consumers of `employment.rehired`) | Consumers of `employment.rehired` in those modules (BL-LCY-008, BL-PAY-004) |
+| 8 | Financial approver exit (DEC-PO-021/039/042/052), vendor staff | Seam `assertFinancialApproverExit` (no-op) | identityStatus, controlsMode, rootSuspendedAt, isVendorStaff do not exist (BL-PAY-005/021/022) | Filled with those packages |
+| 9 | Gateway registration of LCY operations (BL-LCY-016), Muqeem settlement-row lock, REVERSED status | Not built | `money.gateway` (BL-PAY-001/002) and R1 do not exist; the lock guards a race with R1 only | With BL-PAY-001 and R1 |
+| 10 | N-LCY-001..008 notices | Not built; the events carry `singleOperator` and `eligibleApproverRemoved` | Recipients and channels (HR lists, owner summary, Radeef channel) are later packages | BL-LCY-006 / notifications |
+| 11 | The event key `employment:{stateChangeId}` | Kept for the first event of a change; further events of the same change add `:<type>` | One change can emit several events (D1) and the key is unique | Accept |

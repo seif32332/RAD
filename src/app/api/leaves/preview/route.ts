@@ -7,10 +7,11 @@ import { z } from 'zod';
 import { prisma } from '@/lib/prisma';
 import { requireEmployeeId, requireUser } from '@/lib/auth';
 import { ROLE_GROUPS, roleIn } from '@/lib/constants';
-import { forbidden, handleApiError, parseQuery } from '@/lib/http';
+import { forbidden, handleApiError, notFound, parseQuery } from '@/lib/http';
 import { zBool, zDate, zId, zOptDate } from '@/lib/validation';
 import { BALANCE_LEAVE_TYPES, BEREAVEMENT_RELATIONS, EVENT_DATED_LEAVE_TYPES, LEAVE_TYPES, describeLeaveIssue, isSaudiNationality } from '@/lib/leave';
 import { evaluateLeave, getExitReentryVisaFee } from '@/lib/hr-workflows';
+import { authz, resolveActor, scopedContext, scopedPrisma } from '@/modules/iam';
 
 export const dynamic = 'force-dynamic';
 
@@ -34,6 +35,10 @@ export async function GET(req: Request) {
     const q = parseQuery(req, query);
     let employeeId: string;
     if (roleIn(user.role, PREVIEW_ANY) && q.employeeId) {
+      // P1-SCOPE: HR previews only employees of its companies (another company's is "not found").
+      const ctx = scopedContext(await resolveActor(prisma, user));
+      authz.assert(ctx, 'leave.request.create');
+      if (!(await scopedPrisma(ctx).employee.findUnique({ where: { id: q.employeeId }, select: { id: true } }))) throw notFound('الموظف غير موجود');
       employeeId = q.employeeId;
     } else {
       employeeId = await requireEmployeeId(user);

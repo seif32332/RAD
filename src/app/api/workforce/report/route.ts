@@ -40,6 +40,7 @@ import { prisma } from '@/lib/prisma';
 import { NO_COMPANY_ID } from '@/lib/workforce/true-cost';
 import { zHorizon, zScenario } from '../_lib/schemas';
 import { employeeDetail, limitOrThrow, runOverview, runTrueCost } from '../_lib/server';
+import { assertCompanyVisible, workforceScope } from '../_lib/scope';
 import { GET as saudizationGET } from '../saudization/route';
 import { POST as solvePOST } from '../saudization/solve/route';
 import { POST as exitCostPOST } from '../exit-cost/route';
@@ -176,6 +177,9 @@ export async function GET(req: Request) {
     const user = await requireUser(ROLE_GROUPS.WORKFORCE);
     const { kind } = parseQuery(req, kindSchema(GET_KINDS as unknown as [string, ...string[]]));
     assertConfigured();
+    // P1-SCOPE: the caller's company scope (after the 503: nothing is loaded when the renderer is missing).
+    // The other kinds call the view handlers, which apply it themselves.
+    const wf = await workforceScope(user);
     limitPdf(user, 'report');
     const ip = getClientIp(req);
     const generatedAt = calculationTime();
@@ -183,10 +187,11 @@ export async function GET(req: Request) {
     if (kind === 'true-cost') {
       const q = parseQuery(req, trueCostSchema);
       limitOrThrow(user, 'heavy', 30, 60_000);
-      const { run, response } = await runOverview({ months: q.months, scenario: q.scenario });
+      assertCompanyVisible(wf, q.companyId);
+      const { run, response } = await runOverview({ months: q.months, scenario: q.scenario }, wf);
       let employee: TrueCostReportView['employee'] = null;
       if (q.employeeId) {
-        const one = await runTrueCost({ employeeId: q.employeeId, scenario: q.scenario });
+        const one = await runTrueCost({ employeeId: q.employeeId, scenario: q.scenario }, wf);
         const d = employeeDetail(one, q.employeeId, user.role);
         employee = { summary: d.summary, months: d.months };
       }
@@ -258,6 +263,8 @@ export async function POST(req: Request) {
     const user = await requireUser(ROLE_GROUPS.WORKFORCE);
     const { kind, date } = parseQuery(req, postQuerySchema);
     assertConfigured();
+    // P1-SCOPE: authorization through the scope layer; the view handlers called below apply the company scope.
+    await workforceScope(user);
     let body: unknown;
     try {
       body = await req.json();

@@ -50,6 +50,7 @@ import {
   type GosiRateLike,
   type GosiRegimeValue,
 } from '@/lib/gosi';
+import { GOSI_FALLBACK_RATES, catalogueLaborLaw, catalogueValueAt, overtimeMultiplierOf, type SickLeaveLaw } from '@/modules/rules';
 
 // ---------------------------------------------------------------------------
 // Settings
@@ -73,17 +74,19 @@ export interface PayrollSettings {
   workDaysPerWeek: number;
 }
 
+// Legal defaults from the rules catalogue (P1-RULE): art. 107 premium (50% -> multiplier 1.5) and the
+// OLD-regime Saudi employee GOSI rate of the GosiRate seed.
 export const DEFAULT_PAYROLL_SETTINGS: PayrollSettings = {
-  overtimeMultiplier: 1.5,
+  overtimeMultiplier: overtimeMultiplierOf(catalogueLaborLaw().overtime),
   overtimeWeekendMultiplier: 2.0,
-  gosiEmployeePercentage: 9.75,
+  gosiEmployeePercentage: GOSI_FALLBACK_RATES.find((r) => r.isSaudi)!.employeeRate,
   gosiEmployeePercentageNonSaudi: 0,
   workHoursPerDay: 8,
   workDaysPerWeek: 5,
 };
 
 /** Maximum monthly wage subject to GOSI contributions (SAR). */
-export const GOSI_MAX_CONTRIBUTORY_WAGE = 45000;
+export const GOSI_MAX_CONTRIBUTORY_WAGE = catalogueValueAt('GOSI_MAX_CONTRIBUTORY_WAGE');
 
 function settingNumber(raw: string | undefined, fallback: number, min: number, max: number): number {
   if (raw === undefined || raw === null || String(raw).trim() === '') return fallback;
@@ -440,8 +443,8 @@ export function priorSickDays(leave: LeaveLike, allLeaves: ReadonlyArray<LeaveLi
   return past;
 }
 
-/** Share of the daily rate deducted for a 75%-paid sick day. */
-const SICK_REDUCED_DEDUCTION_RATIO = 0.25;
+/** Art. 117 tiers of the catalogue (P1-RULE); the payroll run passes the company's law. */
+const DEFAULT_SICK_LEAVE_LAW: Readonly<SickLeaveLaw> = catalogueLaborLaw().sickLeave;
 
 /**
  * Deduction caused by one approved leave in the given month.
@@ -462,7 +465,10 @@ export function leaveDeductionForMonth(
   rate: number,
   year: number,
   month: number,
+  sickLaw: Readonly<SickLeaveLaw> = DEFAULT_SICK_LEAVE_LAW,
 ): LeaveMonthDeduction {
+  // Share of the daily rate deducted for a sick day of the second tier (1 − 75% = 25%).
+  const sickReducedDeductionRatio = 1 - sickLaw.partialPayRatio;
   const prefix = payrollMonthKey(year, month);
   const days = leaveDayKeys(leave);
   let unpaidDays = 0;
@@ -484,11 +490,11 @@ export function leaveDeductionForMonth(
     for (const k of days) {
       cumulative++;
       const inMonth = k.startsWith(prefix);
-      if (cumulative > 90) {
+      if (cumulative > sickLaw.partialPayUntilDay) {
         count(k, 1);
         if (inMonth) sickUnpaidDays++;
-      } else if (cumulative > 30) {
-        count(k, SICK_REDUCED_DEDUCTION_RATIO);
+      } else if (cumulative > sickLaw.fullPayDays) {
+        count(k, sickReducedDeductionRatio);
         if (inMonth) sickReducedDays++;
       }
     }
@@ -505,7 +511,7 @@ export function leaveDeductionForMonth(
   if (recorded === null || recorded === undefined) {
     // Legacy leave: compute from the deductible days.
     const amount = roundMoney(
-      unpaidDays * rate + sickReducedDays * rate * SICK_REDUCED_DEDUCTION_RATIO + sickUnpaidDays * rate,
+      unpaidDays * rate + sickReducedDays * rate * sickReducedDeductionRatio + sickUnpaidDays * rate,
     );
     return { unpaidDays, sickReducedDays, sickUnpaidDays, adminCharge: 0, amount };
   }
@@ -553,6 +559,8 @@ export function gosiEmployeeAmount(
 export interface PayrollLineInput {
   year: number;
   month: number;
+  /** Art. 117 tiers of the employee's company (rules.laborLawFor); default: the catalogue's. */
+  sickLeaveLaw?: Readonly<SickLeaveLaw>;
   employee: {
     basicSalary: number | null;
     nationality: string | null;
@@ -845,7 +853,7 @@ export function computePayrollLine(input: PayrollLineInput): PayrollLineResult {
 
   const rate = dailyRate({ basicSalary: basicFull, allowances: emp.allowances });
   const leaveDeductions = sumMoney(
-    input.leaves.map((lv) => leaveDeductionForMonth(lv, input.leaves, rate, year, month).amount),
+    input.leaves.map((lv) => leaveDeductionForMonth(lv, input.leaves, rate, year, month, input.sickLeaveLaw).amount),
   );
   const penalties = sumMoney(input.deductions.map((d) => d.amount));
   const notes: string[] = [];

@@ -8,7 +8,10 @@ import { badRequest, conflict, forbidden, handleApiError, notFound, parseBody } 
 import { zDate, zId, zOptDate, zOptInt, zOptText } from '@/lib/validation';
 import { dateKey, daysBetween, today } from '@/lib/dates';
 import { logAudit } from '@/lib/audit';
-import { deactivateEmployeeUser } from '@/lib/access';
+import { authz, resolveActor, scopedContext, scopedPrisma } from '@/modules/iam';
+import { resolveSelfContext, resolveTeamContext } from '@/lib/employee-scope';
+import { isSeparated, lifecycleCompanies, transitionEmploymentState } from '@/modules/lifecycle';
+import { projectExitReason } from '@/modules/offboarding';
 import { roundMoney } from '@/lib/money';
 import { BLOCKING_LEAVE_ISSUES, describeLeaveIssue, parseStatutoryNoteMarkers } from '@/lib/leave';
 import {
@@ -79,6 +82,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
     const body = await parseBody(req, actionSchema);
     const ipAddress = getClientIp(req);
     const opts = { ipAddress };
+    await assertLeaveInScope(user, id);
     // Any action may change the leave (approval, dates, cancellation): keep its letter in line (idempotent).
     after(() => syncLeaveLetterQuietly(id));
 
@@ -128,6 +132,24 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
 
 type Actor = Awaited<ReturnType<typeof requireUser>>;
 
+/**
+ * P1-SCOPE: the leave must be inside the actor's context before any workflow helper runs: HR in its
+ * companies (ScopedContext), a manager in his team inside his own company (TeamContext), an employee
+ * on his own leaves (SelfContext). Outside it the leave is "not found". The role rules of each action
+ * stay in the helpers (approveLeave, cancelLeave…).
+ */
+async function assertLeaveInScope(user: Actor, id: string) {
+  const actor = await resolveActor(prisma, user);
+  const ctx = roleIn(user.role, ROLE_GROUPS.HR)
+    ? scopedContext(actor)
+    : roleIn(user.role, ROLE_GROUPS.MANAGERS)
+      ? await resolveTeamContext(prisma, actor)
+      : await resolveSelfContext(prisma, actor);
+  authz.assert(ctx, 'leave.request.act');
+  const leave = await scopedPrisma(ctx).leave.findUnique({ where: { id }, select: { id: true } });
+  if (!leave) throw notFound('الإجازة غير موجودة');
+}
+
 /** Leave types on which "خرج ولم يعد" is never recorded (DOM-004). */
 const ABSCOND_PROTECTED_LEAVE_TYPES: readonly string[] = ['MATERNITY', 'SICK'];
 
@@ -150,9 +172,16 @@ export function abscondProblem(l: { leaveType: string; endDate: Date }, asOf: Da
   return null;
 }
 
-/** "خرج ولم يعد": the employee did not come back from an approved leave. HR only. */
+/**
+ * "خرج ولم يعد": the employee did not come back from an approved leave. HR only, inside HR's
+ * companies. The exit goes through lifecycle.transitionEmploymentState (BR-LCY-006, lcy-to-be.md §11):
+ * ACTIVE -> T3 (T1 for a later date once NOTICE is released), NOTICE -> T3n (two people), TERMINATED
+ * with the same date -> nothing, another date -> refused (D1). Exit reason ABSCONDING, no
+ * documents-only window for the login.
+ */
 async function abscond(id: string, body: Extract<ActionBody, { action: 'ABSCOND' }>, user: Actor, ipAddress: string) {
   if (!roleIn(user.role, ROLE_GROUPS.HR)) throw forbidden();
+  const scope = scopedContext(await resolveActor(prisma, user));
   await prisma.$transaction(async (tx) => {
     const leave = await tx.leave.findUnique({
       where: { id },
@@ -163,32 +192,39 @@ async function abscond(id: string, body: Extract<ActionBody, { action: 'ABSCOND'
         leaveType: true,
         endDate: true,
         employeeId: true,
-        employee: { select: { id: true, directManagerId: true, branchId: true, departmentId: true, isTerminated: true } },
+        employee: { select: { id: true, directManagerId: true, branchId: true, departmentId: true, isTerminated: true, employmentState: true, terminationDate: true } },
       },
     });
     if (!leave) throw notFound('الإجازة غير موجودة');
     if (leave.status !== LEAVE_STATUS.APPROVED || leave.isReturned) throw conflict('لا يمكن تنفيذ الإجراء إلا على إجازة معتمدة قائمة');
-    if (leave.employee.isTerminated) throw conflict('الموظف مستبعد مسبقاً');
+    if (isSeparated(leave.employee)) throw conflict('الموظف مستبعد مسبقاً');
     await assertCanManageEmployee(tx, user, leave.employee);
     const problem = abscondProblem(leave, today(), body.terminationDate ?? null);
     if (problem) throw conflict(problem);
     const terminationDate = body.terminationDate ?? today();
-    const r = await tx.employee.updateMany({
-      where: { id: leave.employeeId, isTerminated: false },
-      data: { isTerminated: true, terminationDate, employmentStatus: 'EXCLUDED' },
-    });
-    if (r.count === 0) throw conflict('الموظف مستبعد مسبقاً');
     // Structured exit (workforce engine): "خرج ولم يعد" = ABSCONDING (انقطاع عن العمل), a voluntary
-    // exit by default (defaultExitVoluntary). Recorded only when the file has no exit reason yet, so a
-    // reason HR set by hand is never overwritten. The settlement reason (ARTICLE_80 or other) is still
+    // exit by default (defaultExitVoluntary). The settlement reason (ARTICLE_80 or other) is still
     // chosen by HR in the settlement: ABSCONDING -> ARTICLE_80 is only a reading (EXIT_REASON_TO_TERMINATION).
     const exitReason: ExitReason = 'ABSCONDING';
-    const exit = await tx.employee.updateMany({
-      where: { id: leave.employeeId, exitReason: null },
-      data: { exitReason, exitVoluntary: defaultExitVoluntary(exitReason) },
+    const operationKey = `leave.abscond:${id}:${dateKey(terminationDate)}`;
+    const result = await transitionEmploymentState(tx, {
+      employeeId: leave.employeeId,
+      command: 'EXIT',
+      fromNotice: 'TERMINATE_IN_NOTICE',
+      date: terminationDate,
+      exitReason,
+      exitVoluntary: defaultExitVoluntary(exitReason),
+      reason: body.reason,
+      source: { type: 'LEAVE_ABSCOND', id },
+      actor: { type: 'USER', id: user.id },
+      operationKey,
+      companyIds: lifecycleCompanies(scope),
+      // Absconding: no documents-only window (the account stops at once unless a grace period applies).
+      access: { documentsAccess: false, ipAddress },
     });
-    // Absconding: no documents-only window (the account stops at once unless a grace period applies).
-    await deactivateEmployeeUser(tx, leave.employeeId, { reason: 'ABSCONDED', actorId: user.id, ipAddress, documentsAccess: false });
+    if (!result.changed) throw conflict('الموظف مستبعد مسبقاً');
+    await projectExitReason(tx, leave.employeeId, { key: `${operationKey}:exitReason`, actor: { type: 'USER', id: user.id } });
+    if (result.replayed) return;
     await logAudit(
       {
         userId: user.id,
@@ -202,13 +238,15 @@ async function abscond(id: string, body: Extract<ActionBody, { action: 'ABSCOND'
           terminationDate: dateKey(terminationDate),
           reason: body.reason,
           writtenWarningAcknowledged: true,
-          exitReasonRecorded: exit.count > 0 ? exitReason : null,
+          transition: result.transition,
+          stateChangeId: result.stateChangeId,
+          exitReasonRecorded: result.exitReason,
         },
         ipAddress,
       },
       tx,
     );
-  });
+  }, { timeout: 20_000, maxWait: 10_000 });
 }
 
 /** EXTEND / EDIT: new dates, days and deduction are recomputed on the server. HR only. */

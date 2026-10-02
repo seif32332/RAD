@@ -1,0 +1,15 @@
+# /etc/systemd/system/radeef-jobs@.service: one scripts/jobs.mjs job for every tenant (ops/run-jobs.sh).
+# Started by the radeef-jobs@<job>.timer units next to this file; install them with ops/jobs-setup.sh.
+[Unit]
+Description=Radeef background job %i (all tenants)
+After=network-online.target postgresql.service
+
+[Service]
+Type=oneshot
+User=radeef
+Group=radeef
+Environment=RADEEF_ROOT=/opt/radeef
+ExecStart=/opt/radeef/src/ops/run-jobs.sh %i
+Nice=10
+IOSchedulingClass=idle
+TimeoutStartSec=90min

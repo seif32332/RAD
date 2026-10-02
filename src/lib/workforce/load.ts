@@ -35,6 +35,16 @@ export interface WorkforceScope {
   branchId?: string | null;
   departmentId?: string | null;
   employeeIds?: ReadonlyArray<string> | null;
+  /**
+   * The caller's companies (P1-SCOPE, DOMAIN_BOUNDARIES §5.4.3): only employees of these LEGAL companies
+   * are loaded, so nothing of another company enters the computation. null / undefined = every company.
+   */
+  companyIds?: ReadonlyArray<string> | null;
+}
+
+/** Employee filter of a company list (legal company); null = no filter. */
+function legalCompanyIn(companyIds: ReadonlyArray<string> | null | undefined): Prisma.EmployeeWhereInput {
+  return companyIds ? { legalCompanyId: { in: [...companyIds] } } : {};
 }
 
 const EMPLOYEE_SELECT = {
@@ -141,8 +151,13 @@ export async function loadIqamaFeeRule(at: Date, db: Db = prisma): Promise<{ val
   return { value: row?.value ?? null, status: row ? normalizeStatus(row.status) : 'MISSING', effectiveFrom: row ? row.effectiveFrom.toISOString().slice(0, 10) : null };
 }
 
-export async function loadAssumptionRows(db: Db = prisma): Promise<AssumptionRow[]> {
+/**
+ * Assumption rows. `companyIds` (the caller's companies): the tenant-wide defaults (companyId '') and the
+ * overrides of those companies only; null / undefined = every row.
+ */
+export async function loadAssumptionRows(db: Db = prisma, companyIds?: ReadonlyArray<string> | null): Promise<AssumptionRow[]> {
   return db.workforceAssumption.findMany({
+    where: companyIds ? { companyId: { in: ['', ...companyIds] } } : undefined,
     select: { key: true, companyId: true, value: true, valueJson: true, note: true },
     orderBy: [{ key: 'asc' }, { companyId: 'asc' }],
   });
@@ -199,19 +214,22 @@ export async function loadTrueCostInput(opts: { startMonth: string | Date; month
       where: {
         joinDate: { lte: horizonEnd },
         OR: [{ isTerminated: false }, { isTerminated: true, terminationDate: { gte: horizonStart } }],
+        ...legalCompanyIn(opts.scope?.companyIds),
       },
       select: EMPLOYEE_SELECT,
       orderBy: { id: 'asc' },
     }),
     loadRuleRows(db),
     loadGosiRateRows(db),
-    loadAssumptionRows(db),
+    loadAssumptionRows(db, opts.scope?.companyIds),
     loadPayrollSettings(db),
     loadAnnualLeaveDaysSetting(db),
   ]);
   const employees = rows.map(toEmployeeInput);
   // Legal companies (levy, groups) + actual companies (their «إعدادات الكلفة» apply when no legal company).
-  const companyIds = [...new Set(employees.flatMap((e) => [e.legalCompanyId, e.actualCompanyId]).filter((x): x is string => !!x))];
+  // In a restricted scope every loaded employee has a legal company of the scope: no other company is loaded.
+  const allowed = opts.scope?.companyIds ? new Set(opts.scope.companyIds) : null;
+  const companyIds = [...new Set(employees.flatMap((e) => [e.legalCompanyId, e.actualCompanyId]).filter((x): x is string => !!x && (!allowed || allowed.has(x))))];
   const companies = await loadCompanies(db, companyIds);
 
   const s = opts.scope;
@@ -249,6 +267,8 @@ export async function loadExitCostInput(
     replacementIsSaudi?: boolean | null;
     salaryBasis?: 'basic' | 'total';
     scenario?: Scenario;
+    /** The caller's companies: assumption overrides of other companies are not loaded (null = every row). */
+    companyIds?: ReadonlyArray<string> | null;
   },
   db: Db = prisma,
 ): Promise<ExitCostInput | null> {
@@ -279,7 +299,7 @@ export async function loadExitCostInput(
   const [rules, gosiRates, assumptions, payrollSettings, annualLeaveDaysSetting, companies, peers] = await Promise.all([
     loadRuleRows(db),
     loadGosiRateRows(db),
-    loadAssumptionRows(db),
+    loadAssumptionRows(db, opts.companyIds),
     loadPayrollSettings(db),
     loadAnnualLeaveDaysSetting(db),
     // Legal company (levy) and, without one, the actual company («إعدادات الكلفة»).
@@ -354,11 +374,14 @@ export interface LegalCompanyWorkforce {
  * Legal companies and their employees for the Saudization planner / hire scenarios. `companyId` = one
  * company; otherwise every company that has an active legal employee on the date or a Nitaqat activity.
  */
-export async function loadLegalCompanyWorkforce(opts: { companyId?: string | null; date: Date }, db: Db = prisma): Promise<LegalCompanyWorkforce[]> {
+export async function loadLegalCompanyWorkforce(opts: { companyId?: string | null; date: Date; companyIds?: ReadonlyArray<string> | null }, db: Db = prisma): Promise<LegalCompanyWorkforce[]> {
   const since = new Date(opts.date.getTime() - NITAQAT_HISTORY_DAYS * 86400000);
+  // `companyIds` (the caller's companies): a named company outside it loads nothing (the caller 404s).
+  const allowed = opts.companyIds ? [...opts.companyIds] : null;
+  if (opts.companyId && allowed && !allowed.includes(opts.companyId)) return [];
   const rows = await db.employee.findMany({
     where: {
-      legalCompanyId: opts.companyId ? opts.companyId : { not: null },
+      legalCompanyId: opts.companyId ? opts.companyId : allowed ? { in: allowed } : { not: null },
       OR: [{ isTerminated: false }, { isTerminated: true, terminationDate: { gte: since } }],
     },
     select: EMPLOYEE_SELECT,
@@ -374,7 +397,7 @@ export async function loadLegalCompanyWorkforce(opts: { companyId?: string | nul
   let ids: string[];
   if (opts.companyId) ids = [opts.companyId];
   else {
-    const withActivity = await db.company.findMany({ where: { nitaqatActivityKey: { not: null } }, select: { id: true } });
+    const withActivity = await db.company.findMany({ where: { nitaqatActivityKey: { not: null }, ...(allowed ? { id: { in: allowed } } : {}) }, select: { id: true } });
     ids = [...new Set([...byCompany.keys(), ...withActivity.map((c) => c.id)])];
   }
   const companies = await loadCompanies(db, ids);
@@ -382,7 +405,7 @@ export async function loadLegalCompanyWorkforce(opts: { companyId?: string | nul
 }
 
 /** Engine inputs shared by the solver costs and the hire scenarios (rules, GOSI, assumptions, settings). */
-export async function loadCostContextRows(db: Db = prisma) {
-  const [rules, gosiRates, assumptions, payrollSettings, annualLeaveDaysSetting] = await Promise.all([loadRuleRows(db), loadGosiRateRows(db), loadAssumptionRows(db), loadPayrollSettings(db), loadAnnualLeaveDaysSetting(db)]);
+export async function loadCostContextRows(db: Db = prisma, companyIds?: ReadonlyArray<string> | null) {
+  const [rules, gosiRates, assumptions, payrollSettings, annualLeaveDaysSetting] = await Promise.all([loadRuleRows(db), loadGosiRateRows(db), loadAssumptionRows(db, companyIds), loadPayrollSettings(db), loadAnnualLeaveDaysSetting(db)]);
   return { rules, gosiRates, assumptions, payrollSettings, annualLeaveDaysSetting };
 }

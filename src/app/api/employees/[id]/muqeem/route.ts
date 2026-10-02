@@ -31,6 +31,7 @@ import { ROLE_GROUPS } from '@/lib/constants';
 import { HttpError, badRequest, conflict, handleApiError, notFound, parseBody } from '@/lib/http';
 import { dateKey, todayKey } from '@/lib/dates';
 import { logAudit } from '@/lib/audit';
+import { authz, resolveActor, scopedContext, scopedPrisma } from '@/modules/iam';
 import {
   IN_FLIGHT_MESSAGE,
   IQAMA_DURATIONS_MONTHS,
@@ -110,8 +111,14 @@ const RECENT_TRANSACTIONS = 20;
 /** Same as reconcileTransaction() and every other Muqeem reconcile path (visas, settlements, generic). */
 const RECONCILE_ROLES = ROLE_GROUPS.GOV;
 
-async function loadEmployee(id: string): Promise<EmployeeRow> {
-  const employee = await prisma.employee.findUnique({ where: { id }, select: EMPLOYEE_SELECT });
+/**
+ * The employee, inside the user's companies (P1-SCOPE): an employee of another company is "not
+ * found" (404). Everything else in this route is keyed on that employee.
+ */
+async function loadEmployee(user: AuthUser, id: string, action: 'employee.read' | 'employee.muqeem.operate'): Promise<EmployeeRow> {
+  const ctx = scopedContext(await resolveActor(prisma, user));
+  authz.assert(ctx, action);
+  const employee = await scopedPrisma(ctx).employee.findUnique({ where: { id }, select: EMPLOYEE_SELECT });
   if (!employee) throw notFound('الموظف غير موجود');
   return employee;
 }
@@ -296,7 +303,7 @@ export async function GET(_req: Request, { params }: Ctx) {
     const user = await requireUser(ROLE_GROUPS.GOV);
     const canSettle = (RECONCILE_ROLES as readonly string[]).includes(user.role);
     const { id } = await params;
-    const employee = await loadEmployee(id);
+    const employee = await loadEmployee(user, id, 'employee.read');
     const config = muqeemConfig();
 
     const [rows, payments] = await Promise.all([
@@ -425,7 +432,7 @@ export async function POST(req: Request, { params }: Ctx) {
     const user = await requireUser(ROLE_GROUPS.GOV);
     const { id } = await params;
     const body = await parseBody(req, bodySchema);
-    const employee = await loadEmployee(id);
+    const employee = await loadEmployee(user, id, 'employee.muqeem.operate');
     const ip = getClientIp(req);
 
     let response: Record<string, unknown>;

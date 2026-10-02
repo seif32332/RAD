@@ -1,0 +1,12 @@
+# /etc/systemd/system/radeef-jobs@reconcile.timer: daily 03:15 + up to 20 min (invariant engine, P1-FND-INV),
+# before the expiry digest; the discrepancies it records are what the owner dashboard and the gates read.
+[Unit]
+Description=Radeef background job reconcile (schedule)
+
+[Timer]
+OnCalendar=*-*-* 03:15:00 Asia/Riyadh
+RandomizedDelaySec=20min
+Persistent=true
+
+[Install]
+WantedBy=timers.target

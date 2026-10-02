@@ -1,9 +1,13 @@
+import { setInitialAllowances } from '@/modules/compensation';
+import { moneyActorOf } from '@/modules/platform';
 import { NextResponse } from 'next/server';
 import { z } from 'zod';
 import { ContractType, PaymentMethod, AccommodationType, Prisma } from '@prisma/client';
 import { prisma } from '@/lib/prisma';
 import { requireUser, getClientIp } from '@/lib/auth';
 import { managedEmployeesWhere } from '@/lib/hr-workflows';
+import { resolveTeamContext } from '@/lib/employee-scope';
+import { authz, resolveActor, scopedContext, scopedPrisma } from '@/modules/iam';
 import { ROLE_GROUPS } from '@/lib/constants';
 import { handleApiError, parseBody, parseQuery, conflict, badRequest } from '@/lib/http';
 import { zText, zOptText, zDate, zOptDate, zMoney, zOptMoney, zOptInt, zPagination } from '@/lib/validation';
@@ -29,6 +33,8 @@ import {
   orgPlacementErrors,
 } from '@/lib/employee';
 import { daysBetween } from '@/lib/dates';
+import { resolveWorkPatternId } from '@/modules/calendar';
+import { valueAt } from '@/modules/rules';
 import { employeeWorkforceFieldsSchema, redactWorkforceForPayroll, resolveWorkforceFields, zAllowanceType } from './_workforce-fields';
 
 export const dynamic = 'force-dynamic';
@@ -109,8 +115,17 @@ export async function POST(req: Request) {
   try {
     const user = await requireUser(ROLE_GROUPS.HR);
     const b = await parseBody(req, createEmployeeSchema);
+    // P1-SCOPE: a scoped HR user creates employees only in his companies (legal and actual; an
+    // employee without a legal company is outside every restricted scope: 403).
+    const ctx = scopedContext(await resolveActor(prisma, user));
+    authz.assert(ctx, 'employee.create', { companyId: b.legalCompanyId ?? null });
+    if (b.actualCompanyId) authz.assert(ctx, 'employee.create', { companyId: b.actualCompanyId });
+    const db = scopedPrisma(ctx);
 
     await assertValidDirectManager(prisma, null, b.directManagerId);
+    if (b.directManagerId && !(await db.employee.findUnique({ where: { id: b.directManagerId }, select: { id: true } }))) {
+      throw badRequest('المدير المباشر المحدد غير موجود');
+    }
     const sourceError = gosiRegimeSourceError(b.gosiRegime, b.gosiRegistrationSource);
     if (sourceError) throw badRequest(sourceError);
 
@@ -137,8 +152,8 @@ export async function POST(req: Request) {
     if (dateErrors.length) throw badRequest(dateErrors.join(' — '));
 
     const [branch, department] = await Promise.all([
-      b.branchId ? prisma.branch.findUnique({ where: { id: b.branchId }, select: { id: true, companyId: true } }) : null,
-      b.departmentId ? prisma.department.findUnique({ where: { id: b.departmentId }, select: { id: true, branchId: true } }) : null,
+      b.branchId ? db.branch.findUnique({ where: { id: b.branchId }, select: { id: true, companyId: true } }) : null,
+      b.departmentId ? db.department.findUnique({ where: { id: b.departmentId }, select: { id: true, branchId: true } }) : null,
     ]);
     if (b.branchId && !branch) throw badRequest('الفرع المختار غير موجود');
     if (b.departmentId && !department) throw badRequest('القسم المختار غير موجود');
@@ -174,7 +189,8 @@ export async function POST(req: Request) {
       contractType: b.contractType,
       contractEndDate: b.contractEndDate ?? null,
       probationEndDate: b.probationEndDate ?? null,
-      noticePeriodDays: b.noticePeriodDays ?? 30,
+      // Default: the worker's statutory notice (art. 75) of the company on the join date (P1-RULE).
+      noticePeriodDays: b.noticePeriodDays ?? (await valueAt('NOTICE_DAYS_EMPLOYEE', b.legalCompanyId ?? null, b.joinDate, prisma)),
       leaveAccrualStartDate: b.leaveAccrualStartDate ?? b.joinDate,
       basicSalary: roundMoney(b.basicSalary),
       gosiDeduction: roundMoney(b.gosiDeduction ?? 0),
@@ -192,6 +208,8 @@ export async function POST(req: Request) {
       jobTitleEnglish: b.jobTitleEnglish ?? null,
       directManagerId: b.directManagerId ?? null,
       workSchedule: b.workSchedule ?? null,
+      // P1-CAL: the work pattern as a FK (the form sends the pattern's name within the branch)
+      workPatternId: await resolveWorkPatternId(prisma, b.branchId ?? null, b.workSchedule ?? null),
       accommodationType: b.accommodationType ?? null,
       workContractUrl: b.contractDocUrl ?? null,
       iqamaCopyUrl: b.idDocUrl ?? null,
@@ -202,13 +220,20 @@ export async function POST(req: Request) {
       gosiNumber: b.gosiNumber ?? null,
       idType: b.idType ?? null,
       ...workforce.data,
-      allowances: allowances.length ? { create: allowances } : undefined,
     };
 
     let created;
     try {
       ({ result: created } = await createWithEmployeeCode(prisma, async (code, tx) => {
         const emp = await tx.employee.create({ data: { ...data, employeeId: code } });
+        // The recurring allowances through compensation (money.gateway), in the same transaction.
+        await setInitialAllowances(tx, {
+          actor: moneyActorOf(user),
+          employeeId: emp.id,
+          allowances: allowances.map((a) => ({ name: a.name, amount: a.amount, countsTowardGosi: a.countsTowardGosi, allowanceType: a.allowanceType })),
+          companyId: emp.legalCompanyId,
+          operationKey: `employee.create.allowances:${emp.id}`,
+        });
         // Documents uploaded before the employee existed: give them their category and owner.
         await classifyEmployeeDocuments(tx, emp.id, {
           workContractUrl: emp.workContractUrl,
@@ -235,8 +260,9 @@ export async function POST(req: Request) {
 
     // Data-quality warnings (IBAN, shared IBAN, ID format, nationality/ID, probation > 180 days,
     // non-Saudi without a contract end date, far-future join date): never block the save.
+    // Only employees of the user's companies are named (never another company's employee code).
     const sharedIban = b.ibanNumber
-      ? await prisma.employee.findMany({
+      ? await db.employee.findMany({
           where: { ibanNumber: b.ibanNumber, id: { not: created.id } },
           select: { employeeId: true },
           orderBy: { employeeId: 'asc' },
@@ -281,14 +307,20 @@ export async function GET(req: Request) {
     const page = { take: q.take, skip: q.skip };
     const orderBy = { createdAt: 'desc' } as const;
     const level = employeeAccessLevel(user.role);
+    // P1-SCOPE: managers read their TeamContext (team inside their own legal company), every other
+    // role its ScopedContext (the companies of its UserCompanyScope rows; all for the owner).
+    const actor = await resolveActor(prisma, user);
+    const ctx = level === 'team' ? await resolveTeamContext(prisma, actor) : scopedContext(actor);
+    authz.assert(ctx, 'employee.read');
+    const db = scopedPrisma(ctx);
     const where = level === 'team' ? ((await managedEmployeesWhere(prisma, user)) ?? undefined) : undefined;
 
     if (q.fields === 'basic' || level === 'team' || level === 'basic') {
-      const rows = await prisma.employee.findMany({ where, select: EMPLOYEE_BASIC_SELECT, orderBy, ...page });
+      const rows = await db.employee.findMany({ where, select: EMPLOYEE_BASIC_SELECT, orderBy, ...page });
       return NextResponse.json(rows);
     }
 
-    const rows = await prisma.employee.findMany({ include: EMPLOYEE_LIST_FULL_INCLUDE, orderBy, ...page });
+    const rows = await db.employee.findMany({ include: EMPLOYEE_LIST_FULL_INCLUDE, orderBy, ...page });
     return NextResponse.json(level === 'payroll' ? rows.map((r) => redactWorkforceForPayroll(redactForPayroll(r))) : rows);
   } catch (err) {
     return handleApiError(err, 'employees:GET');

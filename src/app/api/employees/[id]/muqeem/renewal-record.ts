@@ -2,6 +2,7 @@
 // and the Muqeem renewals of this folder, so both leave the same trail. Server-only.
 import 'server-only';
 import type { Prisma } from '@prisma/client';
+import { closeLinkedPaymentRequests } from '@/modules/finance';
 
 type Tx = Prisma.TransactionClient;
 
@@ -15,10 +16,8 @@ export async function lockRenewalDocument(tx: Tx, entityId: string, documentType
  * drop its PENDING_PAYMENT markers, so it leaves the renewals queue.
  */
 export async function closeRenewalPaymentMarkers(tx: Tx, entityId: string, documentType: string): Promise<void> {
-  await tx.paymentRequest.updateMany({
-    where: { entityId, documentType, status: 'PAID' },
-    data: { status: 'COMPLETED' },
-  });
+  // finance.closeLinkedPaymentRequests (money.gateway): the document's paid fee requests are done.
+  await closeLinkedPaymentRequests(tx, { entityId, documentType, from: ['PAID'], to: 'COMPLETED', operationKey: `renewal:${entityId}:${documentType}:close` });
   await tx.renewalArchive.deleteMany({
     where: { entityId, documentType, action: 'PENDING_PAYMENT' },
   });

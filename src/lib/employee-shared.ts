@@ -3,6 +3,7 @@
 import { ibanWarning } from '@/lib/iban';
 import { idNumberWarning, nationalityIdMismatch, parseIdType, type IdTypeValue } from '@/lib/identity';
 import { isSaudiNational } from '@/lib/nationality';
+import { catalogueValueAt } from '@/modules/rules';
 
 // ---------------------------------------------------------------------------
 // Nationality
@@ -77,14 +78,16 @@ export function parseGosiRegime(v: unknown): GosiRegimeValue | null {
 
 /**
  * Probation length above which the form / API / import show a warning (DEC-003 "تحذير لا منع
- * عند probationDays > 180"). It is a review prompt for HR, not a legal ruling.
+ * عند probationDays > 180"). It is a review prompt for HR, not a legal ruling. The value is the
+ * art. 53 maximum of the rules catalogue (PROBATION_MAX_DAYS, P1-RULE); a caller holding the
+ * company's value (rules.valueAt) passes it as `maxDays`.
  */
-export const PROBATION_WARNING_DAYS = 180;
+export const PROBATION_WARNING_DAYS = catalogueValueAt('PROBATION_MAX_DAYS');
 
-export function probationWarning(days: number | null | undefined): string | null {
+export function probationWarning(days: number | null | undefined, maxDays: number = PROBATION_WARNING_DAYS): string | null {
   if (days === null || days === undefined || !Number.isFinite(days)) return null;
-  if (days <= PROBATION_WARNING_DAYS) return null;
-  return `مدة فترة التجربة (${Math.round(days)} يوماً) تتجاوز ${PROBATION_WARNING_DAYS} يوماً — يُرجى التحقق من توافقها مع نظام العمل وعقد الموظف (تنبيه فقط)`;
+  if (days <= maxDays) return null;
+  return `مدة فترة التجربة (${Math.round(days)} يوماً) تتجاوز ${maxDays} يوماً — يُرجى التحقق من توافقها مع نظام العمل وعقد الموظف (تنبيه فقط)`;
 }
 
 export interface EmployeeDataWarning {

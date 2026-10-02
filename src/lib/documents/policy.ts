@@ -7,6 +7,8 @@ export interface TypeSettingRow {
   requiresApproval: boolean | null;
   validityDays: number | null;
   signatoryId: string | null;
+  /** Company options of the type (JSON object of booleans); absent = defaults. */
+  optionsJson?: string | null;
 }
 
 export interface EffectivePolicy {
@@ -15,6 +17,19 @@ export interface EffectivePolicy {
   requiresApproval: boolean;
   validityDays: number | null;
   signatoryId: string | null;
+  /** Every option of the type: the company's value, else the type default. */
+  options: Record<string, boolean>;
+}
+
+/** The type's options with the company's values over the defaults (unknown keys ignored). */
+export function effectiveOptions(def: DocumentTypeDefinition, optionsJson: string | null | undefined): Record<string, boolean> {
+  let stored: Record<string, unknown> = {};
+  try {
+    stored = optionsJson ? (JSON.parse(optionsJson) as Record<string, unknown>) : {};
+  } catch {
+    stored = {};
+  }
+  return Object.fromEntries((def.options ?? []).map((o) => [o.key, typeof stored[o.key] === 'boolean' ? (stored[o.key] as boolean) : o.default]));
 }
 
 /** Company setting over type defaults (null = default). A locked type ignores approval / portal settings. */
@@ -26,6 +41,7 @@ export function effectivePolicy(def: DocumentTypeDefinition, setting: TypeSettin
     validityDays: setting?.validityDays !== undefined && setting?.validityDays !== null ? setting.validityDays : def.defaults.validityDays,
     // AUTO documents are unsigned (issued from an approved payroll): no signatory at all.
     signatoryId: def.issuance === 'AUTO' ? null : setting?.signatoryId ?? null,
+    options: effectiveOptions(def, setting?.optionsJson),
   };
 }
 

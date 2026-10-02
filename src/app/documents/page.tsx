@@ -10,8 +10,9 @@ import { toast, readApiError, confirmDialog, promptDialog } from '@/components/u
 import { formatDateShort } from '@/lib/dates';
 import { SETTLEMENT_PAYMENT_METHODS, type SettlementPaymentMethod } from '@/lib/settlement-payment';
 import { NOC_PURPOSES, VALIDITY, acknowledgementLabel, pdfUrl, processingLabel, type DocView, type ProcessingView } from './_lib';
+import { catalogueValueAt } from '@/modules/rules';
 
-interface TypeInfo { key: string; labelAr: string; languages: string[]; warningText: boolean; settlement: boolean; addressable: boolean; auto?: boolean; terminationNotice?: boolean; fromRecord?: boolean; noc?: boolean; promotion?: boolean; addendum?: boolean; commencement?: boolean; circular?: boolean; candidate?: boolean }
+interface TypeInfo { key: string; labelAr: string; languages: string[]; warningText: boolean; settlement: boolean; addressable: boolean; auto?: boolean; terminationNotice?: boolean; fromRecord?: boolean; noc?: boolean; promotion?: boolean; addendum?: boolean; commencement?: boolean; circular?: boolean; transfer?: boolean; candidate?: boolean }
 interface OfferOptions { candidates: { id: string; label: string; jobTitle: string; status: string }[]; companies: { id: string; label: string }[] }
 interface InvestigationOption { id: string; label: string; closedAt: string }
 const NOTICE_REASONS: Record<string, string> = {
@@ -177,10 +178,10 @@ export default function DocumentsPage() {
   const [promo, setPromo] = useState({ newJobTitleAr: '', newJobTitleEn: '', newBasicSalary: '', effectiveDate: '', reasonAr: '' });
   // Administrative decision / circular: the company's, to a group of employees.
   const [cir, setCir] = useState({ legalCompanyId: '', kind: 'CIRCULAR', subjectAr: '', bodyAr: '', effectiveDate: '', acknowledge: true, scope: 'COMPANY', ids: [] as string[] });
-  const [groups, setGroups] = useState<{ branches: Array<{ id: string; nameArabic: string }>; departments: Array<{ id: string; nameArabic: string }> } | null>(null);
+  const [groups, setGroups] = useState<{ branches: Array<{ id: string; nameArabic: string }>; departments: Array<{ id: string; nameArabic: string; branchId?: string }> } | null>(null);
   useEffect(() => {
-    if (!issueType?.circular) return;
-    if (!offerOptions) {
+    if (!issueType?.circular && !issueType?.transfer) return;
+    if (issueType?.circular && !offerOptions) {
       void (async () => {
         const res = await fetch('/api/documents/requests?scope=candidates', { cache: 'no-store' });
         if (!res.ok) return;
@@ -195,7 +196,9 @@ export default function DocumentsPage() {
         setGroups({ branches: await list(b), departments: await list(d) });
       });
     }
-  }, [issueType?.circular, offerOptions, groups]);
+  }, [issueType?.circular, issueType?.transfer, offerOptions, groups]);
+  // Transfer decision: only what is filled in changes.
+  const [trf, setTrf] = useState({ effectiveDate: '', branchId: '', departmentId: '', managerId: '', reasonAr: '' });
   const [recipients, setRecipients] = useState<{ number: string; rows: Array<{ employeeNumber: string; name: string; acknowledgedAt: string | null }> } | null>(null);
   async function showRecipients(id: string, number: string) {
     const res = await fetch(`/api/documents/${encodeURIComponent(id)}/recipients`, { cache: 'no-store' });
@@ -425,6 +428,12 @@ export default function DocumentsPage() {
           }
         : undefined,
       commencement: issueType?.commencement ? { kind: issue.commencementKind } : undefined,
+      transfer: issueType?.transfer
+        ? {
+            effectiveDate: trf.effectiveDate, newBranchId: trf.branchId || undefined, newDepartmentId: trf.departmentId || undefined,
+            newDirectManagerId: trf.managerId || undefined, reasonAr: trf.reasonAr.trim() || undefined,
+          }
+        : undefined,
       noc: issueType?.noc ? { purpose: noc.purpose, targetAr: noc.targetAr, detailsAr: noc.detailsAr.trim() || undefined } : undefined,
       terminationNotice: issueType?.terminationNotice
         ? {
@@ -441,7 +450,7 @@ export default function DocumentsPage() {
       if (issueType?.warningText) setIssue((s) => ({ ...s, subjectAr: '', bodyAr: '', incidentDate: '' }));
       if (r.status === 'ISSUED') toast.success('صدر المستند.');
       else if (r.status === 'PENDING_APPROVAL') {
-        toast.info(issueType?.warningText || issueType?.terminationNotice || issueType?.promotion || issueType?.addendum ? 'بانتظار اعتماد شخص آخر، ولن يراه الموظف قبل صدوره.' : 'الطلب بانتظار الاعتماد: لا يوجد تفويض مسبق ساري للموقّع.');
+        toast.info(issueType?.warningText || issueType?.terminationNotice || issueType?.promotion || issueType?.addendum || issueType?.transfer ? 'بانتظار الاعتماد، ولن يراه الموظف قبل صدوره.' : 'الطلب بانتظار الاعتماد: لا يوجد تفويض مسبق ساري للموقّع.');
       }
     }
   }
@@ -700,8 +709,8 @@ export default function DocumentsPage() {
               </div>
               <div className="grid grid-cols-3 gap-2 text-[12px]">
                 <label>تاريخ المباشرة<input type="date" required value={ofr.startDate} onChange={(e) => setOfr({ ...ofr, startDate: e.target.value })} className="block w-full border rounded-xl px-2 py-2 text-[14px]" /></label>
-                <label>التجربة (أيام)<input type="number" min={0} max={180} required value={ofr.probationDays} onChange={(e) => setOfr({ ...ofr, probationDays: e.target.value })} className="block w-full border rounded-xl px-2 py-2 text-[14px]" /></label>
-                <label>الإجازة السنوية<input type="number" min={21} max={60} required value={ofr.annualLeaveDays} onChange={(e) => setOfr({ ...ofr, annualLeaveDays: e.target.value })} className="block w-full border rounded-xl px-2 py-2 text-[14px]" /></label>
+                <label>التجربة (أيام)<input type="number" min={0} max={catalogueValueAt('PROBATION_MAX_DAYS')} required value={ofr.probationDays} onChange={(e) => setOfr({ ...ofr, probationDays: e.target.value })} className="block w-full border rounded-xl px-2 py-2 text-[14px]" /></label>
+                <label>الإجازة السنوية<input type="number" min={catalogueValueAt('ANNUAL_LEAVE_DAYS')} max={60} required value={ofr.annualLeaveDays} onChange={(e) => setOfr({ ...ofr, annualLeaveDays: e.target.value })} className="block w-full border rounded-xl px-2 py-2 text-[14px]" /></label>
               </div>
               <input value={ofr.notesAr} maxLength={300} onChange={(e) => setOfr({ ...ofr, notesAr: e.target.value })} placeholder="شرط أو ميزة إضافية (اختياري)" className="w-full border rounded-xl px-3 py-2.5 text-[14px]" />
             </>
@@ -742,6 +751,27 @@ export default function DocumentsPage() {
                 <input type="date" value={amd.contractEndDate} onChange={(e) => setAmd({ ...amd, contractEndDate: e.target.value })} className="border rounded-xl px-3 py-2 text-[14px]" />
               </label>
               <input value={amd.reasonAr} maxLength={200} onChange={(e) => setAmd({ ...amd, reasonAr: e.target.value })} placeholder="السبب (اختياري)، مثل: بناء على إعادة تنظيم الإدارة" className="w-full border rounded-xl px-3 py-2.5 text-[14px]" />
+            </>
+          ) : null}
+          {issueType?.transfer ? (
+            <>
+              <p className="text-[12px] text-slate-600">اترك ما لا يتغير فارغاً. بعد الاعتماد يصدر القرار ويُطبَّق على ملف الموظف في تاريخ السريان. النقل إلى مدينة أخرى يتم بملحق عقد ما لم يسمح به المالك من الإعدادات.</p>
+              <label className="block">
+                <span className="block text-[13px] font-bold text-slate-700 mb-1">تاريخ السريان</span>
+                <input type="date" required value={trf.effectiveDate} onChange={(e) => setTrf({ ...trf, effectiveDate: e.target.value })} className="border rounded-xl px-3 py-2 text-[14px]" />
+              </label>
+              <select value={trf.branchId} onChange={(e) => setTrf({ ...trf, branchId: e.target.value, departmentId: '' })} className="w-full border rounded-xl px-3 py-2.5 text-[14px]">
+                <option value="">الفرع: بلا تغيير</option>
+                {(groups?.branches ?? []).map((b) => <option key={b.id} value={b.id}>{b.nameArabic}</option>)}
+              </select>
+              <select value={trf.departmentId} onChange={(e) => setTrf({ ...trf, departmentId: e.target.value })} className="w-full border rounded-xl px-3 py-2.5 text-[14px]">
+                <option value="">الإدارة: بلا تغيير</option>
+                {(groups?.departments ?? []).filter((d) => !trf.branchId || d.branchId === trf.branchId).map((d) => <option key={d.id} value={d.id}>{d.nameArabic}</option>)}
+              </select>
+              <SearchableSelect name="managerId" label="المدير المباشر الجديد (اختياري)" value={trf.managerId}
+                onChange={(e) => setTrf({ ...trf, managerId: e.target.value })}
+                options={[{ value: '', label: 'بلا تغيير' }, ...employees.filter((e) => !e.isTerminated && e.id !== issue.employeeId).map((e) => ({ value: e.id, label: `${e.firstNameArabic ?? ''} ${e.lastNameArabic ?? ''} (${e.employeeId ?? ''})` }))]} />
+              <input value={trf.reasonAr} maxLength={200} onChange={(e) => setTrf({ ...trf, reasonAr: e.target.value })} placeholder="السبب (اختياري)، مثل: لحاجة العمل" className="w-full border rounded-xl px-3 py-2.5 text-[14px]" />
             </>
           ) : null}
           {issueType?.commencement ? (

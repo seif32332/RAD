@@ -11,7 +11,7 @@ interface Asset { id: string; kind: string; sha256: string; width: number; heigh
 interface Signatory { id: string; userId: string | null; nameAr: string; nameEn: string | null; titleAr: string; titleEn: string | null; signatureAssetId: string | null; stampAssetId: string | null; isActive: boolean }
 interface Authorization { id: string; signatoryId: string; typeKey: string; typeLabel: string; scopeJson: string | null; validFrom: string; validUntil: string | null; acceptedAt: string | null; revokedAt: string | null; revokeReason: string | null }
 interface TextRow { textAr: string | null; textEn: string | null; createdAt: string }
-interface TypeRow { key: string; code: string; labelAr: string; locked?: boolean; approvalFixed?: boolean; texts?: { opening: TextRow | null; closing: TextRow | null }; defaults: { selfService: boolean; requiresApproval: boolean; validityDays: number | null }; setting: { enabled: boolean; selfService: boolean | null; requiresApproval: boolean | null; validityDays: number | null; signatoryId: string | null } | null }
+interface TypeRow { key: string; code: string; labelAr: string; options?: { key: string; labelAr: string; default: boolean; value: boolean }[]; locked?: boolean; approvalFixed?: boolean; texts?: { opening: TextRow | null; closing: TextRow | null }; defaults: { selfService: boolean; requiresApproval: boolean; validityDays: number | null }; setting: { enabled: boolean; selfService: boolean | null; requiresApproval: boolean | null; validityDays: number | null; signatoryId: string | null } | null }
 interface Settings {
   companies: { id: string; nameArabic: string }[];
   companyId: string | null;
@@ -297,7 +297,7 @@ export default function DocumentSettingsPage() {
 
 function TypeRowEditor({ row, signatories, disabled, onSave }: {
   row: TypeRow; signatories: Signatory[]; disabled: boolean;
-  onSave: (v: { enabled: boolean; selfService: boolean | null; requiresApproval: boolean | null; validityDays: number | null; signatoryId: string | null }) => void;
+  onSave: (v: { enabled: boolean; selfService: boolean | null; requiresApproval: boolean | null; validityDays: number | null; signatoryId: string | null; options?: Record<string, boolean> }) => void;
 }) {
   const s = row.setting;
   const [v, setV] = useState({
@@ -306,10 +306,19 @@ function TypeRowEditor({ row, signatories, disabled, onSave }: {
     requiresApproval: row.locked || row.approvalFixed ? true : s?.requiresApproval ?? row.defaults.requiresApproval,
     validityDays: (s?.validityDays ?? row.defaults.validityDays)?.toString() ?? '',
     signatoryId: s?.signatoryId ?? '',
+    options: Object.fromEntries((row.options ?? []).map((o) => [o.key, o.value])) as Record<string, boolean>,
   });
   return (
     <tr>
-      <td className="py-2">{row.labelAr} <span className="text-slate-400" dir="ltr">{row.code}</span></td>
+      <td className="py-2">
+        {row.labelAr} <span className="text-slate-400" dir="ltr">{row.code}</span>
+        {(row.options ?? []).map((o) => (
+          <label key={o.key} className="flex items-start gap-1.5 mt-1 text-[12px] text-slate-600 max-w-xs">
+            <input type="checkbox" className="mt-0.5" checked={!!v.options[o.key]} disabled={disabled} onChange={(e) => setV({ ...v, options: { ...v.options, [o.key]: e.target.checked } })} />
+            {o.labelAr}{o.default ? '' : ' (الافتراضي: لا)'}
+          </label>
+        ))}
+      </td>
       <td><input type="checkbox" aria-label="مفعّل" checked={v.enabled} disabled={disabled} onChange={(e) => setV({ ...v, enabled: e.target.checked })} /></td>
       <td><input type="checkbox" aria-label="من البوابة" checked={v.selfService} disabled={disabled || row.locked} title={row.locked ? 'يصدره قسم الموارد البشرية فقط' : undefined} onChange={(e) => setV({ ...v, selfService: e.target.checked })} /></td>
       <td><input type="checkbox" aria-label="اعتماد دائماً" checked={v.requiresApproval} disabled={disabled || row.locked || row.approvalFixed} title={row.locked ? 'يعتمده دائماً شخص غير كاتبه' : row.approvalFixed ? 'التزام مالي: يُعتمد دائماً' : undefined} onChange={(e) => setV({ ...v, requiresApproval: e.target.checked })} /></td>
@@ -320,7 +329,7 @@ function TypeRowEditor({ row, signatories, disabled, onSave }: {
           {signatories.filter((x) => x.isActive).map((x) => <option key={x.id} value={x.id}>{x.nameAr}</option>)}
         </select>
       </td>
-      <td>{!disabled && <button type="button" className="text-indigo-700 font-bold" onClick={() => onSave({ enabled: v.enabled, selfService: v.selfService, requiresApproval: v.requiresApproval, validityDays: v.validityDays ? Number(v.validityDays) : null, signatoryId: v.signatoryId || null })}>حفظ</button>}</td>
+      <td>{!disabled && <button type="button" className="text-indigo-700 font-bold" onClick={() => onSave({ enabled: v.enabled, selfService: v.selfService, requiresApproval: v.requiresApproval, validityDays: v.validityDays ? Number(v.validityDays) : null, signatoryId: v.signatoryId || null, ...(row.options?.length ? { options: v.options } : {}) })}>حفظ</button>}</td>
     </tr>
   );
 }

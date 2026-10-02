@@ -1,17 +1,18 @@
 import { NextResponse } from 'next/server';
-import { prisma } from '@/lib/prisma';
 import { getClientIp, requireUser } from '@/lib/auth';
 import { ROLE_GROUPS } from '@/lib/constants';
+import type { Prisma } from '@prisma/client';
 import { handleApiError, parseBody } from '@/lib/http';
 import { logAudit } from '@/lib/audit';
-import { ensureRefsExist, utilityCreateSchema } from '../_lib';
+import { ensureRefsExist, logisticsScope, requireOwningCompany, utilityCreateSchema } from '../_lib';
 
 export const dynamic = 'force-dynamic';
 
 export async function GET() {
   try {
-    await requireUser(ROLE_GROUPS.STAFF);
-    const meters = await prisma.utilityMeter.findMany({
+    const user = await requireUser(ROLE_GROUPS.STAFF);
+    const { db } = await logisticsScope(user, 'logistics.read');
+    const meters = await db.utilityMeter.findMany({
       include: {
         branch: { select: { nameArabic: true } },
         legalCompany: { select: { nameArabic: true } },
@@ -29,8 +30,12 @@ export async function POST(req: Request) {
   try {
     const user = await requireUser(ROLE_GROUPS.LOGISTICS);
     const body = await parseBody(req, utilityCreateSchema);
+    const { ctx, db } = await logisticsScope(user, 'logistics.manage');
+    requireOwningCompany(ctx, body.legalCompanyId);
 
-    const meter = await prisma.$transaction(async (tx) => {
+    // Scoped transaction (P1-SCOPE): references and the owning (legal) company must be the user's.
+    const meter = await db.$transaction(async (scopedTx) => {
+      const tx = scopedTx as unknown as Prisma.TransactionClient;
       await ensureRefsExist(tx, {
         branchIds: [body.branchId],
         companyIds: [body.legalCompanyId, body.actualCompanyId],

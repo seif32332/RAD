@@ -1,6 +1,8 @@
 // Accident-claim validation schemas. Private module (underscore prefix): not a route.
 import { ClaimStatus } from '@prisma/client';
 import { z } from 'zod';
+import type { Prisma } from '@prisma/client';
+import { scopeWhere, type ScopeContext } from '@/modules/iam';
 import { zId, zMoney, zNumber, zOptText } from '@/lib/validation';
 import { zOptRef, zOptUrl } from '@/app/api/services/_lib';
 
@@ -56,6 +58,15 @@ export const claimUpdateSchema = z
     ...claimFields,
   })
   .superRefine(refineFaultShares);
+
+/**
+ * AccidentClaim has no company column: its scope key is its vehicle's legal company (P1-SCOPE, §5.4.3
+ * logistics). The filter to AND into every claim query; {} for an unrestricted context.
+ */
+export function claimScopeWhere(ctx: ScopeContext): Prisma.AccidentClaimWhereInput {
+  const vehicle = scopeWhere(ctx, 'Vehicle');
+  return vehicle ? { vehicle: { is: vehicle } } : {};
+}
 
 /** Vehicle projection used by the claims pages. */
 export const claimVehicleInclude = {

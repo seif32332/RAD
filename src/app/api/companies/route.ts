@@ -9,6 +9,7 @@ import { zText, zOptText, zDate, zOptDate, zOptMoney } from '@/lib/validation';
 import { roundMoney } from '@/lib/money';
 import { logAudit } from '@/lib/audit';
 import { isUniqueViolationOn } from '@/lib/employee';
+import { authz, crossCompanyContext, resolveActor, scopedContext, scopedPrisma } from '@/modules/iam';
 import { zMoiNumber, zMuqeemPlatformId, moiNumberWarnings, assertMuqeemPlatformChange } from './_muqeem';
 import {
   zNitaqatActivity,
@@ -24,8 +25,11 @@ import {
 
 export const dynamic = 'force-dynamic';
 
-/** Company admin + HR may manage companies. */
-const WRITERS = [...new Set([...ROLE_GROUPS.ADMIN, ...ROLE_GROUPS.HR])];
+/**
+ * Creating a company is an owner act (iam policy company.create, P1-SCOPE): it is tenant-wide, so it
+ * runs in an audited CrossCompanyContext. HR keeps editing its own companies (companies/[id]).
+ */
+const CREATORS = ROLE_GROUPS.OWNER;
 
 const createCompanySchema = z.object({
   nameArabic: zText(200),
@@ -63,7 +67,7 @@ const createCompanySchema = z.object({
 
 export async function POST(req: Request) {
   try {
-    const user = await requireUser(WRITERS);
+    const user = await requireUser(CREATORS);
     const b = await parseBody(req, createCompanySchema);
     await assertMuqeemPlatformChange(user, b.muqeemPlatformId, undefined);
     assertCompanyWorkforceChange(user, b, null);
@@ -76,9 +80,13 @@ export async function POST(req: Request) {
     const existing = await prisma.company.findUnique({ where: { commercialRegNum }, select: { id: true } });
     if (existing) throw conflict('رقم السجل التجاري مسجل مسبقاً في النظام');
 
+    // Opened once the input is valid: the context writes its audit row (iam.crossCompany.open).
+    const ctx = await crossCompanyContext(prisma, await resolveActor(prisma, user), { reason: 'إنشاء شركة جديدة', ipAddress: getClientIp(req) });
+    authz.assert(ctx, 'company.create');
+
     let company;
     try {
-      company = await prisma.company.create({
+      company = await scopedPrisma(ctx).company.create({
         data: {
           nameArabic: b.nameArabic,
           nameEnglish: b.nameEnglish ?? null,
@@ -147,8 +155,11 @@ export async function POST(req: Request) {
 
 export async function GET() {
   try {
-    await requireUser(ROLE_GROUPS.STAFF);
-    const companies = await prisma.company.findMany({
+    const user = await requireUser(ROLE_GROUPS.STAFF);
+    // P1-SCOPE: only the user's companies (UserCompanyScope; every company for the owner).
+    const ctx = scopedContext(await resolveActor(prisma, user));
+    authz.assert(ctx, 'org.read');
+    const companies = await scopedPrisma(ctx).company.findMany({
       orderBy: { createdAt: 'desc' },
       include: {
         _count: { select: { legalEmployees: true, actualEmployees: true, branches: true, administrations: true } },

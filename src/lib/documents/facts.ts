@@ -9,7 +9,7 @@ import { LOAN_DEDUCTIBLE_STATUSES } from '@/lib/constants';
 import { findStoredFile, storedNameFromUrl } from '@/lib/storage';
 import { decryptField } from '@/lib/crypto';
 import { normalizeIban } from '@/lib/iban';
-import type { AddendumFacts, BankFacts, CircularFacts, CommencementFacts, EvaluationFacts, LeaveFacts, ExitFacts, InvestigationFacts, PayrollFacts, SettlementFacts, TerminationFacts } from './types';
+import type { AddendumFacts, BankFacts, CircularFacts, TransferFacts, CommencementFacts, EvaluationFacts, LeaveFacts, ExitFacts, InvestigationFacts, PayrollFacts, SettlementFacts, TerminationFacts } from './types';
 
 const label = (...parts: Array<string | null | undefined>) => parts.filter((p) => p && p.trim()).join(' - ') || 'غير موصوفة';
 
@@ -120,6 +120,40 @@ export async function loadBankFacts(db: Prisma.TransactionClient, employeeId: st
     iban = null; // unreadable ciphertext: reported as an invalid IBAN
   }
   return { bankName: e?.bankName ?? null, iban };
+}
+
+/** Where the employee is now (branch with its city, department, direct manager) and the targets of a transfer. */
+export async function loadTransferFacts(
+  db: Prisma.TransactionClient,
+  employeeId: string,
+  p: { newBranchId?: string; newDepartmentId?: string; newDirectManagerId?: string } | undefined,
+  allowCityChange: boolean,
+): Promise<TransferFacts> {
+  const name = (m: { firstNameArabic: string; lastNameArabic: string }) => `${m.firstNameArabic} ${m.lastNameArabic}`.trim();
+  const e = await db.employee.findUnique({
+    where: { id: employeeId },
+    select: {
+      branch: { select: { id: true, nameArabic: true, city: true } },
+      department: { select: { id: true, nameArabic: true } },
+      directManager: { select: { id: true, firstNameArabic: true, lastNameArabic: true } },
+    },
+  });
+  const [nb, nd, nm] = await Promise.all([
+    p?.newBranchId ? db.branch.findUnique({ where: { id: p.newBranchId }, select: { id: true, nameArabic: true, city: true } }) : null,
+    p?.newDepartmentId ? db.department.findUnique({ where: { id: p.newDepartmentId }, select: { id: true, nameArabic: true, branchId: true } }) : null,
+    p?.newDirectManagerId
+      ? db.employee.findUnique({ where: { id: p.newDirectManagerId }, select: { id: true, firstNameArabic: true, lastNameArabic: true, isTerminated: true, employmentStatus: true } })
+      : null,
+  ]);
+  return {
+    branch: e?.branch ? { id: e.branch.id, nameAr: e.branch.nameArabic, city: e.branch.city } : null,
+    department: e?.department ? { id: e.department.id, nameAr: e.department.nameArabic } : null,
+    manager: e?.directManager ? { id: e.directManager.id, nameAr: name(e.directManager) } : null,
+    newBranch: nb ? { id: nb.id, nameAr: nb.nameArabic, city: nb.city } : null,
+    newDepartment: nd ? { id: nd.id, nameAr: nd.nameArabic, branchId: nd.branchId } : null,
+    newManager: nm ? { id: nm.id, nameAr: name(nm), inService: !nm.isTerminated && nm.employmentStatus !== 'EXCLUDED' } : null,
+    allowCityChange,
+  };
 }
 
 /**

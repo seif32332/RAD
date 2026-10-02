@@ -16,6 +16,7 @@ import { currentDecisions } from '../_lib/saudization';
 import { runExitCost } from '../_lib/server';
 import { assumptionEvidence, companySettingsEvidence, ASSUMPTION_BOUNDS } from '../_lib/views';
 import { frozenProjection, loadPlanBase, loadPlanOr404, toDefinition, turnoverAsOfFor } from '../plans/_lib/server';
+import { assertCompanyVisible, type WfScope } from '../_lib/scope';
 import { formatMoney } from '@/lib/money';
 import { todayKey } from '@/lib/dates';
 
@@ -59,15 +60,16 @@ export interface SensitivityRun {
   subject: Record<string, unknown>;
 }
 
-export async function runSensitivity(body: SensitivityBody): Promise<SensitivityRun> {
+/** `s` = the caller's company scope (the employee, company or plan must be inside it: 404 otherwise). */
+export async function runSensitivity(body: SensitivityBody, s: WfScope): Promise<SensitivityRun> {
   const ranges = (body.ranges ?? null) as RangeOverrides | null;
   if (body.decision === 'exit') {
-    const out = await runExitCost(body.params);
+    const out = await runExitCost(body.params, s);
     const result = exitSensitivity(out.input, { ranges });
     return { result, evidence: Object.values(out.assumptionEvidence), subject: { decision: 'exit', employeeId: body.params.employeeId, exitReason: body.params.exitReason } };
   }
   if (body.decision === 'plan') {
-    const row = await loadPlanOr404(body.planId);
+    const row = await loadPlanOr404(body.planId, s);
     const base = await loadPlanBase(row);
     const result = planSensitivity(base, toDefinition(row), { turnoverAsOf: turnoverAsOfFor(row.fromMonth), ranges });
     // An approved plan is judged against the projection frozen at approval: show both numbers.
@@ -93,7 +95,7 @@ export async function runSensitivity(body: SensitivityBody): Promise<Sensitivity
     return { result, evidence, subject: { decision: 'plan', planId: row.id } };
   }
   const p = body.params;
-  const input = await hireInput(p);
+  const input = await hireInput(p, s);
   const result = hireSensitivity(input, { horizon: p.months as 12 | 24 | 36, ranges });
   const c = input.company;
   const evidence = [
@@ -104,10 +106,16 @@ export async function runSensitivity(body: SensitivityBody): Promise<Sensitivity
 }
 
 /** The engine input of POST /api/workforce/hire-scenario (same loading as _lib/saudization.ts runHireScenario). */
-async function hireInput(p: z.infer<typeof hireScenarioSchema>): Promise<HireScenarioInput> {
+async function hireInput(p: z.infer<typeof hireScenarioSchema>, s: WfScope): Promise<HireScenarioInput> {
+  assertCompanyVisible(s, p.companyId);
   const startMonth = p.startMonth ?? todayKey().slice(0, 7);
   const date = new Date(`${startMonth}-01T00:00:00.000Z`);
-  const [workforces, register, decisionRows, ctx] = await Promise.all([loadLegalCompanyWorkforce({ companyId: p.companyId, date }), loadNitaqatRegister(), loadLocalizationDecisions(), loadCostContextRows()]);
+  const [workforces, register, decisionRows, ctx] = await Promise.all([
+    loadLegalCompanyWorkforce({ companyId: p.companyId, date, companyIds: s.companyIds }),
+    loadNitaqatRegister(),
+    loadLocalizationDecisions(),
+    loadCostContextRows(undefined, s.companyIds),
+  ]);
   const cw = workforces[0];
   if (!cw) throw notFound('الشركة غير موجودة');
   const known = new Set(cw.employees.map((e) => e.id));

@@ -11,6 +11,7 @@ import { ESTIMATE_DISCLAIMER } from '@/lib/workforce/version';
 import { trueCostQuerySchema } from '../_lib/schemas';
 import { auditViewOnce, employeeDetail, limitOrThrow, runTrueCost, trueCostTotals } from '../_lib/server';
 import { pageSummaries, summarizeEmployee } from '../_lib/views';
+import { workforceScope } from '../_lib/scope';
 
 export const dynamic = 'force-dynamic';
 
@@ -19,7 +20,8 @@ export async function GET(req: Request) {
     const user = await requireUser(ROLE_GROUPS.WORKFORCE);
     const q = parseQuery(req, trueCostQuerySchema);
     limitOrThrow(user, 'heavy', 30, 60_000);
-    const run = await runTrueCost(q);
+    // P1-SCOPE: employees of the caller's legal companies only; a filter outside them is "not found".
+    const run = await runTrueCost(q, await workforceScope(user));
     const page = pageSummaries(run.tc.employees.map(summarizeEmployee), { q: q.q, sort: q.sort, take: q.take, skip: q.skip, flagged: q.flagged });
     const detail = q.employeeId ? employeeDetail(run, q.employeeId, user.role) : null;
     await auditViewOnce(

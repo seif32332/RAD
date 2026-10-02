@@ -7,6 +7,8 @@ import { handleApiError, parseBody } from '@/lib/http';
 import { zBool, zMoney, zOptDate, zOptText, zText } from '@/lib/validation';
 import { roundMoney } from '@/lib/money';
 import { logAudit } from '@/lib/audit';
+import { recordCompanyId } from '@/lib/record-company';
+import { authz, resolveActor, scopedContext, scopedPrisma } from '@/modules/iam';
 
 export const dynamic = 'force-dynamic';
 
@@ -21,12 +23,17 @@ const createSchema = z.object({
   idAttachment: zOptText(2000),
   noteAttachment: zOptText(2000),
   otherAttachment: zOptText(2000),
+  /** The company party to the note (P1-SCOPE); defaults to the user's only company. */
+  companyId: zOptText(100),
 });
 
+/** Notes of the user's companies (P1-SCOPE: PromissoryNote.companyId, scoped client). */
 export async function GET() {
   try {
-    await requireUser(ROLE_GROUPS.LEGAL);
-    const notes = await prisma.promissoryNote.findMany({
+    const user = await requireUser(ROLE_GROUPS.LEGAL);
+    const ctx = scopedContext(await resolveActor(prisma, user));
+    authz.assert(ctx, 'legal.read');
+    const notes = await scopedPrisma(ctx).promissoryNote.findMany({
       orderBy: { createdAt: 'desc' },
     });
     return NextResponse.json(notes);
@@ -38,10 +45,13 @@ export async function GET() {
 export async function POST(req: Request) {
   try {
     const user = await requireUser(ROLE_GROUPS.LEGAL);
+    const ctx = scopedContext(await resolveActor(prisma, user));
+    authz.assert(ctx, 'legal.manage');
     const data = await parseBody(req, createSchema);
     const isOnDemand = data.isOnDemand ?? false;
+    const companyId = await recordCompanyId(prisma, ctx, data.companyId);
 
-    const createdNote = await prisma.promissoryNote.create({
+    const createdNote = await scopedPrisma(ctx).promissoryNote.create({
       data: {
         amount: roundMoney(data.amount),
         creditorName: data.creditorName,
@@ -53,6 +63,7 @@ export async function POST(req: Request) {
         idAttachment: data.idAttachment ?? null,
         noteAttachment: data.noteAttachment ?? null,
         otherAttachment: data.otherAttachment ?? null,
+        companyId,
       },
     });
 
@@ -61,7 +72,7 @@ export async function POST(req: Request) {
       action: 'CREATE',
       entityType: 'PromissoryNote',
       entityId: createdNote.id,
-      details: { amount: createdNote.amount, companyRole: createdNote.companyRole, debtorName: createdNote.debtorName },
+      details: { amount: createdNote.amount, companyRole: createdNote.companyRole, debtorName: createdNote.debtorName, companyId },
       ipAddress: getClientIp(req),
     });
 

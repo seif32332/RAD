@@ -8,6 +8,10 @@
 // BRANCH_MANAGER the departments of their branch (resolved from the session user's Employee
 // record). Approvals are the MANAGER stage of the shared workflows, which re-check that the
 // employee is within the manager's scope.
+//
+// P1-SCOPE: HR works in its ScopedContext (its companies), the two manager roles in their TeamContext
+// (inside their own legal company). Every read goes through the scoped client; a leave / correction
+// of an employee outside the context is "not found" before the workflow runs.
 import { NextResponse } from 'next/server';
 import { z } from 'zod';
 import type { Prisma } from '@prisma/client';
@@ -18,6 +22,7 @@ import { forbidden, handleApiError, notFound, parseBody, parseQuery } from '@/li
 import { zId, zOptText, zText } from '@/lib/validation';
 import { today } from '@/lib/dates';
 import { ATTENDANCE_STATUS } from '@/lib/attendance';
+import { onLeaveEmployeeIds } from '@/lib/leave-server';
 import {
   CORRECTION_STATUS,
   GENERAL_REQUEST_PREFIX,
@@ -26,6 +31,8 @@ import {
   rejectAttendanceCorrection,
   rejectLeave,
 } from '@/lib/hr-workflows';
+import { resolveTeamContext } from '@/lib/employee-scope';
+import { authz, resolveActor, scopeWhere, scopedContext, scopedPrisma } from '@/modules/iam';
 
 export const dynamic = 'force-dynamic';
 
@@ -41,14 +48,23 @@ async function managedDepartmentsWhere(user: AuthUser): Promise<Prisma.Departmen
 
 const querySchema = z.object({ departmentId: zId.optional() });
 
+/** HR: its companies; the other managers: their team (P1-SCOPE). */
+async function contextOf(user: AuthUser) {
+  const actor = await resolveActor(prisma, user);
+  const ctx = hasRole(user, ROLE_GROUPS.HR) ? scopedContext(actor) : await resolveTeamContext(prisma, actor);
+  return { actor, ctx, db: scopedPrisma(ctx) };
+}
+
 export async function GET(req: Request) {
   try {
     const user = await requireUser(ROLE_GROUPS.MANAGERS);
     const { departmentId } = parseQuery(req, querySchema);
+    const { actor, ctx, db } = await contextOf(user);
+    authz.assert(ctx, 'deptManager.read');
     const scope = await managedDepartmentsWhere(user);
 
     if (!departmentId) {
-      const departments = await prisma.department.findMany({
+      const departments = await db.department.findMany({
         where: scope ?? {},
         select: {
           id: true,
@@ -63,7 +79,7 @@ export async function GET(req: Request) {
       return NextResponse.json({ departments });
     }
 
-    const department = await prisma.department.findFirst({
+    const department = await db.department.findFirst({
       // AND (not a spread): the DEPT_MANAGER scope is itself `{ id }` and would overwrite the requested id.
       where: scope ? { AND: [{ id: departmentId }, scope] } : { id: departmentId },
       select: {
@@ -72,7 +88,9 @@ export async function GET(req: Request) {
         nameEnglish: true,
         branchId: true,
         branch: { select: { nameArabic: true } },
+        // Only the employees of the context (a department may hold an employee of another company).
         employees: {
+          where: scopeWhere(ctx, 'Employee') ?? undefined,
           select: {
             id: true,
             employeeId: true,
@@ -110,16 +128,21 @@ export async function GET(req: Request) {
     });
 
     if (!department) {
-      // Distinguish "does not exist" from "not yours".
-      const exists = await prisma.department.findUnique({ where: { id: departmentId }, select: { id: true } });
+      // Distinguish "does not exist" (or another company's) from "not yours".
+      const exists = await scopedPrisma(scopedContext(actor)).department.findUnique({ where: { id: departmentId }, select: { id: true } });
       if (!exists) throw notFound('القسم غير موجود');
       throw forbidden('هذا القسم ليس ضمن نطاق إدارتك');
     }
 
     const empIds = department.employees.map((e) => e.id);
-    const activeIds = department.employees.filter((e) => !e.isTerminated && e.employmentStatus === 'ACTIVE').map((e) => e.id);
+    // "On leave" is read from approved Leave rows covering today (BR-LCY-008), never from a stored
+    // status (EV-3902): active = in service and not on leave today.
+    const todayDate = today();
+    const inServiceIds = department.employees.filter((e) => !e.isTerminated && e.employmentStatus !== 'EXCLUDED').map((e) => e.id);
+    const onLeaveIds = await onLeaveEmployeeIds(prisma, inServiceIds, todayDate);
+    const activeIds = inServiceIds.filter((id) => !onLeaveIds.has(id));
     const [corrections, todayAttendance] = await Promise.all([
-      prisma.attendanceCorrection.findMany({
+      db.attendanceCorrection.findMany({
         // Fingerprint corrections only: general requests (letters, data update incl. IBAN) go
         // straight to HR and must not be shown to the manager (DOM-006).
         where: { employeeId: { in: empIds }, status: CORRECTION_STATUS.PENDING, NOT: { reason: { startsWith: GENERAL_REQUEST_PREFIX } } },
@@ -137,8 +160,8 @@ export async function GET(req: Request) {
         },
         orderBy: { createdAt: 'desc' },
       }),
-      prisma.attendance.findMany({
-        where: { employeeId: { in: activeIds }, date: today() },
+      db.attendance.findMany({
+        where: { employeeId: { in: activeIds }, date: todayDate },
         select: { status: true, lateMinutes: true },
       }),
     ]);
@@ -146,7 +169,7 @@ export async function GET(req: Request) {
     const stats = {
       totalEmployees: department.employees.length,
       activeEmployees: activeIds.length,
-      onLeave: department.employees.filter((e) => e.employmentStatus === 'ON_LEAVE').length,
+      onLeave: onLeaveIds.size,
       excluded: department.employees.filter((e) => e.employmentStatus === 'EXCLUDED' || e.isTerminated).length,
       pendingLeaves: department.employees.reduce((sum, e) => sum + e.leaves.length, 0),
       presentToday: todayAttendance.filter((a) => a.status === ATTENDANCE_STATUS.PRESENT).length,
@@ -173,6 +196,22 @@ export async function POST(req: Request) {
     const user = await requireUser(ROLE_GROUPS.MANAGERS);
     const body = await parseBody(req, actionSchema);
     const opts = { ipAddress: getClientIp(req) };
+    const { ctx, db } = await contextOf(user);
+    // The request must belong to an employee of the context (404 otherwise); the workflow then
+    // re-checks the manager rules (own request, team, stage).
+    const placement = { select: { id: true, legalCompanyId: true, directManagerId: true, branchId: true, departmentId: true } } as const;
+    const target =
+      'leaveId' in body
+        ? await db.leave.findUnique({ where: { id: body.leaveId }, select: { employee: placement } })
+        : await db.attendanceCorrection.findUnique({ where: { id: body.correctionId }, select: { employee: placement } });
+    if (!target) throw notFound('leaveId' in body ? 'الإجازة غير موجودة' : 'طلب التصحيح غير موجود');
+    const e = target.employee;
+    authz.assert(
+      ctx,
+      'deptManager.request.decide',
+      { companyId: e.legalCompanyId, employeeId: e.id, directManagerId: e.directManagerId, branchId: e.branchId, departmentId: e.departmentId },
+      'لا يمكنك اعتماد أو رفض طلب يخصك',
+    );
 
     const message = await prisma.$transaction(async (tx) => {
       switch (body.action) {

@@ -18,6 +18,7 @@ import {
 } from '@/lib/constants';
 import { badRequest, conflict, forbidden, notFound } from '@/lib/http';
 import { logAudit } from '@/lib/audit';
+import { laborLawFor } from '@/modules/rules';
 import { addDays, dateKey, daysBetween, inclusiveDays, today } from '@/lib/dates';
 import { roundMoney } from '@/lib/money';
 import {
@@ -32,6 +33,7 @@ import {
   isStatutoryLeaveType,
   parseStatutoryLeaveRules,
   recalculateShortenedLeave,
+  statutoryLeaveRulesFromLaw,
   type BereavementRelation,
   type LeaveBalance,
   type LeaveRequestResult,
@@ -47,6 +49,9 @@ import {
   defaultPunchTimes,
   pickEmployeeSchedule,
 } from '@/lib/attendance';
+import { resolveWorkPatternId } from '@/modules/calendar';
+import { closeLinkedPaymentRequests, createPaymentRequest } from '@/modules/finance';
+import { moneyActorOf } from '@/modules/platform';
 
 type Db = Prisma.TransactionClient;
 
@@ -244,13 +249,16 @@ export async function getNumericSetting(db: Db, key: string): Promise<number | n
   return Number.isFinite(n) ? n : null;
 }
 
-/** Statutory leave rules (SystemSetting leave_* keys; missing / invalid values use the provisional defaults). */
-export async function getStatutoryLeaveRules(db: Db): Promise<StatutoryLeaveRules> {
+/**
+ * Statutory leave rules (SystemSetting leave_* keys; missing / invalid values use `base`: the
+ * company's law from rules.laborLawFor, else the provisional catalogue defaults).
+ */
+export async function getStatutoryLeaveRules(db: Db, base?: StatutoryLeaveRules): Promise<StatutoryLeaveRules> {
   const rows = await db.systemSetting.findMany({
     where: { key: { in: Object.values(LEAVE_RULE_SETTING_KEYS) } },
     select: { key: true, value: true },
   });
-  return parseStatutoryLeaveRules(new Map(rows.map((r) => [r.key, r.value])));
+  return parseStatutoryLeaveRules(new Map(rows.map((r) => [r.key, r.value])), base);
 }
 
 export async function getExitReentryVisaFee(db: Db): Promise<number> {
@@ -326,6 +334,7 @@ export async function getEmployeeLeaveBalance(
       select: {
         joinDate: true,
         leaveAccrualStartDate: true,
+        legalCompanyId: true,
         leaves: {
           where: { leaveType: { in: BALANCE_TYPES }, status: { in: [LEAVE_STATUS.PENDING, ...BALANCE_CONSUMING_LEAVE_STATUSES] } },
           select: {
@@ -345,6 +354,8 @@ export async function getEmployeeLeaveBalance(
     getNumericSetting(db, SETTING_KEYS.ANNUAL_LEAVE_DAYS),
   ]);
   if (!employee) throw notFound('الموظف غير موجود');
+  // Art. 109 values of the employee's company on the balance day (P1-RULE: registry + override).
+  const law = await laborLawFor(db, employee.legalCompanyId ?? null, opts.asOf ?? today());
   return computeLeaveBalance({
     joinDate: employee.joinDate,
     leaveAccrualStartDate: employee.leaveAccrualStartDate,
@@ -352,6 +363,7 @@ export async function getEmployeeLeaveBalance(
     asOf: opts.asOf,
     annualLeaveDaysSetting: setting,
     excludeLeaveId: opts.excludeLeaveId,
+    law: law.annualLeave,
   });
 }
 
@@ -418,15 +430,17 @@ export async function evaluateLeave(db: Db, p: LeaveEvaluationParams): Promise<L
 
   const employee = await db.employee.findUnique({
     where: { id: p.employeeId },
-    select: { id: true, nationality: true, basicSalary: true, isTerminated: true, gender: true, joinDate: true },
+    select: { id: true, nationality: true, basicSalary: true, isTerminated: true, gender: true, joinDate: true, legalCompanyId: true },
   });
   if (!employee) throw notFound('الموظف غير موجود');
 
+  // Labour-law values of the employee's company on the leave start (P1-RULE: registry + override).
+  const law = await laborLawFor(db, employee.legalCompanyId ?? null, p.startDate);
   const statutoryType = isStatutoryLeaveType(p.leaveType);
   const [balance, pastSickDays, rules, priorHajjLeaves] = await Promise.all([
     getEmployeeLeaveBalance(db, p.employeeId, { asOf: p.startDate, excludeLeaveId: p.excludeLeaveId }),
     p.leaveType === 'SICK' ? getPastSickDays(db, p.employeeId, p.startDate, p.excludeLeaveId) : Promise.resolve(0),
-    statutoryType ? getStatutoryLeaveRules(db) : Promise.resolve(null),
+    statutoryType ? getStatutoryLeaveRules(db, statutoryLeaveRulesFromLaw(law.statutoryLeave)) : Promise.resolve(null),
     p.leaveType === 'HAJJ' ? countPriorHajjLeaves(db, p.employeeId, employee.joinDate, p.excludeLeaveId) : Promise.resolve(0),
   ]);
   const statutory: StatutoryLeaveContext | null = rules
@@ -449,6 +463,7 @@ export async function evaluateLeave(db: Db, p: LeaveEvaluationParams): Promise<L
     acceptUnpaidExtraDays: p.acceptUnpaidExtraDays,
     waiveDeduction: p.waiveDeduction,
     statutory: statutory ?? undefined,
+    sickLeaveLaw: law.sickLeave,
   });
   return { totalDays, balance, dailyRate, result, employee, statutory };
 }
@@ -583,7 +598,7 @@ export async function approveLeave(tx: Db, leaveId: string, stage: 'MANAGER' | '
     });
     if (r.count === 0) throw alreadyProcessed();
     if (leave.isOutsideKSA && !isSaudiNationality(leave.employee.nationality)) {
-      await openExitReentryVisa(tx, leave, user.id);
+      await openExitReentryVisa(tx, leave, user);
     }
   }
 
@@ -606,7 +621,7 @@ export async function findActiveExitReentryVisa(db: Db, employeeId: string): Pro
   });
 }
 
-async function openExitReentryVisa(tx: Db, leave: WorkflowLeave, requestedById: string): Promise<void> {
+async function openExitReentryVisa(tx: Db, leave: WorkflowLeave, requestedBy: AuthUser): Promise<void> {
   const existing = await findActiveExitReentryVisa(tx, leave.employeeId);
   if (existing) return;
   const fee = leave.exitReentryVisaCost && leave.exitReentryVisaCost > 0 ? roundMoney(leave.exitReentryVisaCost) : await getExitReentryVisaFee(tx);
@@ -619,17 +634,18 @@ async function openExitReentryVisa(tx: Db, leave: WorkflowLeave, requestedById: 
     },
     select: { id: true },
   });
-  await tx.paymentRequest.create({
-    data: {
-      title: `رسوم تأشيرة خروج وعودة - ${employeeName(leave.employee)}`,
-      reason: 'تكلفة تأشيرة خروج وعودة لإجازة الموظف',
-      amount: fee,
-      accountNumber: 'سداد - مدفوعات حكومية (تأشيرات)',
-      status: 'PENDING_FINANCE',
-      requestedById,
-      entityType: 'VISA',
-      entityId: visa.id,
-    },
+  // finance.createPaymentRequest (money.gateway): the fee request of the leave's visa (beneficiary: the employee).
+  await createPaymentRequest(tx, {
+    actor: moneyActorOf(requestedBy),
+    title: `رسوم تأشيرة خروج وعودة - ${employeeName(leave.employee)}`,
+    reason: 'تكلفة تأشيرة خروج وعودة لإجازة الموظف',
+    amount: fee,
+    accountNumber: 'سداد - مدفوعات حكومية (تأشيرات)',
+    status: 'PENDING_FINANCE',
+    entityType: 'VISA',
+    entityId: visa.id,
+    beneficiaryEmployeeId: leave.employeeId,
+    operationKey: `leave:${leave.id}:visa:${visa.id}:fee`,
   });
 }
 
@@ -651,9 +667,13 @@ async function cancelLeaveVisa(tx: Db, leave: WorkflowLeave): Promise<string[]> 
   if (!visas.length) return [];
   const ids = visas.map((v) => v.id);
   await tx.visa.updateMany({ where: { id: { in: ids }, status: 'PENDING_PAYMENT' }, data: { status: 'CANCELLED' } });
-  await tx.paymentRequest.updateMany({
-    where: { entityType: 'VISA', entityId: { in: ids }, status: { in: [...OPEN_PAYMENT_STATUSES] } },
-    data: { status: WITHDRAWN_PAYMENT_STATUS, returnReason: 'إلغاء الإجازة المرتبطة بالتأشيرة' },
+  await closeLinkedPaymentRequests(tx, {
+    entityType: 'VISA',
+    entityIds: ids,
+    from: [...OPEN_PAYMENT_STATUSES],
+    to: WITHDRAWN_PAYMENT_STATUS,
+    returnReason: 'إلغاء الإجازة المرتبطة بالتأشيرة',
+    operationKey: `leave:${leave.id}:visa.cancel`,
   });
   return ids;
 }
@@ -877,10 +897,14 @@ export async function approveTransfer(tx: Db, transferId: string, user: AuthUser
     clearDepartment = !dept || dept.branchId !== transfer.toBranchId;
   }
 
+  // P1-CAL: the work pattern follows the branch (FK): the named pattern of the destination branch,
+  // else its only pattern, else none (a pattern of the old branch is never kept).
+  const workPatternId = await resolveWorkPatternId(tx, transfer.toBranchId, transfer.toWorkSchedule);
   await tx.employee.update({
     where: { id: transfer.employeeId },
     data: {
       branchId: transfer.toBranchId,
+      workPatternId,
       ...(transfer.toWorkSchedule ? { workSchedule: transfer.toWorkSchedule } : {}),
       ...(clearDepartment ? { departmentId: null } : {}),
     },
@@ -946,14 +970,24 @@ export async function rejectTransfer(tx: Db, transferId: string, user: AuthUser,
 // Attendance corrections
 // ---------------------------------------------------------------------------
 
-/** The employee's WorkSchedule: Employee.workSchedule (name) within the branch, else the branch's only schedule. */
+const SCHEDULE_SELECT = { id: true, name: true, shiftType: true, startTime: true, endTime: true, startTime2: true, endTime2: true, flexibleHours: true, isExemptFromAttendance: true } as const;
+
+/**
+ * The employee's WorkSchedule (= WorkPattern, P1-CAL): Employee.workPatternId (FK). Rows written
+ * without the FK fall back to the legacy rule: Employee.workSchedule (name) within the branch, else
+ * the branch's only active schedule.
+ */
 export async function resolveEmployeeSchedule(db: Db, employeeId: string) {
-  const employee = await db.employee.findUnique({ where: { id: employeeId }, select: { id: true, branchId: true, workSchedule: true } });
+  const employee = await db.employee.findUnique({
+    where: { id: employeeId },
+    select: { id: true, branchId: true, workSchedule: true, workPatternId: true, workPattern: { select: SCHEDULE_SELECT } },
+  });
   if (!employee) throw notFound('الموظف غير موجود');
+  if (employee.workPattern) return { employee, schedule: employee.workPattern };
   if (!employee.branchId) return { employee, schedule: null };
   const schedules = await db.workSchedule.findMany({
-    where: { branchId: employee.branchId },
-    select: { id: true, name: true, shiftType: true, startTime: true, endTime: true, startTime2: true, endTime2: true, flexibleHours: true, isExemptFromAttendance: true },
+    where: { branchId: employee.branchId, archivedAt: null },
+    select: SCHEDULE_SELECT,
     orderBy: { createdAt: 'asc' },
   });
   return { employee, schedule: pickEmployeeSchedule(schedules, employee.workSchedule) };

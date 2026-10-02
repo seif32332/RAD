@@ -12,6 +12,7 @@ import { handleApiError, parseQuery } from '@/lib/http';
 import { saudizationQuerySchema } from '../_lib/saudization-schemas';
 import { runSaudization } from '../_lib/saudization';
 import { auditViewOnce, limitOrThrow } from '../_lib/server';
+import { workforceScope } from '../_lib/scope';
 
 export const dynamic = 'force-dynamic';
 
@@ -20,7 +21,8 @@ export async function GET(req: Request) {
     const user = await requireUser(ROLE_GROUPS.WORKFORCE);
     const q = parseQuery(req, saudizationQuerySchema);
     limitOrThrow(user, 'heavy', 30, 60_000);
-    const body = await runSaudization(q, user.role);
+    // P1-SCOPE: the caller's legal companies only; another company is "not found".
+    const body = await runSaudization(q, user.role, await workforceScope(user));
     if (!q.summary) await auditViewOnce(user, 'WorkforceSaudization', { companyId: q.companyId ?? null, date: body.date }, getClientIp(req));
     return NextResponse.json(body);
   } catch (err) {

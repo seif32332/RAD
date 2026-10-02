@@ -11,6 +11,7 @@ import { comparePlanProjections } from '@/lib/workforce/planning';
 import { auditViewOnce, limitOrThrow } from '../../_lib/server';
 import { compareQuerySchema } from '../_lib/schemas';
 import { loadPlansOr404, projectionFor } from '../_lib/server';
+import { workforceScope } from '../../_lib/scope';
 
 export const dynamic = 'force-dynamic';
 
@@ -21,7 +22,8 @@ export async function GET(req: Request) {
     const user = await requireUser(ROLE_GROUPS.WORKFORCE);
     const q = parseQuery(req, querySchema);
     limitOrThrow(user, 'plan-compare', 10, 60_000);
-    const rows = await loadPlansOr404(q.ids);
+    // P1-SCOPE: every compared plan must be in the caller's companies ("not found" otherwise).
+    const rows = await loadPlansOr404(q.ids, await workforceScope(user));
     // One at a time: each projection runs the true cost engine over the whole scope.
     const list = [];
     for (const row of rows) {

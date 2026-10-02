@@ -10,6 +10,7 @@ import { logAudit } from '@/lib/audit';
 import { deletionBlockers, isUniqueViolationOn } from '@/lib/employee';
 import { today } from '@/lib/dates';
 import { loadIqamaFeeRule } from '@/lib/workforce/load';
+import { authz, resolveActor, scopedContext, scopedPrisma } from '@/modules/iam';
 import { zMoiNumber, zMuqeemPlatformId, moiNumberWarnings, assertMuqeemPlatformChange } from '../_muqeem';
 import {
   zNitaqatActivity,
@@ -29,11 +30,20 @@ type Ctx = { params: Promise<{ id: string }> };
 
 const WRITERS = [...new Set([...ROLE_GROUPS.ADMIN, ...ROLE_GROUPS.HR])];
 
+/** P1-SCOPE: a company outside the user's scope is "not found" (404), for reads and writes. */
+async function orgScope(user: Awaited<ReturnType<typeof requireUser>>, action: 'org.read' | 'org.manage', companyId: string) {
+  const ctx = scopedContext(await resolveActor(prisma, user));
+  authz.assert(ctx, action);
+  if (!authz.can(ctx, action, { companyId })) throw notFound('الشركة غير موجودة');
+  return scopedPrisma(ctx);
+}
+
 export async function GET(_req: Request, { params }: Ctx) {
   try {
-    await requireUser(ROLE_GROUPS.STAFF);
+    const user = await requireUser(ROLE_GROUPS.STAFF);
     const { id } = await params;
-    const company = await prisma.company.findUnique({
+    const db = await orgScope(user, 'org.read', id);
+    const company = await db.company.findUnique({
       where: { id },
       include: {
         _count: { select: { legalEmployees: true, actualEmployees: true, branches: true, administrations: true } },
@@ -93,8 +103,9 @@ export async function PUT(req: Request, { params }: Ctx) {
     const user = await requireUser(WRITERS);
     const { id } = await params;
     const b = await parseBody(req, updateCompanySchema);
+    const db = await orgScope(user, 'org.manage', id);
 
-    const current = await prisma.company.findUnique({
+    const current = await db.company.findUnique({
       where: { id },
       select: {
         id: true,
@@ -130,7 +141,7 @@ export async function PUT(req: Request, { params }: Ctx) {
 
     let updated;
     try {
-      updated = await prisma.company.update({ where: { id }, data });
+      updated = await db.company.update({ where: { id }, data });
     } catch (err) {
       if (isUniqueViolationOn(err, 'commercialRegNum')) throw conflict('رقم السجل التجاري مسجل مسبقاً لشركة أخرى');
       throw err;
@@ -176,8 +187,9 @@ export async function DELETE(req: Request, { params }: Ctx) {
   try {
     const user = await requireUser(WRITERS);
     const { id } = await params;
+    const db = await orgScope(user, 'org.manage', id);
 
-    const company = await prisma.company.findUnique({
+    const company = await db.company.findUnique({
       where: { id },
       select: {
         id: true,
@@ -195,7 +207,6 @@ export async function DELETE(req: Request, { params }: Ctx) {
             actualMeters: true,
             medicalInsurances: true,
             violations: true,
-            documents: true,
           },
         },
       },
@@ -213,11 +224,10 @@ export async function DELETE(req: Request, { params }: Ctx) {
       ['عداد كهرباء/مياه', c.legalMeters + c.actualMeters],
       ['وثيقة تأمين طبي', c.medicalInsurances],
       ['مخالفة التزام', c.violations],
-      ['مستند', c.documents],
     ]);
     if (blocked) throw conflict(blocked, { counts: c });
 
-    await prisma.company.delete({ where: { id } });
+    await db.company.delete({ where: { id } });
 
     await logAudit({
       userId: user.id,

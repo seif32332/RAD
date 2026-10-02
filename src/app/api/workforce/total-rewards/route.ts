@@ -10,6 +10,7 @@ import { logAudit } from '@/lib/audit';
 import { badRequest, handleApiError, notFound, parseQuery } from '@/lib/http';
 import { zId } from '@/lib/validation';
 import { limitOrThrow } from '../_lib/server';
+import { assertEmployeeVisible, workforceScope } from '../_lib/scope';
 import { loadTotalRewards, totalRewardsEnabled, zStatementYear } from './_load';
 
 export const dynamic = 'force-dynamic';
@@ -21,6 +22,8 @@ export async function GET(req: Request) {
     const user = await requireUser(ROLE_GROUPS.WORKFORCE);
     const q = parseQuery(req, querySchema);
     limitOrThrow(user, 'total-rewards', 60, 60_000);
+    // P1-SCOPE: an employee outside the caller's legal companies is "not found".
+    await assertEmployeeVisible(await workforceScope(user), q.employeeId);
     const loaded = await loadTotalRewards(q.employeeId, q.year ?? null);
     if (!loaded) throw notFound('الموظف غير موجود');
     if (q.year !== undefined && (q.year < loaded.years.first || q.year > loaded.years.last)) {

@@ -7,6 +7,7 @@ import { badRequest, handleApiError, parseQuery } from '@/lib/http';
 import { dateKey, today } from '@/lib/dates';
 import { sumMoney } from '@/lib/money';
 import { zOptDate } from '@/lib/validation';
+import { authz, resolveActor, scopedContext, scopedPrisma } from '@/modules/iam';
 import {
   currentPayrollMonth,
   monthIndex,
@@ -73,7 +74,12 @@ interface ActualMonth {
  */
 export async function GET(req: Request) {
   try {
-    await requireUser(ROLE_GROUPS.OWNER);
+    const user = await requireUser(ROLE_GROUPS.OWNER);
+    // P1-SCOPE: owner roles have every company (actorCompanies); the report still reads through the
+    // scoped client of that context, so a future narrower owner scope applies without a code change.
+    const ctx = scopedContext(await resolveActor(prisma, user));
+    authz.assert(ctx, 'owner.report.read');
+    const db = scopedPrisma(ctx);
     const q = parseQuery(req, QuerySchema);
     const now = today();
     const current = currentPayrollMonth();
@@ -102,7 +108,7 @@ export async function GET(req: Request) {
       gosiSince,
       latest,
     ] = await Promise.all([
-      prisma.employee.findMany({
+      db.employee.findMany({
         where: { isTerminated: false },
         select: {
           id: true,
@@ -117,10 +123,10 @@ export async function GET(req: Request) {
         },
         orderBy: { firstNameArabic: 'asc' },
       }),
-      prisma.medicalInsurance.findMany({
+      db.medicalInsurance.findMany({
         select: { id: true, insuranceIssuer: true, policyCost: true, expiryDate: true },
       }),
-      prisma.company.findMany({
+      db.company.findMany({
         select: {
           id: true,
           nameArabic: true,
@@ -130,7 +136,7 @@ export async function GET(req: Request) {
           trademarkCost: true,
         },
       }),
-      prisma.branch.findMany({
+      db.branch.findMany({
         select: {
           id: true,
           nameArabic: true,
@@ -145,29 +151,29 @@ export async function GET(req: Request) {
           rentPaymentCount: true,
         },
       }),
-      prisma.vehicle.findMany({
+      db.vehicle.findMany({
         select: { id: true, plateNumber: true, brand: true, insuranceExpDate: true, insuranceCost: true },
       }),
-      prisma.utilityMeter.findMany({
+      db.utilityMeter.findMany({
         select: { id: true, accountNumber: true, meterNumber: true },
       }),
-      prisma.telecomSim.findMany({
+      db.telecomSim.findMany({
         select: { id: true, provider: true, simNumber: true, serviceType: true },
       }),
-      prisma.lawsuit.findMany({
+      db.lawsuit.findMany({
         select: { id: true, caseType: true, subject: true, lawFirmName: true, plaintiff: true, defendant: true, status: true },
         orderBy: { createdAt: 'desc' },
       }),
-      prisma.legalContract.findMany({
+      db.legalContract.findMany({
         select: { id: true, title: true, secondParty: true, endDate: true, status: true },
         orderBy: { endDate: 'asc' },
       }),
-      prisma.employee.count({ where: { isTerminated: true } }),
-      prisma.leave.count({
+      db.employee.count({ where: { isTerminated: true } }),
+      db.leave.count({
         where: { status: LEAVE_STATUS.APPROVED, startDate: { lte: now }, endDate: { gte: now } },
       }),
       // Stored APPROVED / PAID lines of the period's years (filtered to the months below).
-      prisma.payroll.groupBy({
+      db.payroll.groupBy({
         by: ['year', 'month'],
         where: {
           status: { in: FINALIZED },
@@ -179,7 +185,7 @@ export async function GET(req: Request) {
       }),
       gosiBreakdownSince(),
       // Reference payroll month: latest APPROVED / PAID month not after the current month.
-      prisma.payroll.findFirst({
+      db.payroll.findFirst({
         where: {
           status: { in: FINALIZED },
           OR: [{ year: { lt: current.year } }, { year: current.year, month: { lte: current.month } }],
@@ -253,7 +259,7 @@ export async function GET(req: Request) {
       gosiIncomplete: boolean;
     } | null = null;
     if (latest) {
-      const groups = await prisma.payroll.groupBy({
+      const groups = await db.payroll.groupBy({
         by: ['status'],
         where: { year: latest.year, month: latest.month, status: { in: FINALIZED } },
         _sum: { gosiEmployer: true, gosiEmployee: true },

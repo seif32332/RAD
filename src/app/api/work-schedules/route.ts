@@ -1,12 +1,22 @@
+// Work patterns of a branch (WorkSchedule = the WorkPattern of the calendar module, P1-CAL).
+//   GET     ?branchId            the active patterns of the caller's companies (one branch when given)
+//   POST    { branchId, … }      creates one pattern
+//   PUT     { branchId, schedules }  makes the branch's patterns equal to the list: kept patterns keep
+//                                their id (employees point to them), removed ones are archived
+//   DELETE  ?id | ?branchId      archives one pattern, or all of a branch
+// Writes go through the calendar transitions (audit + event, idempotent on Idempotency-Key).
+// Scope: the branch's company must be in the caller's companies (403 otherwise).
 import { NextResponse } from 'next/server';
 import { z } from 'zod';
 import { prisma } from '@/lib/prisma';
-import { getClientIp, requireUser } from '@/lib/auth';
+import { requireUser } from '@/lib/auth';
 import { ROLE_GROUPS } from '@/lib/constants';
 import { badRequest, handleApiError, notFound, parseBody, parseQuery } from '@/lib/http';
 import { zBool, zId, zOptText, zText } from '@/lib/validation';
-import { logAudit } from '@/lib/audit';
 import { SHIFT_TYPES, normalizeTimeOfDay } from '@/lib/attendance';
+import { authz, resolveActor, scopedContext, scopedPrisma, type Actor } from '@/modules/iam';
+import { archiveWorkPattern, replaceBranchPatterns, saveWorkPattern, type WorkPatternFields } from '@/modules/calendar';
+import { calendarHttpError, companiesOf, operationOf } from '../calendar/_shared';
 
 export const dynamic = 'force-dynamic';
 
@@ -14,10 +24,12 @@ const branchSelect = { select: { id: true, nameArabic: true } } as const;
 
 export async function GET(req: Request) {
   try {
-    await requireUser(ROLE_GROUPS.STAFF);
+    const user = await requireUser(ROLE_GROUPS.STAFF);
     const { branchId } = parseQuery(req, z.object({ branchId: zId.optional() }));
-    const schedules = await prisma.workSchedule.findMany({
-      where: branchId ? { branchId } : undefined,
+    const ctx = scopedContext(await resolveActor(prisma, user));
+    authz.assert(ctx, 'calendar.read');
+    const schedules = await scopedPrisma(ctx).workSchedule.findMany({
+      where: { archivedAt: null, ...(branchId ? { branchId } : {}) },
       include: { branch: branchSelect },
       orderBy: { createdAt: 'desc' },
     });
@@ -42,6 +54,8 @@ const zOptTime = z
 
 const scheduleFields = z
   .object({
+    /** An existing pattern of the branch (PUT keeps it); a new draft id is ignored. */
+    id: z.string().trim().max(64).optional().nullable(),
     name: zText(200),
     shiftType: z.preprocess((v) => (v === '' || v === null ? undefined : v), z.enum(SHIFT_TYPES).default('ONE_SHIFT')),
     startTime: zOptTime,
@@ -49,6 +63,8 @@ const scheduleFields = z
     startTime2: zOptTime,
     endTime2: zOptTime,
     workDays: zOptText(200),
+    /** Structured working days (0 = Sunday … 6 = Saturday); default: read from workDays. */
+    workWeekdays: z.array(z.number().int().min(0).max(6)).max(7).optional().nullable(),
     flexibleHours: z.preprocess(
       (v) => (v === '' || v === null || v === undefined ? null : typeof v === 'string' ? Number(v) : v),
       z.number().min(0).max(24).nullable(),
@@ -67,25 +83,29 @@ const scheduleFields = z
 
 type ScheduleFields = z.infer<typeof scheduleFields>;
 
-function scheduleData(s: ScheduleFields) {
-  const flexible = s.shiftType === 'FLEXIBLE';
-  const twoShifts = s.shiftType === 'TWO_SHIFTS';
+function fieldsOf(s: ScheduleFields): WorkPatternFields & { id?: string | null } {
   return {
+    id: s.id ?? null,
     name: s.name,
     shiftType: s.shiftType,
-    startTime: flexible ? null : (s.startTime ?? null),
-    endTime: flexible ? null : (s.endTime ?? null),
-    startTime2: twoShifts ? (s.startTime2 ?? null) : null,
-    endTime2: twoShifts ? (s.endTime2 ?? null) : null,
+    startTime: s.startTime ?? null,
+    endTime: s.endTime ?? null,
+    startTime2: s.startTime2 ?? null,
+    endTime2: s.endTime2 ?? null,
     workDays: s.workDays ?? null,
-    flexibleHours: flexible ? (s.flexibleHours ?? 0) : null,
+    workWeekdays: s.workWeekdays ?? null,
+    flexibleHours: s.flexibleHours ?? null,
     isExemptFromAttendance: s.isExemptFromAttendance ?? false,
   };
 }
 
-async function assertBranchExists(branchId: string) {
-  const branch = await prisma.branch.findUnique({ where: { id: branchId }, select: { id: true } });
+/** The branch and its company, and the HR context of that company (403 outside the caller's scope). */
+async function branchContext(actor: Actor, branchId: string) {
+  const branch = await prisma.branch.findUnique({ where: { id: branchId }, select: { id: true, companyId: true } });
   if (!branch) throw notFound('الفرع غير موجود');
+  const ctx = scopedContext(actor, [branch.companyId]);
+  authz.assert(ctx, 'calendar.manage', { companyId: branch.companyId });
+  return { branch, companyIds: companiesOf(ctx) };
 }
 
 const createSchema = scheduleFields.and(z.object({ branchId: zId }));
@@ -94,17 +114,11 @@ export async function POST(req: Request) {
   try {
     const user = await requireUser(ROLE_GROUPS.HR);
     const body = await parseBody(req, createSchema);
-    await assertBranchExists(body.branchId);
-    const schedule = await prisma.workSchedule.create({ data: { branchId: body.branchId, ...scheduleData(body) } });
-    await logAudit({
-      userId: user.id,
-      action: 'CREATE',
-      entityType: 'WorkSchedule',
-      entityId: schedule.id,
-      details: { branchId: body.branchId, name: schedule.name },
-      ipAddress: getClientIp(req),
+    const { branch, companyIds } = await branchContext(await resolveActor(prisma, user), body.branchId);
+    const out = await saveWorkPattern(prisma, { branchId: branch.id, companyId: branch.companyId, pattern: fieldsOf({ ...body, id: null }), companyIds }, operationOf(req, user.id)).catch((e) => {
+      throw calendarHttpError(e);
     });
-    return NextResponse.json({ message: 'Work schedule created', schedule }, { status: 201 });
+    return NextResponse.json({ message: 'Work schedule created', schedule: out.result.pattern }, { status: 201 });
   } catch (err) {
     return handleApiError(err, 'work-schedules:POST');
   }
@@ -115,31 +129,20 @@ const replaceSchema = z.object({
   schedules: z.array(scheduleFields).max(50),
 });
 
-/**
- * PUT { branchId, schedules: [...] }: atomically replaces all schedules of a branch
- * (use this instead of DELETE ?branchId + N x POST from the branch edit page).
- */
 export async function PUT(req: Request) {
   try {
     const user = await requireUser(ROLE_GROUPS.HR);
     const body = await parseBody(req, replaceSchema);
-    await assertBranchExists(body.branchId);
-    const schedules = await prisma.$transaction(async (tx) => {
-      await tx.workSchedule.deleteMany({ where: { branchId: body.branchId } });
-      if (body.schedules.length) {
-        await tx.workSchedule.createMany({ data: body.schedules.map((s) => ({ branchId: body.branchId, ...scheduleData(s) })) });
-      }
-      return tx.workSchedule.findMany({ where: { branchId: body.branchId }, orderBy: { createdAt: 'desc' } });
+    const { branch, companyIds } = await branchContext(await resolveActor(prisma, user), body.branchId);
+    const out = await replaceBranchPatterns(
+      prisma,
+      { branchId: branch.id, companyId: branch.companyId, patterns: body.schedules.map(fieldsOf), companyIds },
+      operationOf(req, user.id),
+    ).catch((e) => {
+      throw calendarHttpError(e);
     });
-    await logAudit({
-      userId: user.id,
-      action: 'UPDATE',
-      entityType: 'WorkSchedule',
-      entityId: body.branchId,
-      details: { event: 'BRANCH_SCHEDULES_REPLACED', count: schedules.length, names: schedules.map((s) => s.name) },
-      ipAddress: getClientIp(req),
-    });
-    return NextResponse.json({ message: 'تم حفظ جداول العمل بنجاح', schedules });
+    const schedules = [...out.result.patterns].sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt)));
+    return NextResponse.json({ message: 'تم حفظ جداول العمل بنجاح', schedules, archived: out.result.archived });
   } catch (err) {
     return handleApiError(err, 'work-schedules:PUT');
   }
@@ -147,43 +150,28 @@ export async function PUT(req: Request) {
 
 const deleteQuery = z.object({ id: zId.optional(), branchId: zId.optional() });
 
-/**
- * DELETE ?id=<scheduleId>          deletes one schedule.
- * DELETE ?branchId=<id>[&id=<id>]  deletes the schedules of that branch (only `id` when given).
- */
 export async function DELETE(req: Request) {
   try {
     const user = await requireUser(ROLE_GROUPS.HR);
     const q = parseQuery(req, deleteQuery);
     if (!q.id && !q.branchId) throw badRequest('يجب تحديد جدول العمل أو الفرع');
+    const actor = await resolveActor(prisma, user);
 
     if (q.id) {
-      const schedule = await prisma.workSchedule.findUnique({ where: { id: q.id }, select: { id: true, branchId: true, name: true } });
-      if (!schedule || (q.branchId && schedule.branchId !== q.branchId)) throw notFound('جدول العمل غير موجود');
-      await prisma.workSchedule.delete({ where: { id: q.id } });
-      await logAudit({
-        userId: user.id,
-        action: 'DELETE',
-        entityType: 'WorkSchedule',
-        entityId: q.id,
-        details: { branchId: schedule.branchId, name: schedule.name },
-        ipAddress: getClientIp(req),
+      const row = await prisma.workSchedule.findUnique({ where: { id: q.id }, select: { id: true, branchId: true } });
+      if (!row || (q.branchId && row.branchId !== q.branchId)) throw notFound('جدول العمل غير موجود');
+      const { companyIds } = await branchContext(actor, row.branchId);
+      await archiveWorkPattern(prisma, { id: row.id, branchId: row.branchId, companyIds }, operationOf(req, user.id)).catch((e) => {
+        throw calendarHttpError(e);
       });
       return NextResponse.json({ message: 'تم حذف جدول العمل بنجاح', count: 1 });
     }
 
-    const branchId = q.branchId as string;
-    await assertBranchExists(branchId);
-    const result = await prisma.workSchedule.deleteMany({ where: { branchId } });
-    await logAudit({
-      userId: user.id,
-      action: 'DELETE',
-      entityType: 'WorkSchedule',
-      entityId: branchId,
-      details: { event: 'BRANCH_SCHEDULES_DELETED', count: result.count },
-      ipAddress: getClientIp(req),
+    const { branch, companyIds } = await branchContext(actor, q.branchId as string);
+    const out = await replaceBranchPatterns(prisma, { branchId: branch.id, companyId: branch.companyId, patterns: [], companyIds }, operationOf(req, user.id)).catch((e) => {
+      throw calendarHttpError(e);
     });
-    return NextResponse.json({ message: 'تم حذف جداول العمل بنجاح', count: result.count });
+    return NextResponse.json({ message: 'تم حذف جداول العمل بنجاح', count: out.result.archived.length });
   } catch (err) {
     return handleApiError(err, 'work-schedules:DELETE');
   }

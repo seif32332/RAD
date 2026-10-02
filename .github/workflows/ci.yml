@@ -2,7 +2,8 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    # The repository default branch is master (master plan P0-01: CI never ran on pushes).
+    branches: [master]
   pull_request:
   workflow_dispatch:
 
@@ -25,8 +26,13 @@ jobs:
       DATABASE_URL: postgresql://ci:ci@127.0.0.1:5432/ci?schema=public
       SESSION_SECRET: ci-only-session-secret-not-used-anywhere-0000000000
       DATA_ENCRYPTION_KEY: MDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDA=
+      # ARCH ratchet (docs/architecture ARCHITECTURE_INVARIANTS §4.1.3): the baseline may only shrink
+      # against the PR base, or against the previous commit on a push.
+      ARCH_BASELINE_REF: ${{ github.event.pull_request.base.sha || github.event.before || 'HEAD~1' }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - uses: actions/setup-node@v4
         with:
@@ -157,12 +163,122 @@ jobs:
             console.log("seed is idempotent (" + Object.keys(a).length + " tables unchanged)");
           ' "$RUNNER_TEMP/seed1.json" "$RUNNER_TEMP/seed2.json"
 
+      - name: Build the background jobs (modules' TypeScript -> dist/jobs/jobs.cjs)
+        run: npm run build:jobs
+
       - name: Background jobs run against the migrated schema (dry runs)
         run: |
-          node scripts/jobs.mjs expiry-digest --dry-run
-          node scripts/jobs.mjs deactivate-terminated --dry-run
+          # Every job of src/jobs/registry.ts through the real CLI, as the timers start it (P1-FND-JOBS).
+          export UPLOAD_DIR="$RUNNER_TEMP/uploads"; mkdir -p "$UPLOAD_DIR"
+          for job in $(node scripts/jobs.mjs --list | cut -f1); do
+            node scripts/jobs.mjs "$job" --dry-run
+          done
           node scripts/jobs.mjs outbox-dispatch
           node scripts/tenant-stats.mjs
+
+  # Master plan P0-09: the opt-in integration tests that no job ran before. A real migrated
+  # Postgres and the real radeef-render service (pinned Typst + fonts) behind the app code.
+  integration:
+    name: Integration tests (Postgres 16 + radeef-render)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: ci
+          POSTGRES_PASSWORD: ci
+          POSTGRES_DB: radeef_it
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U ci -d radeef_it"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    env:
+      CHECKPOINT_DISABLE: "1"
+      NEXT_TELEMETRY_DISABLED: "1"
+      DATABASE_URL: postgresql://ci:ci@127.0.0.1:5432/radeef_it?schema=public&connection_limit=5
+      SESSION_SECRET: ci-only-session-secret-not-used-anywhere-0000000000
+      DATA_ENCRYPTION_KEY: MDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDA=
+      APP_URL: http://localhost:3000
+      RENDER_SERVICE_URL: http://127.0.0.1:8091
+      RENDER_SERVICE_TOKEN: ci-only-render-token-000000000000000000000
+      DOCUMENTS_IT: "1"
+      ONBOARDING_IT: "1"
+      PLATFORM_IT: "1"
+      SCOPE_IT: "1"
+      EFF_IT: "1"
+      INV_IT: "1"
+      JOBS_IT: "1"
+      RULE_IT: "1"
+      CAL_IT: "1"
+      LCY_IT: "1"
+      PAY_IT: "1"
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci --no-audit --no-fund
+
+      - name: Apply all migrations to the throwaway database
+        run: npx prisma migrate deploy
+
+      - name: Fetch pinned Typst + fonts (checksums verified)
+        working-directory: services/render
+        run: sh scripts/fetch-assets.sh .
+
+      - name: Start radeef-render
+        working-directory: services/render
+        run: |
+          nohup node src/main.mjs >"$RUNNER_TEMP/render.log" 2>&1 &
+          for i in $(seq 1 30); do
+            curl -fsS http://127.0.0.1:8091/health >/dev/null 2>&1 && exit 0
+            sleep 1
+          done
+          cat "$RUNNER_TEMP/render.log"; exit 1
+
+      - name: Integration tests (document pipeline, renderer templates, report PDFs, onboarding company scope, platform outbox and audit, iam company scope)
+        run: |
+          export UPLOAD_DIR="$RUNNER_TEMP/uploads"; mkdir -p "$UPLOAD_DIR"
+          npx vitest run src/lib/__tests__/documents-pipeline.test.ts src/lib/__tests__/documents-render.test.ts src/lib/__tests__/wf-report-pdf.test.ts src/lib/__tests__/onboarding-company-routes.test.ts src/modules/platform/__tests__/platform.it.test.ts src/modules/iam/__tests__/iam.it.test.ts src/modules/platform/__tests__/effective.it.test.ts src/modules/org/__tests__/org.it.test.ts src/modules/platform/__tests__/invariants.it.test.ts src/app/api/settings/__tests__/integrity-routes.test.ts src/jobs/__tests__/jobs.it.test.ts src/modules/rules/__tests__/rules.it.test.ts src/modules/calendar/__tests__/calendar.it.test.ts src/app/api/calendar/__tests__/calendar-routes.test.ts src/modules/lifecycle/__tests__/lifecycle.it.test.ts src/modules/people/__tests__/people.it.test.ts src/modules/offboarding/__tests__/offboarding.it.test.ts src/lib/__tests__/lcy-routes.test.ts src/test/__tests__/route-harness.it.test.ts src/modules/platform/__tests__/money-gateway.it.test.ts src/modules/payroll/__tests__/payroll-month.it.test.ts src/modules/payroll/__tests__/payroll-loans-deductions.it.test.ts src/modules/finance/__tests__/finance.it.test.ts src/modules/compensation/__tests__/compensation.it.test.ts src/modules/time/__tests__/time-overtime.it.test.ts
+
+      - name: Company scope on every API route (INV-SCOPE-01, all *.scope.it.test.ts files)
+        run: npx vitest run .scope.it.test.ts
+
+      - name: Renderer log
+        if: always()
+        run: cat "$RUNNER_TEMP/render.log" || true
+
+  # Master plan P0-09: the face verification service smoke tests (pytest), with its pinned models.
+  face-service:
+    name: Face service (pytest)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: services/face
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install pinned dependencies
+        run: pip install -r requirements.txt -c constraints.txt pytest httpx
+
+      - name: Download models (checksums verified by the script)
+        run: python scripts/download_models.py
+
+      - name: Tests
+        run: python -m pytest -q
 
   # ADR-001 DOC-01: the document renderer with the pinned Typst binary and fonts. The golden tests
   # prove the service renders byte-for-byte what the POC accepted (docs/document-engine/POC.md).

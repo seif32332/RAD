@@ -20,7 +20,7 @@
 import { ALERT_THRESHOLD_SETTINGS } from '@/lib/alerts';
 import { DEFAULT_PAYROLL_SETTINGS, PAYROLL_SETTING_KEYS } from '@/lib/payroll-core';
 import { DEFAULT_EXIT_REENTRY_VISA_FEE } from '@/lib/constants';
-import { DEFAULT_STATUTORY_LEAVE_RULES, LEAVE_RULE_LIMITS, LEAVE_RULE_SETTING_KEYS } from '@/lib/leave';
+import { DEFAULT_ANNUAL_LEAVE_LAW, DEFAULT_STATUTORY_LEAVE_RULES, LEAVE_RULE_LIMITS, LEAVE_RULE_SETTING_KEYS } from '@/lib/leave';
 import { SELF_ATTENDANCE_SETTING_KEYS, SELF_ATTENDANCE_SETTING_LIMITS } from '@/lib/self-attendance';
 
 export interface SettingDef {
@@ -90,7 +90,7 @@ export const SETTING_DEFS: Readonly<Record<string, SettingDef>> = {
   [P.workDaysPerWeek]: int(PD.workDaysPerWeek, 1, 7),
 
   // Leave / end of service: empty = statutory (21 days, 30 after 5 years of service).
-  annual_leave_days: { defaultValue: '', min: 21, max: 365, integer: true, optional: true },
+  annual_leave_days: { defaultValue: '', min: DEFAULT_ANNUAL_LEAVE_LAW.daysBeforeThreshold, max: 365, integer: true, optional: true },
   exit_reentry_visa_fee: num(DEFAULT_EXIT_REENTRY_VISA_FEE, 0, 100_000),
 
   // Statutory leaves (DEC-003): PROVISIONAL defaults pending counsel confirmation.

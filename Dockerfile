@@ -59,6 +59,14 @@ COPY --from=builder --chown=nextjs:nodejs /app/node_modules/prisma ./node_module
 # bcryptjs is needed by prisma/seed.mjs and scripts/create-admin.mjs.
 COPY --from=builder --chown=nextjs:nodejs /app/node_modules/bcryptjs ./node_modules/bcryptjs
 COPY --from=builder --chown=nextjs:nodejs /app/scripts ./scripts
+# Background jobs (P1-FND-JOBS): `node scripts/jobs.mjs <job>` runs dist/jobs/jobs.cjs, the modules'
+# TypeScript bundled by `npm run build` (scripts/build-jobs.mjs). Its only packages besides Prisma are
+# the ones below (ALLOWED_PACKAGES there; both have no dependencies of their own).
+COPY --from=builder --chown=nextjs:nodejs /app/dist/jobs ./dist/jobs
+COPY --from=builder --chown=nextjs:nodejs /app/node_modules/nodemailer ./node_modules/nodemailer
+COPY --from=builder --chown=nextjs:nodejs /app/node_modules/zod ./node_modules/zod
+# Fails the image build if the job bundle cannot load in this runtime (a package missing above).
+RUN node scripts/jobs.mjs --list >/dev/null
 # `npx prisma` must resolve the bundled CLI instead of downloading one.
 RUN mkdir -p node_modules/.bin \
  && ln -sf ../prisma/build/index.js node_modules/.bin/prisma \

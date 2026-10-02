@@ -1,3 +1,5 @@
+import { createPaymentRequest } from '@/modules/finance';
+import { moneyActorOf } from '@/modules/platform';
 import { NextResponse } from 'next/server';
 import { z } from 'zod';
 import type { Prisma, VisaStatus } from '@prisma/client';
@@ -10,6 +12,7 @@ import { dateKey } from '@/lib/dates';
 import { roundMoney } from '@/lib/money';
 import { logAudit, type AuditEntry } from '@/lib/audit';
 import { getExitReentryVisaFee } from '@/lib/hr-workflows';
+import { authz, resolveActor, scopedContext, scopedPrisma } from '@/modules/iam';
 
 export const dynamic = 'force-dynamic';
 
@@ -61,9 +64,16 @@ const statusSchema = z.object({
 export async function POST(req: Request) {
   try {
     const user = await requireUser(VISA_ROLES);
+    const ctx = scopedContext(await resolveActor(prisma, user));
+    authz.assert(ctx, 'gov.visa.manage');
     const body = await parseBody(req, envelopeSchema);
     const { visaId } = body;
     const ipAddress = getClientIp(req);
+    // P1-SCOPE: the visa's employee must be inside the user's companies; otherwise "not found" (404),
+    // checked through the scoped client before any write (a visa never changes employee).
+    if (!(await scopedPrisma(ctx).visa.findUnique({ where: { id: visaId }, select: { id: true } }))) {
+      throw notFound('التأشيرة غير موجودة');
+    }
 
     // Flight ticket booking
     if (body.action === 'BOOK_TICKET') {
@@ -166,7 +176,7 @@ export async function POST(req: Request) {
       // Visa fees go to finance as a PENDING payment request (unless one is already open/settled,
       // e.g. the request opened automatically when the related leave was approved).
       if (newStatus === 'ISSUED') {
-        const payment = await openVisaPaymentRequest(tx, updatedVisa, user.id);
+        const payment = await openVisaPaymentRequest(tx, updatedVisa, user);
         if (payment) {
           entries.push({
             userId: user.id,
@@ -192,9 +202,9 @@ export async function POST(req: Request) {
 
 async function openVisaPaymentRequest(
   tx: Prisma.TransactionClient,
-  visa: { id: string; visaType: string; employee: { firstNameArabic: string | null; lastNameArabic: string | null } },
+  visa: { id: string; visaType: string; employee: { id: string; firstNameArabic: string | null; lastNameArabic: string | null } },
   /** The user whose action created the fee request (maker-checker). */
-  requestedById: string,
+  requestedBy: { id: string; role: string; employeeId: string | null },
 ): Promise<{ id: string; amount: number } | null> {
   const existing = await tx.paymentRequest.findFirst({
     where: { entityType: 'VISA', entityId: visa.id, status: { in: [...LIVE_PAYMENT_STATUSES] } },
@@ -206,17 +216,18 @@ async function openVisaPaymentRequest(
   if (!(fee > 0)) return null;
 
   const employeeName = `${visa.employee.firstNameArabic ?? ''} ${visa.employee.lastNameArabic ?? ''}`.trim();
-  return tx.paymentRequest.create({
-    data: {
-      title: `رسوم تأشيرة (${visa.visaType}) - الموظف ${employeeName}`,
-      reason: 'رسوم تأشيرة صادرة من النظام بانتظار السداد من الإدارة المالية',
-      amount: fee,
-      accountNumber: 'سداد - مدفوعات حكومية (تأشيرات)',
-      status: 'PENDING_FINANCE',
-      requestedById,
-      entityType: 'VISA',
-      entityId: visa.id,
-    },
-    select: { id: true, amount: true },
+  // finance.createPaymentRequest (money.gateway): the visa's employee is the beneficiary (Q-PAY-E).
+  const row = await createPaymentRequest(tx, {
+    actor: moneyActorOf(requestedBy),
+    title: `رسوم تأشيرة (${visa.visaType}) - الموظف ${employeeName}`,
+    reason: 'رسوم تأشيرة صادرة من النظام بانتظار السداد من الإدارة المالية',
+    amount: fee,
+    accountNumber: 'سداد - مدفوعات حكومية (تأشيرات)',
+    status: 'PENDING_FINANCE',
+    entityType: 'VISA',
+    entityId: visa.id,
+    beneficiaryEmployeeId: visa.employee.id,
+    operationKey: `visa:${visa.id}:fee`,
   });
+  return { id: row.id, amount: row.amount };
 }

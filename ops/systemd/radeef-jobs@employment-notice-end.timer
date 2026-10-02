@@ -1,0 +1,13 @@
+# /etc/systemd/system/radeef-jobs@employment-notice-end.timer: daily 00:20 + up to 10 min (P1-LCY T2:
+# a notice whose last working day has passed becomes TERMINATED within the first hour of the next day,
+# lcy-to-be.md §15).
+[Unit]
+Description=Radeef background job employment-notice-end (schedule)
+
+[Timer]
+OnCalendar=*-*-* 00:20:00 Asia/Riyadh
+RandomizedDelaySec=10min
+Persistent=true
+
+[Install]
+WantedBy=timers.target
