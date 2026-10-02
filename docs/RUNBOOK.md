@@ -386,7 +386,8 @@ sudo -u radeef /opt/radeef/src/ops/run-jobs.sh --jitter 600 deactivate-terminate
 ونسخ اللوحة 02:30). systemd (مفضّل):
 
 ملفات الوحدات في المستودع: `ops/systemd/radeef-jobs@.service` ومؤقت لكل مهمة `ops/systemd/radeef-jobs@<job>.timer`
-(**المهام التسع كلها**: `apply-employee-changes` 00:15، `reconcile` 03:15، `deactivate-terminated` 03:30، `expiry-digest` 03:55،
+(**المهام الاثنتا عشرة كلها**: `apply-employee-changes` 00:15، `apply-financial-changes` 00:20، `employment-notice-end` 00:20،
+`employment-state-opening` 02:40، `reconcile` 03:15، `deactivate-terminated` 03:30، `expiry-digest` 03:55،
 `outbox-dispatch` 04:30، `documents-integrity` 04:30، `purge-attendance-biometrics` 04:50، `documents-retention` الجمعة 05:00،
 و`domain-events` كل 5 دقائق).
 اختبار الوحدة `ops-job-timers.test.ts` (ARCH-018) يفشل في CI إن أُضيفت مهمة إلى `JOB_NAMES` بلا مؤقت.
