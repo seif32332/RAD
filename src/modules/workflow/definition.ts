@@ -393,3 +393,84 @@ export function hasDeadline(n: WfNode): boolean {
       return n.branches.some(hasDeadline);
   }
 }
+
+// ---------------------------------------------------------------------------------------------------
+// Loosened controls (BL-WFE-003, wfe-to-be.md §12.1 "ما لا يُعطَّل"): what a new version relaxes against the version
+// in force for the same (type, company). The editor shows these as warnings, the activation must confirm them, and the
+// activation records them (CONTROL_RELAXED) for the owner digest. G1, G1b and G2b themselves are not settings of the
+// language (the engine always applies them; only the single-operator exception waives them, and records it).
+
+export type RelaxationCode =
+  | 'AUTO_APPROVE_PATH'
+  | 'FEWER_HUMAN_STAGES'
+  | 'REJECT_PAIR_REMOVED'
+  | 'REJECT_AUTHORITY_WIDENED'
+  | 'DISTINCT_FROM_PRIOR_REMOVED'
+  | 'PARALLEL_ALL_REMOVED'
+  | 'COVER_ROLE_CHANGED';
+
+export interface DefinitionWarning {
+  code: RelaxationCode;
+  /** Arabic, for the editor. */
+  message: string;
+}
+
+export const RELAXATION_MESSAGES: Readonly<Record<RelaxationCode, string>> = Object.freeze({
+  AUTO_APPROVE_PATH: 'في المسار طريق يُعتمد فيه الطلب آلياً دون أي مرحلة بشرية (G2: يُسجَّل ويصل ملخص صاحب الشركة)',
+  FEWER_HUMAN_STAGES: 'أقل عدد من المعتمدين على أي طريق في المسار أصبح أقل من الإصدار المعمول به',
+  REJECT_PAIR_REMOVED: 'أُلغي اشتراط شخص ثانٍ لتأكيد الرفض (G2b)',
+  REJECT_AUTHORITY_WIDENED: 'أُضيفت أدوار جديدة تملك رفض الطلب في أي مرحلة',
+  DISTINCT_FROM_PRIOR_REMOVED: 'أُلغي اشتراط أن يكون معتمد مرحلة غير من اعتمد قبله (G2b)',
+  PARALLEL_ALL_REMOVED: 'مراحل متوازية كانت تتطلب موافقة الجميع أصبحت تكتفي بموافقة واحد (G2b)',
+  COVER_ROLE_CHANGED: 'تغيّر الدور الذي يغطي المراحل عند غياب المعتمد',
+});
+
+/** The fewest human approvals on any path (a MANAGER_CHAIN stage counts its levels; a skipped condition counts 0). */
+export function minHumanStages(n: WfNode): number {
+  switch (n.type) {
+    case 'stage':
+      return n.approver.kind === 'MANAGER_CHAIN' ? n.approver.levels : 1;
+    case 'sequence':
+      return n.children.reduce((s, c) => s + minHumanStages(c), 0);
+    case 'condition':
+      return Math.min(...n.branches.map((b) => minHumanStages(b.node)), n.otherwise ? minHumanStages(n.otherwise) : 0);
+    case 'parallel':
+      return n.join === 'ALL' ? n.branches.reduce((s, c) => s + minHumanStages(c), 0) : Math.min(...n.branches.map(minHumanStages));
+  }
+}
+
+function countNodes(n: WfNode, pred: (x: WfNode) => boolean): number {
+  const own = pred(n) ? 1 : 0;
+  switch (n.type) {
+    case 'stage':
+      return own;
+    case 'sequence':
+      return own + n.children.reduce((s, c) => s + countNodes(c, pred), 0);
+    case 'condition':
+      return own + n.branches.reduce((s, b) => s + countNodes(b.node, pred), 0) + (n.otherwise ? countNodes(n.otherwise, pred) : 0);
+    case 'parallel':
+      return own + n.branches.reduce((s, c) => s + countNodes(c, pred), 0);
+  }
+}
+
+/**
+ * What `next` loosens against `prev`, the version in force (null: none, so only an automatic path is a warning).
+ * Pure; the order is stable.
+ */
+export function definitionRelaxations(prev: WorkflowDefinitionDoc | null, next: WorkflowDefinitionDoc): DefinitionWarning[] {
+  const codes: RelaxationCode[] = [];
+  const nextMin = minHumanStages(next.root);
+  const prevMin = prev ? minHumanStages(prev.root) : null;
+  if (nextMin === 0 && (prevMin === null || prevMin > 0)) codes.push('AUTO_APPROVE_PATH');
+  if (prevMin !== null && nextMin > 0 && nextMin < prevMin) codes.push('FEWER_HUMAN_STAGES');
+  if (prev) {
+    if (prev.settings.rejectRequiresPair && !next.settings.rejectRequiresPair) codes.push('REJECT_PAIR_REMOVED');
+    if (next.settings.rejectAuthority.some((r) => !prev.settings.rejectAuthority.includes(r))) codes.push('REJECT_AUTHORITY_WIDENED');
+    const distinct = (d: WorkflowDefinitionDoc) => countNodes(d.root, (x) => x.type === 'stage' && x.distinctFromPrior === true);
+    if (distinct(next) < distinct(prev)) codes.push('DISTINCT_FROM_PRIOR_REMOVED');
+    const all = (d: WorkflowDefinitionDoc) => countNodes(d.root, (x) => x.type === 'parallel' && x.join === 'ALL');
+    if (all(next) < all(prev)) codes.push('PARALLEL_ALL_REMOVED');
+    if (next.settings.coverRole !== null && next.settings.coverRole !== prev.settings.coverRole) codes.push('COVER_ROLE_CHANGED');
+  }
+  return codes.map((code) => ({ code, message: RELAXATION_MESSAGES[code] }));
+}

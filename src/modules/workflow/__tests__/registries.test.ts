@@ -120,9 +120,10 @@ describe('ports (fail closed, never overridden)', () => {
 describe('the activation gate (§3.8)', () => {
   it('is never empty in phase 2, and startWorkflow refuses with WFE_NOT_ACTIVATABLE before the database', async () => {
     expect(ACTIVATION_BLOCKERS.length).toBeGreaterThan(0);
-    expect(activationBlockers('tests.reg')).toEqual(expect.arrayContaining(['WFE-003', 'FIRST-TYPE', 'NO-ADAPTER']));
+    // WFE-003 is lifted by package C (BL-WFE-003); FIRST-TYPE stays until the owner chooses the first request type.
+    expect(activationBlockers('tests.reg')).toEqual(['FIRST-TYPE', 'NO-ADAPTER']);
     registerWorkflowAdapter(adapter());
-    expect(activationBlockers('tests.reg')).toEqual(['WFE-003', 'FIRST-TYPE']);
+    expect(activationBlockers('tests.reg')).toEqual(['FIRST-TYPE']);
     registerWorkflowPort('EmployeeLock', { lockEmployees: async () => [] });
     registerWorkflowPort('BeneficiaryState', { employees: async () => [], employeesOfUsers: async () => [] });
     expect(await codeAsync(startWorkflow(untouchable, { ctx: systemContext('t', 'c1'), requestType: 'tests.reg', requestId: 'r' }))).toBe('WFE_NOT_ACTIVATABLE');

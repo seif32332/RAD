@@ -23,6 +23,13 @@ export const WORKFLOW_ERROR_STATUS = {
   WFE_NO_ACTIVE_DEFINITION: 409,
   /** activationBlockers is not empty (phase 2: never activatable). */
   WFE_NOT_ACTIVATABLE: 409,
+  /**
+   * DEC-PO-146 / ADR-0011: the activator wrote the draft (its creator or last editor), or is not a counted approver
+   * where the company is ENFORCED: a second person activates.
+   */
+  WFE_TWO_PERSON_REQUIRED: 403,
+  /** §12.1: the version loosens a control; the editor shows the warnings and the activation must confirm them. */
+  WFE_CONFIRMATION_REQUIRED: 409,
   /** Beneficiaries of more than one company, or of no known company (ARC-WFE-A7). */
   WFE_CROSS_COMPANY: 422,
   /** The definition fails the strict schema or the save-time checks (§12.3). */
@@ -50,6 +57,8 @@ const MESSAGES: Record<WorkflowErrorCode, string> = {
   WFE_ADAPTER_INVALID: 'تسجيل نوع الطلب مرفوض',
   WFE_NO_ACTIVE_DEFINITION: 'لا يوجد مسار موافقة مفعّل لهذا النوع من الطلبات',
   WFE_NOT_ACTIVATABLE: 'مسار الموافقة لا يمكن تفعيله بعد',
+  WFE_TWO_PERSON_REQUIRED: 'يفعّل مسار الموافقة شخص آخر غير من كتبه أو عدّله آخر مرة، ومُقرّ بهويته',
+  WFE_CONFIRMATION_REQUIRED: 'هذا الإصدار يرخي ضابطاً قائماً: راجع التحذيرات وأكّد التفعيل',
   WFE_CROSS_COMPANY: 'المستفيدون من أكثر من شركة',
   WFE_DEFINITION_INVALID: 'تعريف مسار الموافقة غير صالح',
   WFE_VALIDATION: 'الطلب لا يستوفي الشروط',

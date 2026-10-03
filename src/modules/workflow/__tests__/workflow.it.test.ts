@@ -200,11 +200,19 @@ describe('workflow engine on PostgreSQL (WFE-002)', { timeout: 900_000 }, () => 
       );
     }
 
-    // Tenant-default definitions, saved and activated by the owner (G7).
+    // Tenant-default definitions, saved by the owner and activated by a second, attested owner (G7; DEC-PO-146: the
+    // author never activates his own path). The automatic path's warning (§12.1) is confirmed.
+    // Both owners are attested by an independent (inactive) attester, so neither is on the other's side (DEC-PO-147:
+    // the attester of an activator is on his side; unattested authorship is not a second person's work).
+    const attester = (await prisma.user.create({ data: { email: `attester-${tag}@example.test`, name: 'attester', passwordHash: 'x', role: 'SUPER_ADMIN', isActive: false } })).id;
+    for (const k of ['super', 'ownerA']) {
+      await fx.identityFixture(U[k], { identityStatus: 'ATTESTED', identityAttestedById: attester, identityAttestedAt: new Date(), attestedEmail: `${k}-${tag}@example.test` });
+    }
     const sup = await ctxOf('super');
+    const second = await ctxOf('ownerA');
     for (const [t, def] of Object.entries(DEFS)) {
       const d = await wf.saveWorkflowDefinitionDraft(prisma, { ctx: sup, requestType: t, companyId: null, definition: def });
-      await wf.activateWorkflowDefinition(prisma, { ctx: sup, definitionId: d.result.id });
+      await wf.activateWorkflowDefinition(prisma, { ctx: second, definitionId: d.result.id, confirmRelaxations: true });
     }
   }, 600_000);
 
@@ -453,11 +461,15 @@ describe('workflow engine on PostgreSQL (WFE-002)', { timeout: 900_000 }, () => 
       const save = () => wf.saveWorkflowDefinitionDraft(prisma, { ctx: sup, requestType: 'tests.role', companyId: A, definition: def });
       const [s1, s2] = await Promise.all([save(), save()]);
       expect(s1.result).toEqual(s2.result);
+      // Saving the same content over the draft it produced is a no-op (BL-WFE-014: the key names the draft it replaces);
+      // that call repeated is a replay.
       const s3 = await save();
-      expect(s3.replayed).toBe(true);
+      expect(s3.result).toEqual(s1.result);
+      expect((await save()).replayed).toBe(true);
       expect(await prisma.workflowDefinition.count({ where: { requestType: 'tests.role', companyId: A } })).toBe(1);
-      const act1 = await wf.activateWorkflowDefinition(prisma, { ctx: sup, definitionId: s1.result.id });
-      const act2 = await wf.activateWorkflowDefinition(prisma, { ctx: sup, definitionId: s1.result.id });
+      const second = await ctxOf('ownerA'); // DEC-PO-146: a second person activates
+      const act1 = await wf.activateWorkflowDefinition(prisma, { ctx: second, definitionId: s1.result.id });
+      const act2 = await wf.activateWorkflowDefinition(prisma, { ctx: second, definitionId: s1.result.id });
       expect(act2.replayed).toBe(true);
       expect(act1.result.status).toBe('ACTIVE');
       const ret = () => wf.retireWorkflowDefinition(prisma, { ctx: sup, definitionId: s1.result.id });
@@ -632,7 +644,7 @@ describe('workflow engine on PostgreSQL (WFE-002)', { timeout: 900_000 }, () => 
       const sup = await ctxOf('super');
       const def = { schemaVersion: 1, settings: SETTINGS, root: { type: 'sequence', id: 'root', children: [{ type: 'stage', id: 'own', approver: { kind: 'ROLE', role: 'COMPANY_ADMIN' } }] } };
       const d = await wf.saveWorkflowDefinitionDraft(prisma, { ctx: sup, requestType: 'tests.legal', companyId: B, definition: def });
-      await wf.activateWorkflowDefinition(prisma, { ctx: sup, definitionId: d.result.id });
+      await wf.activateWorkflowDefinition(prisma, { ctx: await ctxOf('ownerA'), definitionId: d.result.id });
       expect((await wf.activeDefinitionFor(prisma, 'tests.legal', B))?.id).toBe(d.result.id);
       expect((await wf.activeDefinitionFor(prisma, 'tests.legal', A))?.companyId).toBeNull();
       // An editor whose context is narrowed to A cannot edit B's or the tenant's definitions (G7 + scope: 404).

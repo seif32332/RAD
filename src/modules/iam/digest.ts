@@ -5,13 +5,17 @@
 //
 // The controls mode is per legal company (DEC-PO-144), so the digest has one block PER COMPANY, most important first
 // within it (RT-PAY-709: the real exceptions are not drowned in routine):
-//   1. المستفيد = المشغّل      acts done alone on the operator's own money (SELF_BENEFICIARY);
+//   1. المستفيد = المشغّل      acts done alone on the operator's own money or own request (SELF_BENEFICIARY);
 //   2. معتمد واحد              the other acts done alone because no second person existed;
 //   3. بانتظار تأكيدك          classifications waiting for the owner's confirmation (through Radeef until G8);
 //   4. وضع الضوابط             the company's readiness, its mode now and the changes of the month;
+//   5. مسارات الموافقة          BL-WFE-003 (wfe-to-be.md §12.1, §12.2): the approval paths activated or retired that
+//                              loosened a control (platform CONTROL_RELAXED), and the requests approved by a path with
+//                              no human stage (AUTO_APPROVED_BY_DEFINITION). The engine's decisions and activations
+//                              taken alone in SINGLE_OPERATOR are SELF_ACT records, so they are in sections 1 and 2;
 // then, for the whole tenant (accounts are tenant-wide):
-//   5. الهوية والصلاحيات        attestations (the root's included) and the other identity changes;
-//   6. العمليات المالية         counts of the money operations and of the refused attempts (context only).
+//   6. الهوية والصلاحيات        attestations (the root's included) and the other identity changes;
+//   7. العمليات المالية         counts of the money operations and of the refused attempts (context only).
 //
 // The job (owner-digest, daily, cross-company: the owner is one per tenant, §5.4.3 "ملخص المالك المجمع"):
 // records the controls mode of every marked company (recordControlsMode), then builds the digest of the PREVIOUS
@@ -21,9 +25,12 @@
 // ready company is SINGLE_OPERATOR and Radeef has registered no owner contact, the job FAILS (monitoring sees it).
 import type { Prisma, PrismaClient } from '@prisma/client';
 import {
+  AUTO_APPROVED_ACTION,
   audit,
   auditActionCounts,
+  auditCountsByCompany,
   auditRecordsOf,
+  controlRelaxationRecords,
   discrepancySelfActCounts,
   emitEvent,
   enqueueEmails,
@@ -37,6 +44,7 @@ import {
   type JobDefinition,
   type JobEnv,
   type OperatorMode,
+  type ControlRelaxationRecord,
   type Period,
   type RootClient,
   type SelfActRecord,
@@ -103,6 +111,22 @@ const REASON_AR: Readonly<Record<string, string>> = Object.freeze({
   UNKNOWN_APPROVER: 'لا معتمد مسجَّل',
   CREATOR_IS_SECOND_PERSON: 'الشخص الثاني هو منشئ الحساب',
   UNATTESTED_SECOND_PERSON: 'الشخص الثاني غير مُقرّ بهويته',
+  // The approval engine (BL-WFE-003).
+  ONE_PERSON_TWO_STEPS: 'شخص واحد في خطوتين يلزم فيهما شخصان',
+  UNATTESTED_APPROVER: 'المعتمد غير مُقرّ بهويته',
+  AUTHOR_ACTIVATED: 'من كتب مسار الموافقة هو من فعّله',
+  AUTHOR_RETIRED: 'من طلب إيقاف مسار الموافقة هو من أكّده',
+});
+
+/** The loosened controls of an approval path (workflow RelaxationCode), as the owner reads them. */
+const RELAXATION_AR: Readonly<Record<string, string>> = Object.freeze({
+  AUTO_APPROVE_PATH: 'طريق يُعتمد فيه الطلب آلياً دون معتمد',
+  FEWER_HUMAN_STAGES: 'معتمدون أقل',
+  REJECT_PAIR_REMOVED: 'لم يعد الرفض يحتاج شخصاً ثانياً',
+  REJECT_AUTHORITY_WIDENED: 'أدوار أكثر تملك الرفض',
+  DISTINCT_FROM_PRIOR_REMOVED: 'لم يعد يُشترط معتمد مختلف عمن قبله',
+  PARALLEL_ALL_REMOVED: 'موافقة واحد بدل موافقة الجميع',
+  COVER_ROLE_CHANGED: 'تغيّر دور التغطية',
 });
 
 const MODE_AR: Readonly<Record<OperatorMode, string>> = Object.freeze({
@@ -169,6 +193,9 @@ export interface DigestCounts {
   singleApprover: number;
   pendingConfirmations: number;
   modeChanges: number;
+  /** BL-WFE-003: approval-path changes that loosened a control, and requests approved with no human stage. */
+  relaxedControls: number;
+  autoApprovals: number;
   attestations: number;
   identityChanges: number;
   moneyOperations: number;
@@ -181,7 +208,7 @@ export interface CompanyDigest {
   name: string;
   controls: CompanyControls | null;
   span: ModeSpan | null;
-  counts: Pick<DigestCounts, 'selfBeneficiary' | 'singleApprover' | 'pendingConfirmations' | 'modeChanges'>;
+  counts: Pick<DigestCounts, 'selfBeneficiary' | 'singleApprover' | 'pendingConfirmations' | 'modeChanges' | 'relaxedControls' | 'autoApprovals'>;
 }
 
 export interface OwnerDigest {
@@ -189,7 +216,7 @@ export interface OwnerDigest {
   period: Period;
   companies: CompanyDigest[];
   counts: DigestCounts;
-  /** Worth sending: a company SINGLE_OPERATOR during the month, or any of sections 1 to 5 is not empty. */
+  /** Worth sending: a company SINGLE_OPERATOR during the month, or any of sections 1 to 6 is not empty. */
   reportable: boolean;
   subject: string;
   body: string;
@@ -207,6 +234,8 @@ export async function buildOwnerDigest(db: Db, month: DigestMonth, opts: { compa
   const pending = await pendingOwnerConfirmations(db);
   const ready = await readyCompanies(db);
   const changedEvents = await db.controlsReadiness.findMany({ distinct: ['companyId'], select: { companyId: true } });
+  const relaxed: ControlRelaxationRecord[] = await controlRelaxationRecords(db, period);
+  const autoApproved = await auditCountsByCompany(db, period, [AUTO_APPROVED_ACTION]);
 
   // The companies of the digest: every company Radeef ever marked, and every company a record of the month names.
   const keyOf = (c: string | null | undefined) => c ?? '';
@@ -216,6 +245,8 @@ export async function buildOwnerDigest(db: Db, month: DigestMonth, opts: { compa
     ...selfActs.map((r) => keyOf(r.companyId)),
     ...discrepancyActs.map((r) => keyOf(r.companyId)),
     ...pending.map((p) => keyOf(p.companyId)),
+    ...relaxed.map((r) => keyOf(r.companyId)),
+    ...autoApproved.map((r) => keyOf(r.companyId)),
   ]);
   const realIds = [...ids].filter(Boolean).sort();
   const controls = new Map((await controlsOfCompanies(db, realIds)).map((c) => [c.companyId, c]));
@@ -235,6 +266,7 @@ export async function buildOwnerDigest(db: Db, month: DigestMonth, opts: { compa
 
   const people = await namesOf(db, [
     ...selfActs.map((r) => r.actorId),
+    ...relaxed.map((r) => r.actorId),
     ...pending.map((p) => p.actedById),
     ...attestations.flatMap((r) => [r.actorId, r.entityId, ((r.after ?? {}) as Record<string, unknown>).identityAttestedById as string | undefined]),
   ]);
@@ -257,7 +289,16 @@ export async function buildOwnerDigest(db: Db, month: DigestMonth, opts: { compa
     const waiting = pending.filter((p) => keyOf(p.companyId) === id);
     const c = companyId ? (controls.get(companyId) ?? null) : null;
     const span = companyId ? (spans.get(companyId) ?? null) : null;
-    const counts = { selfBeneficiary: own.length, singleApprover: routine.length + discrepancies, pendingConfirmations: waiting.length, modeChanges: span?.changes.length ?? 0 };
+    const loosened = relaxed.filter((r) => keyOf(r.companyId) === id);
+    const autos = autoApproved.filter((r) => keyOf(r.companyId) === id).reduce((a, r) => a + r.count, 0);
+    const counts = {
+      selfBeneficiary: own.length,
+      singleApprover: routine.length + discrepancies,
+      pendingConfirmations: waiting.length,
+      modeChanges: span?.changes.length ?? 0,
+      relaxedControls: loosened.length,
+      autoApprovals: autos,
+    };
     companies.push({ companyId, name, controls: c, span, counts });
     lines.push(
       '',
@@ -266,7 +307,7 @@ export async function buildOwnerDigest(db: Db, month: DigestMonth, opts: { compa
         ? `وضع الضوابط الآن: ${c.ready ? MODE_AR[c.mode] : `${MODE_AR.ENFORCED} (لم تعلّم رديف الشركة جاهزة بعد)`} · المعتمدون المُقرّ بهم فيها: ${c.approvers}`
         : 'سجلات بلا شركة محددة (تُعامل بالضوابط الكاملة).',
       ...(span?.singleDuringMonth ? ['خلال الشهر كانت هذه الشركة في وضع المشغّل الواحد (كل الشهر أو بعضه): ما كان يحتاج شخصين نُفّذ بشخص واحد، وسُجّل، وهو مُدرج أدناه.'] : []),
-      `١) المستفيد = المشغّل: عمليات نفّذها شخص على ماله هو (${own.length})`,
+      `١) المستفيد = المشغّل: عمليات نفّذها شخص على ماله هو أو اعتمد فيها طلبه هو (${own.length})`,
       ...(own.length ? capped(own.map(actLine), own.length) : ['- لا شيء']),
       `٢) معتمد واحد: عمليات نُفّذت دون شخص ثانٍ (${counts.singleApprover})`,
       ...(routine.length ? capped(routine.map(actLine), routine.length) : []),
@@ -286,6 +327,13 @@ export async function buildOwnerDigest(db: Db, month: DigestMonth, opts: { compa
       ...(span?.changes.length
         ? span.changes.map((ch) => `- ${day(ch.at)} · من ${ch.from ? MODE_AR[ch.from] : 'غير مسجّل'} إلى ${MODE_AR[ch.to]}${ch.approvers === null ? '' : ` (المعتمدون المُقرّ بهم: ${ch.approvers})`}`)
         : ['- لا تغيير']),
+      `٥) مسارات الموافقة: تغييرات أرخت ضابطاً (${loosened.length})، وطلبات اعتُمدت آلياً دون معتمد (${autos})`,
+      ...(loosened.length
+        ? capped(
+            loosened.map((r) => `- ${day(r.occurredAt)} · ${r.subject ?? r.entityType} · ${who(r.actorId, r.actorType)} · ${r.relaxations.map((x) => RELAXATION_AR[x] ?? x).join('، ') || '—'}`),
+            loosened.length,
+          )
+        : ['- لا تغيير يرخي ضابطاً']),
     );
   }
 
@@ -295,13 +343,16 @@ export async function buildOwnerDigest(db: Db, month: DigestMonth, opts: { compa
     singleApprover: sum('singleApprover'),
     pendingConfirmations: sum('pendingConfirmations'),
     modeChanges: sum('modeChanges'),
+    relaxedControls: sum('relaxedControls'),
+    autoApprovals: sum('autoApprovals'),
     attestations: attestations.length,
     identityChanges: Object.values(identityCounts).reduce((a, b) => a + b, 0),
     moneyOperations: Object.values(moneyCounts).reduce((a, b) => a + b, 0),
     blockedAttempts: blocked,
   };
   const singleDuringMonth = companies.some((c) => c.span?.singleDuringMonth);
-  const reportable = singleDuringMonth || counts.selfBeneficiary + counts.singleApprover + counts.pendingConfirmations + counts.modeChanges + counts.identityChanges > 0;
+  const reportable =
+    singleDuringMonth || counts.selfBeneficiary + counts.singleApprover + counts.pendingConfirmations + counts.modeChanges + counts.relaxedControls + counts.autoApprovals + counts.identityChanges > 0;
 
   const body = [
     'السلام عليكم،',
@@ -310,7 +361,7 @@ export async function buildOwnerDigest(db: Db, month: DigestMonth, opts: { compa
     'وضع الضوابط يُحسب لكل شركة على حدة: «المشغّل الواحد» يعني أن ما يحتاج شخصين يُنفَّذ بشخص واحد ويُسجَّل ويصلك هنا.',
     ...lines,
     '',
-    `٥) الهوية والصلاحيات (كل الشركات): إقرارات الهوية (${attestations.length})`,
+    `٦) الهوية والصلاحيات (كل الشركات): إقرارات الهوية (${attestations.length})`,
     ...(attestations.length
       ? capped(
           attestations.map((r) => {
@@ -325,7 +376,7 @@ export async function buildOwnerDigest(db: Db, month: DigestMonth, opts: { compa
     'تغييرات الحسابات الأخرى (عددها):',
     ...(Object.keys(identityCounts).length ? Object.entries(identityCounts).map(([a, n]) => `- ${a}: ${n}`) : ['- لا شيء']),
     '',
-    `٦) العمليات المالية للاطلاع (${counts.moneyOperations})، والمحاولات المرفوضة بقواعد فصل الصلاحيات: ${blocked}`,
+    `٧) العمليات المالية للاطلاع (${counts.moneyOperations})، والمحاولات المرفوضة بقواعد فصل الصلاحيات: ${blocked}`,
     ...(Object.keys(moneyCounts).length ? Object.entries(moneyCounts).map(([a, n]) => `- ${a}: ${n}`) : ['- لا شيء']),
     '',
     'إن رأيت ما لا تعرفه فتواصل مع رديف عبر وسيلتك المسجلة لديها.',

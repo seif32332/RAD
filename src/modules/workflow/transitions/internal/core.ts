@@ -7,9 +7,9 @@
 // The instance row is never locked FOR UPDATE: CAS alone protects it.
 import type { Prisma, WorkflowInstance, WorkflowInstanceStatus, WorkflowTask, WorkflowTaskKind } from '@prisma/client';
 import { createHash } from 'crypto';
-import type { ScopeContext } from '@/modules/iam';
+import { controlsApprovers, type ScopeContext } from '@/modules/iam';
 import { today } from '@/lib/dates';
-import { audit, emitEvent, type TxClient } from '@/modules/platform';
+import { audit, emitEvent, resolveOperatorMode, type TxClient } from '@/modules/platform';
 import { requireAdapter, type HookContext, type InstanceView, type StageView, type WfActor, type WorkflowAdapter } from '../../adapters';
 import { hasDeadline, readStoredDefinition, usesManagerChain, type WorkflowDefinitionDoc } from '../../definition';
 import { areAllSiblings, isTerminal, planProgress, slotIndex, type PathStep, type StageSlot } from '../../engine';
@@ -270,7 +270,15 @@ export async function resolveEnvOf(f: Frame): Promise<ResolveEnv> {
   const chain = await liveManagerChain(f);
   const chainEmployees = chain.map((e) => e.employeeId).filter((x): x is string => !!x);
   const unavailable = chainEmployees.length && usesManagerChain(f.def.root) ? await requirePort('Availability').unavailable(f.tx, chainEmployees, today(f.at)) : new Set<string>();
+  // Package C: the controls mode of THE INSTANCE'S company, read now in this transaction (DEC-PO-144; fail closed:
+  // ENFORCED when unknown), and the counted approvers when the G9 attestation split can apply (a pay effect).
+  const controlsMode = await resolveOperatorMode(f.tx, f.inst.companyId);
+  const payEffect = f.inst.hasPayEffect === true;
+  const counted = payEffect ? new Set((await controlsApprovers(f.tx)).map((u) => u.id)) : undefined;
   return {
+    controlsMode,
+    payEffect,
+    ...(counted ? { counted } : {}),
     eligible,
     exclusions: { beneficiaryUserIds: ben, requesterUserId: f.inst.requesterUserId },
     guards: f.adapter.guards ?? [],

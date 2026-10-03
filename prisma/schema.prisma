@@ -159,6 +159,8 @@ model User {
   // 9zj_workflow_engine (WFE-001, ADR-0006)
   workflowDefinitionsCreated   WorkflowDefinition[] @relation("WorkflowDefinitionCreatedBy")
   workflowDefinitionsActivated WorkflowDefinition[] @relation("WorkflowDefinitionActivatedBy")
+  workflowDefinitionsEdited    WorkflowDefinition[] @relation("WorkflowDefinitionLastEditedBy")
+  workflowDefinitionsRetireRequested WorkflowDefinition[] @relation("WorkflowDefinitionRetireRequestedBy")
   workflowDefinitionsRetired   WorkflowDefinition[] @relation("WorkflowDefinitionRetiredBy")
   workflowInstancesRequested   WorkflowInstance[]   @relation("WorkflowInstanceRequester")
   workflowInstancesClosed      WorkflowInstance[]   @relation("WorkflowInstanceClosedBy")
@@ -3971,9 +3973,21 @@ model WorkflowDefinition {
   changeNote     String?
   createdById    String
   createdAt      DateTime                 @default(now())
+  /// the login whose save produced the current draft content (null: the creator; 9zn, DEC-PO-146)
+  lastEditedById String?
   activatedById  String?
   activatedAt    DateTime?
+  /// the activation was the recorded single-operator exception to the two-person rule (9zn CHECK)
+  activationSelfAct Boolean                @default(false)
   retiredById    String?
+  /// DEC-PO-147: the first person's request to retire a version so that a looser one governs (9zn CHECK)
+  retireRequestedById String?
+  retireRequestedAt DateTime?
+  /// what the requester reviewed: the version that would govern, and the sorted relaxation codes (9zn CHECK)
+  retireFallbackId String?
+  retireRelaxations String[]              @default([])
+  /// the retirement was the recorded single-operator exception to the two-person rule
+  retireSelfAct  Boolean                  @default(false)
   retiredAt      DateTime?
   updatedAt      DateTime                 @updatedAt
 
@@ -3981,6 +3995,10 @@ model WorkflowDefinition {
   basedOn     WorkflowDefinition?  @relation("WorkflowDefinitionBasedOn", fields: [basedOnId], references: [id], onDelete: Restrict)
   derived     WorkflowDefinition[] @relation("WorkflowDefinitionBasedOn")
   createdBy   User                 @relation("WorkflowDefinitionCreatedBy", fields: [createdById], references: [id], onDelete: Restrict)
+  lastEditedBy User?               @relation("WorkflowDefinitionLastEditedBy", fields: [lastEditedById], references: [id], onDelete: Restrict)
+  retireRequestedBy User?          @relation("WorkflowDefinitionRetireRequestedBy", fields: [retireRequestedById], references: [id], onDelete: Restrict)
+  retireFallback WorkflowDefinition? @relation("WorkflowDefinitionRetireFallback", fields: [retireFallbackId], references: [id], onDelete: Restrict)
+  retireFallbackOf WorkflowDefinition[] @relation("WorkflowDefinitionRetireFallback")
   activatedBy User?                @relation("WorkflowDefinitionActivatedBy", fields: [activatedById], references: [id], onDelete: Restrict)
   retiredBy   User?                @relation("WorkflowDefinitionRetiredBy", fields: [retiredById], references: [id], onDelete: Restrict)
   instances   WorkflowInstance[]

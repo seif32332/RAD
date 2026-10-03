@@ -11,15 +11,31 @@
 // never the first rejecter on the REJECT_PAIR, never the canceller on the CANCEL_CONFIRM, never a prior approver on a
 // distinctFromPrior stage, never the approver of a parallel-ALL sibling (G2b), and never one an adapter guard excludes.
 // The only non-candidate who may act is a holder of rejectAuthority, and only to REJECT, with the same exclusions.
+//
+// Package C (BL-WFE-003): the single-operator exception at act time. A candidate refused for a two-person exclusion
+// only (G1, G1b, G2b, distinctFromPrior, first rejecter, canceller) may still act when the instance company reads
+// SINGLE_OPERATOR NOW and the step, resolved again on current data, has nobody else (singleOperatorWaiver). The act is
+// then recorded as SELF_ACT_SINGLE_OPERATOR (audit workflow.task.selfAct, after.reasons) for the owner digest. The
+// rejectAuthority path never takes the exception.
 import { assertScopeContext, type ScopeContext } from '@/modules/iam';
-import { runTransition, type OperationOutcome, type RootClient } from '@/modules/platform';
+import { SELF_ACT_ACTION, audit, runTransition, type OperationOutcome, type RootClient } from '@/modules/platform';
 import type { Prisma } from '@prisma/client';
 import { CANCEL_REQUESTED, type ActorView, type WfActor } from '../adapters';
 import { DECISIONS_BY_KIND, isTerminal, slotIndex, type WorkflowDecision } from '../engine';
 import { WorkflowError, isWorkflowError, retryableConflict } from '../errors';
 import { WORKFLOW_AUDIT, WORKFLOW_EVENTS } from '../events';
 import { ALWAYS_REQUIRED_PORTS, requirePorts } from '../ports';
-import { checkActor, parseCandidates, resolveSlot, resolveSpecial, type ExclusionReason } from '../resolve';
+import {
+  checkActor,
+  isWaivable,
+  parseCandidates,
+  resolveSlot,
+  resolveSpecial,
+  selfActReasons,
+  singleOperatorWaiver,
+  unattestedInSingleOperator,
+  type ExclusionReason,
+} from '../resolve';
 import {
   HookFailure,
   applyProgress,
@@ -36,6 +52,7 @@ import {
   hookContext,
   openFrame,
   planNext,
+  reResolve,
   resolveEnvOf,
   resultOf,
   roundState,
@@ -129,9 +146,19 @@ async function actInTx(c: ActCall): Promise<WorkflowResult> {
   const extra: Map<string, ExclusionReason> = slot ? slotExclusions(slot, state.approved, index) : specialExclusions(task);
   const entry = task.candidateUserIds.includes(c.me.userId) ? parseCandidates(task.candidatesSnapshotJson).find((x) => x.userId === c.me.userId) : undefined;
   let via: 'CANDIDATE' | 'REJECT_AUTHORITY';
+  let waived: ExclusionReason[] = [];
+  // The direct manager of a MANAGER_CHAIN level (not a cover of it): no G9 attestation (RT-WFE-801).
+  const managerLevel = !!slot?.level && entry?.via === 'STAGE';
   if (entry) {
-    const check = checkActor(c.me.userId, entry.roles, env, stage, extra);
-    if (!check.ok) throw refusal(check.reason);
+    const check = checkActor(c.me.userId, entry.roles, env, stage, extra, managerLevel);
+    if (!check.ok) {
+      // §12.5 step 2 at act time: SINGLE_OPERATOR now, and nobody else can do this step now (resolved again live).
+      const live = isWaivable(check.reason) ? reResolve(task, { ...env, unavailableEmployees: new Set() }, state, index, state.open) : null;
+      const w = live ? singleOperatorWaiver(c.me.userId, live, env) : null;
+      if (!w) throw refusal(check.reason);
+      waived = w;
+    }
+    if (unattestedInSingleOperator(c.me.userId, env, managerLevel)) waived = [...waived, 'G9_UNATTESTED'];
     // MANAGER_CHAIN (review M-2): the level is resolved again on the LIVE chain (env.chain is rebuilt now: the manager in
     // force today and his login now). The actor must be the current manager of that level, or a current cover of it when
     // the level has no usable manager. Being on leave does not stop the manager himself from acting.
@@ -148,6 +175,12 @@ async function actInTx(c: ActCall): Promise<WorkflowResult> {
     throw new WorkflowError('WFE_FORBIDDEN', 'not a candidate of this task');
   }
 
+  const out = await decide(f, e, task, c, state, env, via);
+  if (waived.length && out.outcome === 'APPLIED') await recordSelfAct(f, c, task, waived, out);
+  return out;
+}
+
+function decide(f: Frame, e: Emitter, task: TaskRow, c: ActCall, state: Awaited<ReturnType<typeof roundState>>, env: Awaited<ReturnType<typeof resolveEnvOf>>, via: 'CANDIDATE' | 'REJECT_AUTHORITY'): Promise<WorkflowResult> {
   switch (task.kind) {
     case 'APPROVE':
       if (c.input.decision === 'APPROVE') return approve(f, e, task, c, state, env);
@@ -163,6 +196,22 @@ async function actInTx(c: ActCall): Promise<WorkflowResult> {
     default:
       throw new WorkflowError('WFE_KIND_NOT_SUPPORTED', task.kind);
   }
+}
+
+/**
+ * The record of a decision taken alone under the single-operator exception (BL-WFE-003; BR-PAY-020 shape): an audit
+ * row in the act's transaction whose reason starts with SELF_ACT_SINGLE_OPERATOR and whose after.reasons the owner
+ * digest reads (platform.selfActRecords), with the company of the instance.
+ */
+async function recordSelfAct(f: Frame, c: ActCall, task: TaskRow, waived: readonly ExclusionReason[], out: WorkflowResult): Promise<void> {
+  await audit(f.tx, {
+    actor: { type: 'USER', id: c.me.userId },
+    action: WORKFLOW_AUDIT.selfAct,
+    entity: { type: 'WorkflowInstance', id: f.inst.id, companyId: f.inst.companyId },
+    after: { reasons: selfActReasons(waived), waived: [...waived], taskId: task.id, kind: task.kind, nodeId: task.nodeId, decision: c.input.decision, requestType: f.inst.requestType, status: out.status, controlsMode: 'SINGLE_OPERATOR' },
+    reason: `${SELF_ACT_ACTION}: ${waived.join(',')}`,
+    operationKey: c.key,
+  });
 }
 
 function refusal(reason: ExclusionReason | 'NOT_ELIGIBLE'): WorkflowError {

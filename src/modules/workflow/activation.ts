@@ -3,13 +3,14 @@
 // file with vi.mock (there is no production seam). The other layers: the DB CHECK hasPayEffect = false, the
 // payEffect: 'NONE' literal type and runtime check, and the strict settings schema (DEC-PO-139).
 //
-// BL-PAY-005 (named by the spec) has landed (502b62a); what still blocks:
-//   WFE-003    package C: the single-operator exception, G9 attestation and the owner digest of engine acts;
-//   FIRST-TYPE the owner activates the first request type (no type is activated by package B). Not lifted before
-//              the two-person activation of DEC-PO-146 / ADR-0011 exists (package C).
+// BL-PAY-005 (502b62a) and WFE-003 (package C: the two-person activation of DEC-PO-146 / ADR-0011 with its
+// single-operator exception, the G1 / G1b / G2b single-operator exception, the G9 split, the owner digest of engine
+// acts, change logging and editor warnings) have landed; what still blocks:
+//   FIRST-TYPE the owner activates the first request type (no type is activated by packages B and C). Only the owner
+//              lifts it, when the first request type is chosen.
 import { adapterOf } from './adapters';
 
-export const ACTIVATION_BLOCKERS: readonly string[] = Object.freeze(['WFE-003', 'FIRST-TYPE']);
+export const ACTIVATION_BLOCKERS: readonly string[] = Object.freeze(['FIRST-TYPE']);
 
 export function activationBlockers(requestType: string): string[] {
   const out = [...ACTIVATION_BLOCKERS];

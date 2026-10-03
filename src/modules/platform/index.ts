@@ -63,6 +63,10 @@ export {
   operatorModeResolverOwner,
   resolveOperatorMode,
   SELF_ACT_ACTION,
+  CONTROL_RELAXED_ACTION,
+  AUTO_APPROVED_ACTION,
+  controlRelaxationRecords,
+  auditCountsByCompany,
   selfActRecords,
   auditActionCounts,
   auditRecordsOf,
@@ -72,6 +76,6 @@ export {
   eventsOf,
   outboxByPrefix,
 } from './controls';
-export type { OperatorModeResolver, Period, SelfActRecord, PendingOwnerConfirmation } from './controls';
+export type { OperatorModeResolver, Period, SelfActRecord, PendingOwnerConfirmation, ControlRelaxationRecord } from './controls';
 export { enqueueEmails, isOutboxEmailAddress } from './notifications';
 export type { OutboxEmail } from './notifications';

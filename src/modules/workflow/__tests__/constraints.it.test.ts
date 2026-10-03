@@ -75,11 +75,12 @@ describe('9zj constraints on PostgreSQL, one by one (WFE-001)', { timeout: 600_0
     updatedAt: NOW,
     ...over,
   });
-  // Getters: U1 exists only after beforeAll, and a spread reads them when the test runs.
+  // Getters: U1 exists only after beforeAll, and a spread reads them when the test runs. The activator is U2, not the
+  // creator U1 (9zn WorkflowDefinition_two_person_activation, DEC-PO-146).
   const stamped = {
     activatedAt: NOW,
     get activatedById() {
-      return U1;
+      return U2;
     },
   };
   const retired = {
@@ -87,12 +88,15 @@ describe('9zj constraints on PostgreSQL, one by one (WFE-001)', { timeout: 600_0
     activatedAt: NOW,
     retiredAt: NOW,
     get activatedById() {
-      return U1;
+      return U2;
     },
     get retiredById() {
       return U1;
     },
   };
+
+  /** What a retire request reviewed (9zn, DEC-PO-147 re-check): the fallback version and the relaxation codes. */
+  const reviewed = (): Record<string, Val> => ({ retireFallbackId: DEF, retireRelaxations: ['REJECT_PAIR_REMOVED'] });
 
   const inst = (over: Record<string, Val> = {}): Record<string, Val> => ({
     id: randomUUID(),
@@ -309,6 +313,72 @@ describe('9zj constraints on PostgreSQL, one by one (WFE-001)', { timeout: 600_0
       const draft = def();
       await insert('WorkflowDefinition', draft);
       await accepted(update('WorkflowDefinition', draft.id as string, { definitionJson: '{"x":1}', checksum: hex('c'), version: 5, changeNote: 'edited' }));
+    });
+
+    // 9zn (BL-WFE-003; DEC-PO-146 / ADR-0011, INV-IAM-01): the database backstop of the two-person activation.
+    it('WorkflowDefinition_two_person_activation: an activated row whose activator is its creator or its last editor is refused unless activationSelfAct is set', async () => {
+      // The creator activates alone (INV-IAM-01: one person routes the approvals of a type).
+      await rejected(insert('WorkflowDefinition', def({ status: 'ACTIVE', activatedAt: NOW, activatedById: U1 })), 'WorkflowDefinition_two_person_activation');
+      // Another created it, the activator was its last editor.
+      await rejected(insert('WorkflowDefinition', def({ status: 'ACTIVE', activatedAt: NOW, activatedById: U2, lastEditedById: U2 })), 'WorkflowDefinition_two_person_activation');
+      await rejected(insert('WorkflowDefinition', def({ ...retired, activatedById: U1 })), 'WorkflowDefinition_two_person_activation');
+      // A second person: accepted. The recorded single-operator exception: accepted.
+      await accepted(insert('WorkflowDefinition', def({ status: 'ACTIVE', activatedAt: NOW, activatedById: U2, lastEditedById: U1 })));
+      await accepted(insert('WorkflowDefinition', def({ status: 'ACTIVE', activatedAt: NOW, activatedById: U1, activationSelfAct: true })));
+      // DRAFT → ACTIVE by the creator, through an UPDATE as well.
+      const d = def({ lastEditedById: U2 });
+      await insert('WorkflowDefinition', d);
+      await rejected(update('WorkflowDefinition', d.id as string, { status: 'ACTIVE', activatedAt: NOW, activatedById: U2 }), 'WorkflowDefinition_two_person_activation');
+      await rejected(update('WorkflowDefinition', d.id as string, { status: 'ACTIVE', activatedAt: NOW, activatedById: U1 }), 'WorkflowDefinition_two_person_activation');
+    });
+
+    it('WorkflowDefinition_self_act_activated: a DRAFT never carries the self-act flag', async () => {
+      await rejected(insert('WorkflowDefinition', def({ activationSelfAct: true })), 'WorkflowDefinition_self_act_activated');
+      await accepted(insert('WorkflowDefinition', def({ activationSelfAct: false })));
+    });
+
+    it('WorkflowDefinition_two_person_retire (DEC-PO-147): a requested retirement confirmed by its requester is refused unless retireSelfAct is set; the request is stamped and never on a DRAFT', async () => {
+      await rejected(insert('WorkflowDefinition', def({ ...retired, retiredById: U1, retireRequestedById: U1, retireRequestedAt: NOW, ...reviewed() })), 'WorkflowDefinition_two_person_retire');
+      await accepted(insert('WorkflowDefinition', def({ ...retired, retiredById: U1, retireRequestedById: U2, retireRequestedAt: NOW, ...reviewed() })));
+      await accepted(insert('WorkflowDefinition', def({ ...retired, retiredById: U1, retireRequestedById: U1, retireRequestedAt: NOW, ...reviewed(), retireSelfAct: true })));
+      await accepted(insert('WorkflowDefinition', def({ ...retired, retiredById: U1 }))); // no request: a retirement that loosens nothing
+      await rejected(insert('WorkflowDefinition', def({ status: 'ACTIVE', ...stamped, retireRequestedById: U1 })), 'WorkflowDefinition_retire_request_stamped');
+      // The request records what was reviewed (fallback + relaxation codes), and only with a request.
+      await rejected(insert('WorkflowDefinition', def({ status: 'ACTIVE', ...stamped, retireRequestedById: U1, retireRequestedAt: NOW })), 'WorkflowDefinition_retire_request_stamped');
+      await rejected(insert('WorkflowDefinition', def({ status: 'ACTIVE', ...stamped, retireRequestedById: U1, retireRequestedAt: NOW, retireFallbackId: DEF })), 'WorkflowDefinition_retire_request_stamped');
+      await rejected(insert('WorkflowDefinition', def({ status: 'ACTIVE', ...stamped, ...reviewed() })), 'WorkflowDefinition_retire_request_stamped');
+      await accepted(insert('WorkflowDefinition', def({ status: 'ACTIVE', ...stamped, retireRequestedById: U1, retireRequestedAt: NOW, ...reviewed() })));
+      await rejected(insert('WorkflowDefinition', def({ retireRequestedById: U1, retireRequestedAt: NOW })), 'WorkflowDefinition_retire_request_active');
+      await rejected(insert('WorkflowDefinition', def({ status: 'ACTIVE', ...stamped, retireSelfAct: true })), 'WorkflowDefinition_retire_self_act_retired');
+      // ACTIVE → RETIRED by the requester himself, through an UPDATE.
+      const a = def({ status: 'ACTIVE', ...stamped, retireRequestedById: U1, retireRequestedAt: NOW, ...reviewed() });
+      await insert('WorkflowDefinition', a);
+      await rejected(update('WorkflowDefinition', a.id as string, { status: 'RETIRED', retiredAt: NOW, retiredById: U1 }), 'WorkflowDefinition_two_person_retire');
+      await accepted(update('WorkflowDefinition', a.id as string, { status: 'RETIRED', retiredAt: NOW, retiredById: U2 }));
+      // A retired version's retirement is immutable (9zn trigger).
+      await rejected(update('WorkflowDefinition', a.id as string, { retiredById: U1 }), 'a retired version is immutable');
+      await rejected(update('WorkflowDefinition', a.id as string, { retireRequestedById: U2 }), 'a retired version is immutable');
+      await rejected(update('WorkflowDefinition', a.id as string, { retireSelfAct: true }), 'a retired version is immutable');
+      await rejected(update('WorkflowDefinition', a.id as string, { retireRelaxations: ['AUTO_APPROVE_PATH'] }), 'a retired version is immutable');
+      await rejected(update('WorkflowDefinition', a.id as string, { retireFallbackId: null }), 'a retired version is immutable');
+    });
+
+    it('trigger workflow_definition_guard (9zn): the authorship of an activated version is immutable (creator, last editor, activator, activatedAt, the self-act flag)', async () => {
+      const [u3] = await users(1);
+      const active = def({ status: 'ACTIVE', ...stamped, lastEditedById: U1 });
+      await insert('WorkflowDefinition', active);
+      const id = active.id as string;
+      await rejected(update('WorkflowDefinition', id, { createdById: u3 }), 'an activated version is immutable');
+      await rejected(update('WorkflowDefinition', id, { lastEditedById: u3 }), 'an activated version is immutable');
+      await rejected(update('WorkflowDefinition', id, { activatedById: u3 }), 'an activated version is immutable');
+      await rejected(update('WorkflowDefinition', id, { activatedAt: LATER }), 'an activated version is immutable');
+      await rejected(update('WorkflowDefinition', id, { activationSelfAct: true }), 'an activated version is immutable');
+      await accepted(update('WorkflowDefinition', id, { status: 'RETIRED', retiredAt: NOW, retiredById: U1 }));
+      await rejected(update('WorkflowDefinition', id, { activatedById: u3 }), 'an activated version is immutable');
+      // A DRAFT's last editor changes with every save.
+      const draft = def();
+      await insert('WorkflowDefinition', draft);
+      await accepted(update('WorkflowDefinition', draft.id as string, { lastEditedById: u3 }));
     });
   });
 

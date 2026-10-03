@@ -129,6 +129,65 @@ export async function selfActRecords(db: Db, period: Period, take = 5000): Promi
   return out;
 }
 
+// ---------------------------------------------------------------------------------------------------
+// Owner-digest notices of the modules above (BL-WFE-003; wfe-to-be.md §12.1 "ما لا يُعطَّل", §12.2): the audit
+// actions a module writes so the owner sees them, named here because the digest (iam) sits below those modules
+// and may not import them (DOMAIN_BOUNDARIES §5.3). The rows are ordinary AuditRecord rows of the module's own
+// transition, written in its transaction.
+
+/** A change that loosened a control (e.g. an approval path that drops a second person); after.relaxations names them. */
+export const CONTROL_RELAXED_ACTION = 'CONTROL_RELAXED';
+/** A request decided by its approval path without a human stage (wfe-to-be.md §12.2, written by the engine). */
+export const AUTO_APPROVED_ACTION = 'AUTO_APPROVED_BY_DEFINITION';
+
+/** One loosened control, as the owner sees it. */
+export interface ControlRelaxationRecord {
+  occurredAt: Date;
+  actorType: string;
+  actorId: string | null;
+  entityType: string;
+  entityId: string | null;
+  companyId: string | null;
+  /** The relaxation codes (after.relaxations), e.g. REJECT_PAIR_REMOVED. */
+  relaxations: string[];
+  /** What changed, in a few words (after.subject, e.g. the request type). */
+  subject: string | null;
+}
+
+/** The CONTROL_RELAXED rows of a period (oldest first, capped). */
+export async function controlRelaxationRecords(db: Db, period: Period, take = 500): Promise<ControlRelaxationRecord[]> {
+  const rows = await db.auditRecord.findMany({
+    where: { occurredAt: { gte: period.from, lt: period.to }, action: CONTROL_RELAXED_ACTION },
+    orderBy: { seq: 'asc' },
+    take,
+    select: { occurredAt: true, actorType: true, actorId: true, entityType: true, entityId: true, companyId: true, after: true },
+  });
+  return rows.map((r) => {
+    const a = r.after && typeof r.after === 'object' && !Array.isArray(r.after) ? (r.after as Record<string, unknown>) : {};
+    return {
+      occurredAt: r.occurredAt,
+      actorType: r.actorType,
+      actorId: r.actorId,
+      entityType: r.entityType,
+      entityId: r.entityId,
+      companyId: r.companyId,
+      relaxations: Array.isArray(a.relaxations) ? a.relaxations.filter((x): x is string => typeof x === 'string') : [],
+      subject: typeof a.subject === 'string' ? a.subject : null,
+    };
+  });
+}
+
+/** AuditRecord counts of the given actions in a period, per company (null: rows without a company). */
+export async function auditCountsByCompany(db: Db, period: Period, actions: readonly string[]): Promise<{ companyId: string | null; action: string; count: number }[]> {
+  if (!actions.length) return [];
+  const groups = await db.auditRecord.groupBy({
+    by: ['companyId', 'action'],
+    where: { occurredAt: { gte: period.from, lt: period.to }, action: { in: [...actions] } },
+    _count: { _all: true },
+  });
+  return groups.map((g) => ({ companyId: g.companyId, action: g.action, count: g._count._all }));
+}
+
 /** AuditRecord counts per action in a period, for the actions that start with one of `prefixes` (or equal one of `actions`). */
 export async function auditActionCounts(db: Db, period: Period, q: { prefixes?: readonly string[]; actions?: readonly string[] }): Promise<Record<string, number>> {
   const or: Prisma.AuditRecordWhereInput[] = [

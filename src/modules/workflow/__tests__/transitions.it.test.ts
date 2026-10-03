@@ -161,11 +161,19 @@ describe('workflow engine: event payloads and act paths on PostgreSQL (WFE-002)'
     E.ben = e.id;
     await fx.linkFixture(U.emp, E.ben);
 
-    // Tenant-default definitions, saved and activated by the owner (G7).
+    // Tenant-default definitions, saved by the owner and activated by a second, attested owner (G7; DEC-PO-146: the
+    // author never activates his own path). The automatic path's warning (§12.1) is confirmed.
+    // Both owners are attested by an independent (inactive) attester, so neither is on the other's side (DEC-PO-147:
+    // the attester of an activator is on his side; unattested authorship is not a second person's work).
+    const attester = (await prisma.user.create({ data: { email: `attester-${tag}@example.test`, name: 'attester', passwordHash: 'x', role: 'SUPER_ADMIN', isActive: false } })).id;
+    for (const k of ['super', 'ownerA']) {
+      await fx.identityFixture(U[k], { identityStatus: 'ATTESTED', identityAttestedById: attester, identityAttestedAt: new Date(), attestedEmail: `${k}-${tag}@example.test` });
+    }
     const sup = await ctxOf('super');
+    const second = await ctxOf('ownerA');
     for (const [type, def] of Object.entries(DEFS)) {
       const d = await wf.saveWorkflowDefinitionDraft(prisma, { ctx: sup, requestType: type, companyId: null, definition: def });
-      await wf.activateWorkflowDefinition(prisma, { ctx: sup, definitionId: d.result.id });
+      await wf.activateWorkflowDefinition(prisma, { ctx: second, definitionId: d.result.id, confirmRelaxations: true });
     }
   }, 600_000);
 
