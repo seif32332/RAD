@@ -43,6 +43,9 @@
 | البريد للتواصل | `Employee.email` | `people` | — | — | منفصل عن `User.email` (مقصود، ويُنبَّه عند الاختلاف) | P4-CORE |
 | المستندات الرسمية | `IssuedDocument` + `DocumentEvent` (سلسلة) | `documents` | — | — | صحيح (EV-2035) | — |
 | الإجماليات والمؤشرات | الاستعلام القانوني لكل نطاق (§3.2) | — | لوحات وتقارير ونماذج قراءة | عبر خدمة الاستعلام القانوني | استعلامات مكررة | P4-RPT |
+| قرار الموافقة على طلب (من يعتمد، في أي مرحلة، وما النتيجة) | `WorkflowInstance` + `WorkflowTask` (REQUEST) | انتقالات `src/modules/workflow/transitions/*` (`workflow.start/act/cancel/pause/resume/closeExternally/recheck/resubmit/restartRound`) | حالة الطلب نفسه يكتبها محوّل وحدته عند القرار (G10)، ولا يكتبها المحرك | `workflow` queries (`instanceOf`، `tasksForUser`، `timelineOf`)؛ وقرّاء المعتمدين `*ById` ∪ `approversOf` | قرارات متفرقة لكل نوع طلب بلا محرك (WFE AS-IS) | P2-WFE (ADR-0006) (BL-WFE-001/002) |
+| مسار الموافقة لكل نوع طلب وشركة | `WorkflowDefinition` (FACT بإصدارات؛ المفعَّل لا يتغير، G6) | `workflow.saveDefinitionDraft/activateDefinition/retireDefinition` | — | تعريف الشركة المفعَّل، وإلا تعريف المستأجر | مسارات ثابتة في الكود | P2-WFE (ADR-0006) (BL-WFE-001/007) |
+| تفويض صلاحية الاعتماد | `ApprovalDelegation` (FACT؛ الحالة الوحيدة الإلغاء) | انتقالات تفويض `src/modules/workflow` (الحزمة D) | — | `workflow` queries مع فلتر `companyIds` | لا يوجد | P2-WFE (ADR-0006) (BL-WFE-006) |
 
 ## 3.2 الاستعلامات القانونية (Canonical Queries): التقارير
 
