@@ -18,6 +18,13 @@ export async function listCompanyIds(db: Pick<PrismaClient, 'company'>): Promise
   return rows.map((r) => r.id);
 }
 
+/** BL-PAY-021: the display names of these companies (the owner digest and the controls banner name them). */
+export async function companyNames(db: Pick<PrismaClient, 'company'>, companyIds: readonly string[]): Promise<Map<string, string>> {
+  if (!companyIds.length) return new Map();
+  const rows = await db.company.findMany({ where: { id: { in: [...companyIds] } }, select: { id: true, nameArabic: true } });
+  return new Map(rows.map((r) => [r.id, r.nameArabic]));
+}
+
 /** The assignment period in force on `date` (or as recorded at `opts.asRecordedAt`). */
 export function assignmentAt(db: PeriodReader, employeeId: string, date: DateOnly, opts?: ReadOptions): Promise<PeriodView<'ASSIGNMENT'> | null> {
   return activeAt(db, 'ASSIGNMENT', employeeId, date, opts);

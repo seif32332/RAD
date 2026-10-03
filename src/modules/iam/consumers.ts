@@ -9,6 +9,7 @@
 //                            never emailed (RT-PAY-1201).
 import { consumerRegistry, registerConsumer, type DomainEventRecord, type EventConsumer, type RootClient } from '@/modules/platform';
 import { credentialLinkIds, credentialLinkPlaceholder, renderCredentialLinkBody } from './credentials';
+import { CONTROLS_MODE_CHANGED_EVENT } from './controls';
 import { CREDENTIAL_LINK_ISSUED_EVENT, EMAIL_CHANGED_BY_ADMIN_EVENT, RESET_NOTICE_PREVIOUS_EMAIL_EVENT } from './identity';
 
 export const CREDENTIAL_LINK_MAIL_CONSUMER = 'iam.credentialLinkMail';
@@ -145,7 +146,43 @@ export const accountNoticeMailConsumer: EventConsumer = {
   },
 };
 
-export const IAM_CONSUMERS: readonly EventConsumer[] = Object.freeze([credentialLinkMailConsumer, accountNoticeMailConsumer]);
+export const CONTROLS_OWNER_ALERT_CONSUMER = 'iam.controlsOwnerAlert';
+
+/**
+ * BL-PAY-021 (BR-PAY-020 "النزول من ENFORCED", DEC-PO-021 / 022): when the computed controls mode drops from
+ * ENFORCED to SINGLE_OPERATOR, the owner is told at once over the DEC-PO-022 channel (the contact Radeef
+ * registered), not only in the next monthly digest. No personal data beyond the count of approvers.
+ */
+export function controlsDropMail(approvers: number, companyId: string | null = null): { subject: string; body: string } {
+  return {
+    subject: 'رديف: شركة لديك انتقلت إلى وضع المشغّل الواحد',
+    body: [
+      'السلام عليكم،',
+      '',
+      `لم يعد في إحدى شركاتك${companyId ? ` (رقمها في رديف ${companyId.slice(0, 8)})` : ''} شخصان مُقرّ بهويتهما بدور معتمد مالي يعملان فيها (العدد الآن: ${approvers}).`,
+      'لذلك انتقلت الشركة إلى وضع المشغّل الواحد: ما كان يحتاج شخصين يُنفَّذ بشخص واحد، ويُسجَّل، ويصلك في الملخص الشهري.',
+      'إن لم تكن تتوقع ذلك (مثل مغادرة أحد المعتمدين) فتواصل مع رديف عبر وسيلتك المسجلة لديها.',
+    ].join('\n'),
+  };
+}
+
+export const controlsOwnerAlertConsumer: EventConsumer = {
+  name: CONTROLS_OWNER_ALERT_CONSUMER,
+  eventTypes: [CONTROLS_MODE_CHANGED_EVENT],
+  async handle(event: DomainEventRecord, ctx) {
+    const p = (event.payload ?? {}) as { from?: unknown; to?: unknown; approvers?: unknown; companyId?: unknown };
+    if (p.from !== 'ENFORCED' || p.to !== 'SINGLE_OPERATOR') return { outcome: 'NOT_A_DROP' };
+    const contact = await ctx.tx.tenantNamedPerson.findFirst({ where: { kind: 'OWNER_CONTACT', revokedAt: null }, orderBy: { addedAt: 'desc' }, select: { id: true, email: true } });
+    const { enqueueEmails, isOutboxEmailAddress } = await import('@/modules/platform');
+    if (!contact) return { outcome: 'NO_OWNER_CONTACT' };
+    if (!isOutboxEmailAddress(contact.email)) return { outcome: 'NO_ADDRESS' };
+    const msg = controlsDropMail(typeof p.approvers === 'number' ? p.approvers : 0, typeof p.companyId === 'string' ? p.companyId : null);
+    const added = await enqueueEmails(ctx.tx, [{ idempotencyKey: `${CONTROLS_OWNER_ALERT_CONSUMER}:${event.idempotencyKey}:${contact.id}`, recipient: contact.email as string, ...msg }]);
+    return { outcome: added ? 'QUEUED' : 'ALREADY_QUEUED' };
+  },
+};
+
+export const IAM_CONSUMERS: readonly EventConsumer[] = Object.freeze([credentialLinkMailConsumer, accountNoticeMailConsumer, controlsOwnerAlertConsumer]);
 
 /** Registers iam's DomainEvent consumers (src/jobs/consumers.ts), once. */
 export function registerIamConsumers(): void {

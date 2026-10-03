@@ -36,6 +36,7 @@ import {
   credentialTokenMatches,
   renderCredentialLinkBody,
 } from '../credentials';
+import { withControlsMode } from '@/test/controls-mode';
 
 const ROOT = join(__dirname, '..', '..', '..', '..');
 
@@ -127,13 +128,16 @@ describe('BL-PAY-005 money.gateway refuses identity writes outside an iam operat
     refused('Employee', 'update', { where: { id: 'e' }, data: { user: { connect: { id: 'u' } } } });
     refused('Employee', 'create', { data: { employeeId: 'E1', userId: 'u' } });
     allowed('Employee', 'update', { where: { id: 'e' }, data: { jobTitle: 'x' } });
-    for (const t of ['UserEmployeeLink', 'CredentialToken', 'IdentityChangeRequest']) {
+    // BL-PAY-021: UserCompanyScope (where a counted approver counts) is an identity table too.
+    for (const t of ['UserEmployeeLink', 'CredentialToken', 'IdentityChangeRequest', 'UserCompanyScope']) {
       refused(t, 'create', { data: {} });
       refused(t, 'updateMany', { where: {}, data: { status: 'x' } });
     }
     refused('User', 'update', { where: { id: 'u' }, data: { employeeLinks: { create: { employeeId: 'e', status: 'PROPOSED' } } } });
     refused(undefined, '$executeRawUnsafe', ['UPDATE "User" SET "tenantRoot" = true']);
     refused(undefined, '$executeRawUnsafe', ['INSERT INTO "UserEmployeeLink" VALUES (1)']);
+    refused(undefined, '$executeRawUnsafe', ['DELETE FROM "UserCompanyScope"']);
+    refused('User', 'update', { where: { id: 'u' }, data: { companyScopes: { deleteMany: {} } } });
     allowed('User', 'findMany', { where: { tenantRoot: true } });
   });
 });
@@ -436,26 +440,32 @@ describe.skipIf(!RUN)('BL-PAY-005 identity controls on PostgreSQL (every transit
     expect((await prisma.employee.findUniqueOrThrow({ where: { id: e.id } })).userId).toBeNull(); // no access before the second step
     const unattested = await mkt('unatt', 'SUPER_ADMIN');
     for (const who of [creatorId, unattested]) {
-      await expect(run((tx) => iam.confirmLink(tx, { actor: actor(who), linkId: p1.link.id, operationKey: key(), mode: 'ENFORCED' }))).rejects.toMatchObject({ status: 403, details: { code: 'MONEY_GUARD_BLOCKED' } });
+      await expect(run((tx) => iam.confirmLink(tx, { actor: actor(who), linkId: p1.link.id, operationKey: key() }))).rejects.toMatchObject({ status: 403, details: { code: 'MONEY_GUARD_BLOCKED' } });
     }
     await expect(run((tx) => iam.confirmLink(tx, { actor: actor(holder, 'EMPLOYEE'), linkId: p1.link.id, operationKey: key() }))).rejects.toMatchObject({ status: 403 });
-    const [c1, c2] = await twice((k) => run((tx) => iam.confirmLink(tx, { actor: actor(B, 'PAYROLL_ADMIN'), linkId: p1.link.id, operationKey: k, mode: 'ENFORCED' })));
+    const [c1, c2] = await twice((k) => run((tx) => iam.confirmLink(tx, { actor: actor(B, 'PAYROLL_ADMIN'), linkId: p1.link.id, operationKey: k })));
     expect(c1).toMatchObject({ selfAct: false, link: { status: 'CONFIRMED' } });
     expect(c2.replayed).toBe(true);
     expect((await prisma.employee.findUniqueOrThrow({ where: { id: e.id } })).userId).toBe(holder);
     expect(await prisma.auditRecord.count({ where: { entityId: p1.link.id, action: 'iam.identity.linkConfirm' } })).toBe(1);
   });
 
-  it('confirmLink in SINGLE_OPERATOR: the sole admin confirms his own proposal as a recorded self-act (BR-PAY-020); two concurrent confirmations: exactly one', async () => {
+  it('confirmLink in SINGLE_OPERATOR: the sole admin confirms his own proposal as a recorded self-act (BR-PAY-020); two concurrent confirmations: exactly one; without the company of the file it is ENFORCED (DEC-PO-144)', async () => {
     const e = await employee();
     const holder = await mkt('solo', 'EMPLOYEE');
     const p = await run((tx) => iam.proposeLink(tx, { actor: actor(creatorId), userId: holder, employeeId: e.id, operationKey: key() }));
+    // The route passes the company of the employee file (DEC-PO-144); here a company of this test.
+    const co = (await prisma.company.create({ data: { nameArabic: `ربط ${key()}`, commercialRegNum: `LK${randomUUID().slice(0, 12)}`, commercialRegExp: new Date('2030-01-01') } })).id;
+    // The company of the employee file is unknown: ENFORCED whatever the switch says (refused, nothing written).
+    await expect(withControlsMode('SINGLE_OPERATOR', () => run((tx) => iam.confirmLink(tx, { actor: actor(creatorId), linkId: p.link.id, operationKey: key() })))).rejects.toMatchObject({ status: 403 });
     const k1 = key();
     const k2 = key();
-    const results = await Promise.allSettled([
-      run((tx) => iam.confirmLink(tx, { actor: actor(creatorId), linkId: p.link.id, operationKey: k1, mode: 'SINGLE_OPERATOR' })),
-      run((tx) => iam.confirmLink(tx, { actor: actor(creatorId), linkId: p.link.id, operationKey: k2, mode: 'SINGLE_OPERATOR' })),
-    ]);
+    const results = await withControlsMode('SINGLE_OPERATOR', () =>
+      Promise.allSettled([
+        run((tx) => iam.confirmLink(tx, { actor: actor(creatorId), linkId: p.link.id, operationKey: k1, companyId: co })),
+        run((tx) => iam.confirmLink(tx, { actor: actor(creatorId), linkId: p.link.id, operationKey: k2, companyId: co })),
+      ]),
+    );
     expect(results.filter((r) => r.status === 'fulfilled')).toHaveLength(1);
     expect(await prisma.userEmployeeLink.findUniqueOrThrow({ where: { id: p.link.id } })).toMatchObject({ status: 'CONFIRMED', selfActSingleOperator: true, confirmedById: creatorId });
     expect(await prisma.auditRecord.count({ where: { operationKey: { in: [k1, k2] }, action: 'SELF_ACT_SINGLE_OPERATOR' } })).toBe(1);

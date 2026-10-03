@@ -2,7 +2,7 @@
 // "إقرار الجذر لما سمّاه المالك"، "دورة حياة الجذر"، "الشخص المسمّى"، BR-PAY-020 "الملخص الشهري"; DEC-PO-016 /
 // 018 / 022; RT-PAY-602 / 603 / 702 / 1301 / 1403).
 //
-// The ONLY writers of User.tenantRoot and of TenantNamedPerson (ADR-0007 SoT row "لوحة المورّد فقط"). The caller
+// The ONLY writers of User.tenantRoot, of TenantNamedPerson and of ControlsReadiness (ADR-0007 SoT row "لوحة المورّد فقط"). The caller
 // is the vendor CLI (../vendor-cli.ts), which radeef-manage runs over SSH on the tenant's host with the tenant's
 // environment; the module's index.ts does not export these, no route, page or job imports this file (static test
 // x-security-root.test.ts), and each refuses to run inside the Next.js server (assertVendorProcess). Each write
@@ -17,6 +17,7 @@
 //   inviteNamedPerson  Radeef's invitation: the account (UNATTESTED, no creator), linked, a one-time INVITE link
 //   setOwnerContact    the owner's contact of the DEC-PO-022 channel (digest, confirmations)
 //   releaseCode        ROOT_ATTEST_OWN: the second-channel code, once, to the vendor operator (RT-PAY-1301)
+//   setControlsReadiness  BL-PAY-021: mark a company ready for the computed controls mode, or take it back
 //   (vendorStatus, the read of the panel, is ../vendor.ts)
 //
 // Nothing here prints, logs or stores a secret: the national id is kept as a keyed hash only, and the code of
@@ -36,7 +37,7 @@ import {
   namedLinkIntact,
   type IdentityUser,
 } from '../identity';
-import { VENDOR_INVITE, VENDOR_NAMED_PERSON, VENDOR_RELEASE_CODE, VENDOR_SET_ROOT, VENDOR_SUSPEND_ROOT, type IdentitySubject } from '../operations';
+import { VENDOR_CONTROLS_READINESS, VENDOR_INVITE, VENDOR_NAMED_PERSON, VENDOR_RELEASE_CODE, VENDOR_SET_ROOT, VENDOR_SUSPEND_ROOT, type IdentitySubject } from '../operations';
 import { issueToken } from '../tokens';
 import {
   VENDOR_EVENTS,
@@ -499,6 +500,71 @@ export async function releaseCode(tx: TxClient, input: { ctx: VendorContext; ema
         payload: { userId: user.id, tokenId: token.id, requestRef: ctx.requestRef },
       });
       return { tokenId: token.id, expiresAt: token.expiresAt.toISOString() };
+    });
+  });
+  return { ...out.result, replayed: out.replayed };
+}
+
+// ---------------------------------------------------------------------------------------------------
+// BL-PAY-021 (ADR-0009, DEC-PO-144): a company's readiness for the computed controls mode
+// ---------------------------------------------------------------------------------------------------
+
+const COMPANY_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/**
+ * Marks a legal company READY (basis ATTESTED: its root and approvers are attested; ONE_PERSON: a genuine
+ * one-person company on the owner's request), or takes the mark back (ready=false). Until marked, a company is
+ * ENFORCED whatever its count. Idempotent: the same request id replays; marking a ready company again (same basis)
+ * or unmarking a company that is not ready is UNCHANGED. The company must exist (foreign key).
+ */
+export async function setControlsReadiness(
+  tx: TxClient,
+  input: { ctx: VendorContext; companyId: string; ready: boolean; basis?: string | null },
+): Promise<{ companyId: string; ready: boolean; basis: string | null; action: 'MARKED' | 'UNMARKED' | 'UNCHANGED'; replayed: boolean }> {
+  assertTransactionClient(tx, 'vendor.setControlsReadiness');
+  assertVendorProcess();
+  const ctx = validContext(input.ctx);
+  const companyId = String(input.companyId ?? '').trim().toLowerCase();
+  if (!COMPANY_ID.test(companyId)) throw badRequest('رقم الشركة غير صالح');
+  const ready = input.ready === true;
+  const basis = ready ? String(input.basis ?? 'ATTESTED').trim().toUpperCase() : null;
+  if (ready && basis !== 'ATTESTED' && basis !== 'ONE_PERSON') throw badRequest('أساس الجاهزية: ATTESTED أو ONE_PERSON');
+  const op = VENDOR_CONTROLS_READINESS.name;
+  const out = await once(tx, ctx, op, { companyId, ready, basis }, async (t) => {
+    const open = await t.controlsReadiness.findFirst({ where: { companyId, revokedAt: null }, select: { id: true, basis: true } });
+    if (ready && open?.basis === basis) return { companyId, ready, basis, action: 'UNCHANGED' as const };
+    if (!ready && !open) return { companyId, ready, basis, action: 'UNCHANGED' as const };
+    return guarded(t, VENDOR_CONTROLS_READINESS, ctx, `company:${companyId}`, async (w) => {
+      const now = new Date();
+      if (open) await w.controlsReadiness.update({ where: { id: open.id }, data: { revokedAt: now, revokedBy: ctx.operator, revokeRequestRef: ctx.requestRef } });
+      let id: string | null = null;
+      if (ready) {
+        try {
+          id = (await w.controlsReadiness.create({ data: { companyId, basis: basis as string, requestRef: ctx.requestRef, markedBy: ctx.operator }, select: { id: true } })).id;
+        } catch (err) {
+          if ((err as { code?: string }).code === 'P2003') throw notFound('الشركة غير موجودة');
+          throw err;
+        }
+      }
+      const action = ready ? ('MARKED' as const) : ('UNMARKED' as const);
+      await audit(w, {
+        actor: actorOf(ctx),
+        action: `${op}.${ready ? 'mark' : 'unmark'}`,
+        entity: { type: 'Company', id: companyId, companyId },
+        before: open ? { ready: true, basis: open.basis } : { ready: false },
+        after: { ready, basis, operator: ctx.operator, requestRef: ctx.requestRef },
+        reason: `owner request ${ctx.requestRef}`,
+        operationKey: ctx.operationKey,
+      });
+      await emitEvent(w, {
+        type: VENDOR_EVENTS.controlsReadinessChanged,
+        aggregateType: 'ControlsReadiness',
+        aggregateId: companyId,
+        idempotencyKey: `${ctx.operationKey}:${VENDOR_EVENTS.controlsReadinessChanged}`,
+        companyId,
+        payload: { companyId, ready, basis, readinessId: id, previousId: open?.id ?? null, requestRef: ctx.requestRef },
+      });
+      return { companyId, ready, basis, action };
     });
   });
   return { ...out.result, replayed: out.replayed };

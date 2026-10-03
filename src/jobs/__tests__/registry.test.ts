@@ -20,7 +20,7 @@ describe('job registry', () => {
     expect(new Set(JOB_NAMES).size).toBe(JOB_NAMES.length);
     for (const n of JOB_NAMES) expect(n).toMatch(JOB_NAME_PATTERN);
     expect([...JOB_NAMES].sort()).toEqual(
-      ['apply-employee-changes', 'apply-financial-changes', 'deactivate-terminated', 'documents-integrity', 'documents-retention', 'domain-events', 'expiry-digest', 'outbox-dispatch', 'purge-attendance-biometrics', 'reconcile', 'employment-notice-end', 'employment-state-opening'].sort(),
+      ['apply-employee-changes', 'apply-financial-changes', 'deactivate-terminated', 'documents-integrity', 'documents-retention', 'domain-events', 'expiry-digest', 'outbox-dispatch', 'purge-attendance-biometrics', 'reconcile', 'employment-notice-end', 'employment-state-opening', 'owner-digest'].sort(),
     );
   });
 

@@ -55,5 +55,23 @@ export * from './money';
 // Background jobs (P1-FND-JOBS, DEC-PO-121): the runner (JobRun, no double run, company scope, dry
 // run) and the platform's own jobs (outbox-dispatch, domain-events). The CLI is src/jobs/cli.ts.
 export * from './jobs';
+
+// The tenant's controls mode (BL-PAY-021, BR-PAY-020): the one resolver (registered by iam, ENFORCED when
+// none is), and the platform reads of the owner digest.
+export {
+  registerOperatorModeResolver,
+  operatorModeResolverOwner,
+  resolveOperatorMode,
+  SELF_ACT_ACTION,
+  selfActRecords,
+  auditActionCounts,
+  auditRecordsOf,
+  pendingOwnerConfirmations,
+  discrepancySelfActCounts,
+  latestEventOf,
+  eventsOf,
+  outboxByPrefix,
+} from './controls';
+export type { OperatorModeResolver, Period, SelfActRecord, PendingOwnerConfirmation } from './controls';
 export { enqueueEmails, isOutboxEmailAddress } from './notifications';
 export type { OutboxEmail } from './notifications';

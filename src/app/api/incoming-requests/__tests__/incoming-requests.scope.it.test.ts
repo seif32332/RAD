@@ -115,7 +115,7 @@ describe.skipIf(process.env.SCOPE_IT !== '1')('incoming-requests routes: company
     expect(await h.prisma.$transaction((t) => payroll.monthApprovers(t, month))).toContain(h.users.payrollA.id);
     const payer = { id: h.users.payrollA.id, role: 'PAYROLL_ADMIN', employeeId: self.id };
     await expect(
-      payroll.runPayrollTransaction(h.prisma, (t) => payroll.markPayrollMonthPaid(t, { actor: payer, ...month, operationKey: `it:pay:${h.next()}:${h.tag}`, mode: 'ENFORCED' })),
+      payroll.runPayrollTransaction(h.prisma, (t) => payroll.markPayrollMonthPaid(t, { actor: payer, ...month, operationKey: `it:pay:${h.next()}:${h.tag}` })),
     ).rejects.toMatchObject({ status: 403, details: { reasons: ['PAYER_IS_APPROVER'] } });
   });
 });

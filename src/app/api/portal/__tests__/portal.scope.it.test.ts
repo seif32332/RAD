@@ -4,6 +4,7 @@
 // Opt-in: SCOPE_IT=1 with DATABASE_URL on a throwaway database.
 import { afterAll, describe, expect, it, vi } from 'vitest';
 import { createRouteHarness } from '@/test/route-harness';
+import { scopeFixture } from '@/test/money-fixtures';
 
 const state = vi.hoisted(() => ({ token: undefined as string | undefined, scheduled: [] as unknown[] }));
 vi.mock('next/headers', () => ({
@@ -37,7 +38,7 @@ describe.skipIf(process.env.SCOPE_IT !== '1')('portal routes: self scope (real a
   const a2 = await h.employee('A');
   const a2User = await h.prisma.user.create({ data: { email: `rh-empa2-${h.tag}@example.test`, passwordHash: 'x', role: 'EMPLOYEE' } });
   await (await import('@/test/money-fixtures')).linkFixture(a2User.id, a2.id);
-  await h.prisma.userCompanyScope.create({ data: { userId: a2User.id, companyId: h.co.A } });
+  await scopeFixture.create({ data: { userId: a2User.id, companyId: h.co.A } });
   const asA2 = async () => {
     state.token = await signSession({ sub: a2User.id, role: 'EMPLOYEE', passwordHash: 'x', sessionVersion: 0 });
   };

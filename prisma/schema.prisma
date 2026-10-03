@@ -295,6 +295,29 @@ model TenantNamedPerson {
   @@index([userId])
 }
 
+/// BL-PAY-021 (ADR-0009, DEC-PO-144): Radeef marks a legal company READY for the computed controls mode. Until a
+/// company has an open (not revoked) row, its mode is ENFORCED whatever its count of attested approvers. Written
+/// only by the iam vendor operation iam.vendor.controlsReadiness (vendor CLI, money.gateway VENDOR_ONLY_TABLES);
+/// one open row per company (partial unique index of 9zm). basis: ATTESTED (the root and approvers are attested)
+/// | ONE_PERSON (a genuine one-person company, on the owner's request); CHECK in 9zm.
+model ControlsReadiness {
+  id               String    @id @default(uuid())
+  companyId        String
+  basis            String
+  /// The reference of the owner's formal request.
+  requestRef       String
+  /// The vendor operator (radeef-manage user).
+  markedBy         String
+  markedAt         DateTime  @default(now())
+  revokedAt        DateTime?
+  revokedBy        String?
+  revokeRequestRef String?
+
+  company Company @relation(fields: [companyId], references: [id], onDelete: Restrict)
+
+  @@index([companyId, revokedAt])
+}
+
 /// A one-time credential link. The secret is never stored: it is derived from the row id with the server
 /// key, and only its keyed hash is kept (tokenHash; codeHash for the in-person code). Single use, short expiry.
 model CredentialToken {
@@ -342,6 +365,8 @@ enum IdentityChangeKind {
   DEACTIVATE
   CHANGE_ROLE
   RESET_CREDENTIALS
+  /// BL-PAY-021: a company scope change that drops a company below two counted approvers (DEC-PO-021).
+  CHANGE_SCOPE
 }
 
 enum IdentityChangeStatus {
@@ -356,6 +381,8 @@ model IdentityChangeRequest {
   userId        String
   kind          IdentityChangeKind
   nextRole      Role?
+  /// CHANGE_SCOPE: the requested companies of the account (empty = every company). BL-PAY-021.
+  nextCompanyIds String[]            @default([])
   status        IdentityChangeStatus
   /// A second person (the user himself or another attested admin) had to approve it.
   twoPerson     Boolean
@@ -485,6 +512,8 @@ model Company {
   documentRequests     DocumentRequest[]
   issuedDocuments      IssuedDocument[]
   userScopes           UserCompanyScope[]
+  /// BL-PAY-021 (ADR-0009): Radeef's readiness mark for the computed controls mode (iam, vendor only).
+  controlsReadiness    ControlsReadiness[]
   muqeemPlatform       GovPlatform?          @relation("CompanyMuqeemPlatform", fields: [muqeemPlatformId], references: [id], onDelete: SetNull)
 
   // P1-SCOPE (9zb): scope keys of the gov, legal and assets tables (DOMAIN_BOUNDARIES §5.4.3)

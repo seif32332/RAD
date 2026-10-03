@@ -9,6 +9,7 @@
 import { randomUUID } from 'crypto';
 import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { employeeFixture } from '@/test/money-fixtures';
+import { scopeFixture } from '@/test/money-fixtures';
 
 const RUN = process.env.ONBOARDING_IT === '1';
 
@@ -95,7 +96,7 @@ describe.skipIf(!RUN)('onboarding / recruitment company keys and scope (P0-05)',
     for (const [key, u] of Object.entries(users)) {
       u.id = (await prisma.user.create({ data: { email: `${key}-${tag}@example.test`, passwordHash: 'x', role: u.role as 'HR_MANAGER' } })).id;
     }
-    await prisma.userCompanyScope.createMany({
+    await scopeFixture.createMany({
       data: [
         { userId: users.hrA.id, companyId: co.A },
         { userId: users.hrB.id, companyId: co.B },

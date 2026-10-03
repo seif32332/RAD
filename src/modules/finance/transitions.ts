@@ -133,9 +133,9 @@ export async function approvePaymentRequest(tx: TxClient, input: PaymentActInput
     const current = await t.paymentRequest.findUnique({ where: { id: input.paymentRequestId } });
     if (!current) throw notFound('أمر الصرف غير موجود');
     if (current.status !== 'PENDING_OWNER') throw conflict('تم اتخاذ قرار بشأن أمر الصرف مسبقاً');
-    const mode = await resolveOperatorMode(t);
+    const mode = await resolveOperatorMode(t, input.companyId ?? null);
     const decision = decideMakerChecker({ step: 'APPROVE', actor: { userId: input.actor.id, employeeId: input.actor.employeeId }, requestedById: current.requestedById, mode });
-    return runMoneyOperation(t, PAYMENT_APPROVE, { actor: input.actor, input: { paymentRequestId: current.id }, operationKey: input.operationKey, companyId: input.companyId, mode, decision }, async (w, info) => {
+    return runMoneyOperation(t, PAYMENT_APPROVE, { actor: input.actor, input: { paymentRequestId: current.id }, operationKey: input.operationKey, companyId: input.companyId, decision }, async (w, info) => {
       const res = await w.paymentRequest.updateMany({
         where: { id: current.id, status: 'PENDING_OWNER' },
         data: { status: 'PENDING_FINANCE', returnReason: null, approvedById: input.actor.id, approvedAt: new Date() },
@@ -181,9 +181,9 @@ export async function payPaymentRequest(tx: TxClient, input: PaymentActInput & {
     const current = await t.paymentRequest.findUnique({ where: { id: input.paymentRequestId } });
     if (!current) throw notFound('طلب السداد غير موجود');
     if (current.status !== 'PENDING_FINANCE') throw conflict('لا يمكن تأكيد السداد: الطلب غير معتمد للصرف أو تم سداده مسبقاً');
-    const mode = await resolveOperatorMode(t);
+    const mode = await resolveOperatorMode(t, input.companyId ?? null);
     const decision = decideMakerChecker({ step: 'PAY', actor: { userId: input.actor.id, employeeId: input.actor.employeeId }, requestedById: current.requestedById, approvedById: current.approvedById, mode });
-    return runMoneyOperation(t, PAYMENT_PAY, { actor: input.actor, input: { paymentRequestId: current.id }, operationKey: input.operationKey, companyId: input.companyId, mode, decision }, async (w, info) => {
+    return runMoneyOperation(t, PAYMENT_PAY, { actor: input.actor, input: { paymentRequestId: current.id }, operationKey: input.operationKey, companyId: input.companyId, decision }, async (w, info) => {
       const res = await w.paymentRequest.updateMany({
         where: { id: current.id, status: 'PENDING_FINANCE' },
         data: { status: 'PAID', receiptUrl: input.receiptUrl, paidById: input.actor.id, paidAt: new Date() },

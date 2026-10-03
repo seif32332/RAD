@@ -5,8 +5,11 @@ import 'server-only';
 import { z } from 'zod';
 import { prisma } from '@/lib/prisma';
 import { ROLE_GROUPS, roleIn } from '@/lib/constants';
-import { badRequest, conflict, forbidden, notFound } from '@/lib/http';
+import { createHash } from 'crypto';
+import { HttpError, badRequest, conflict, forbidden, notFound } from '@/lib/http';
 import { logAudit } from '@/lib/audit';
+import { runIdentityTransaction, setUserCompanyScope } from '@/modules/iam';
+import { moneyActorOf } from '@/modules/platform';
 import { canonicalJson, PREFIX_RE } from './core';
 import { appendEvent } from './events';
 import { enqueueNotice } from './notify';
@@ -162,12 +165,21 @@ export async function applySettingsAction(body: SettingsAction, actor: Actor) {
     if (!user) throw notFound('المستخدم غير موجود');
     const ids = [...new Set(body.companyIds)];
     if (ids.length && (await prisma.company.count({ where: { id: { in: ids } } })) !== ids.length) throw badRequest('إحدى الشركات غير موجودة');
-    await prisma.$transaction(async (tx) => {
-      await tx.userCompanyScope.deleteMany({ where: { userId: user.id } });
-      if (ids.length) await tx.userCompanyScope.createMany({ data: ids.map((companyId) => ({ userId: user.id, companyId, createdById: actor.userId })) });
-      await appendEvent(tx, { type: 'POLICY_CHANGED', actorId: actor.userId, ip: actor.ip, meta: { scopeUserId: user.id, companyIds: ids } });
+    // BL-PAY-021 (security re-check): the scope decides where a counted approver counts, so it is written only by
+    // iam.setUserCompanyScope. A change that drops a company below two counted approvers opens a two-person request
+    // (DEC-PO-021: the holder or another counted approver decides it in /api/settings/identity-requests) and is 409.
+    const allCompanyIds = (await prisma.company.findMany({ select: { id: true } })).map((c) => c.id);
+    const before = (await prisma.userCompanyScope.findMany({ where: { userId: user.id }, select: { companyId: true } })).map((r) => r.companyId).sort();
+    const operationKey = `documents.scope:${actor.userId}:${user.id}:${createHash('sha256').update(JSON.stringify([before, [...ids].sort()])).digest('hex')}`;
+    const r = await runIdentityTransaction(prisma, async (tx) => {
+      const out = await setUserCompanyScope(tx, { actor: moneyActorOf({ id: actor.userId as string, role: actor.role, employeeId: actor.employeeId }), userId: user.id, companyIds: ids, allCompanyIds, operationKey, ipAddress: actor.ip });
+      if (out.applied && !out.replayed) await appendEvent(tx, { type: 'POLICY_CHANGED', actorId: actor.userId, ip: actor.ip, meta: { scopeUserId: user.id, companyIds: ids } });
+      return out;
     });
-    await logAudit({ userId: actor.userId, action: 'UPDATE', entityType: 'UserCompanyScope', entityId: user.id, details: { companyIds: ids }, ipAddress: actor.ip });
+    if (!r.applied) {
+      throw new HttpError(409, 'تضييق نطاق هذا المستخدم يترك شركة بأقل من معتمدَين ماليين مُقرّ بهم؛ فتح طلب تغيير يعتمده صاحب الحساب أو معتمد مالي آخر (DEC-PO-021)', { code: 'TWO_PERSON_REQUIRED', requestId: r.request?.id ?? null });
+    }
+    if (!r.replayed) await logAudit({ userId: actor.userId, action: 'UPDATE', entityType: 'UserCompanyScope', entityId: user.id, details: { companyIds: ids }, ipAddress: actor.ip });
     return { ok: true };
   }
 

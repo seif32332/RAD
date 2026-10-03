@@ -61,7 +61,6 @@ import {
   moneyActorOf,
   resolveOperatorMode,
   runMoneyOperation,
-  type OperatorMode,
   type TxClient,
 } from '@/modules/platform';
 import { linkOvertimeToSettlement, unlinkOvertimeFromSettlement } from '@/modules/time';
@@ -588,8 +587,6 @@ function settlementEffects(
 /** The approval's context: the settlement effect log writer of offboarding (routes pass recordSettlementEffects). */
 export interface SettlementApprovalCtx extends FinanceCtx {
   recordEffects: RecordSettlementEffects;
-  /** The tenant's operator mode when the server already read it (never a client value); else read here. */
-  mode?: OperatorMode;
 }
 
 /**
@@ -616,7 +613,7 @@ export async function approveSettlement(tx: Tx, settlementId: string, user: Auth
   // The creator is not the approver (BR-PAY-012) in the tenant's operator mode (BL-PAY-027, RT-WFE-710):
   // ENFORCED refuses (SAME_PERSON_TWICE); SINGLE_OPERATOR lets the sole owner approve the settlement he
   // filed, recorded as SELF_ACT_SINGLE_OPERATOR by the gateway.
-  const mode = ctx.mode ?? (await resolveOperatorMode(tx));
+  const mode = await resolveOperatorMode(tx, head.employee.legalCompanyId);
   const makerChecker = decideMakerChecker({ step: 'APPROVE', actor: { userId: actor.id, employeeId: actor.employeeId }, requestedById: head.createdById, mode });
   return runMoneyOperation(
     tx,
@@ -626,7 +623,6 @@ export async function approveSettlement(tx: Tx, settlementId: string, user: Auth
       input: { settlementId },
       operationKey,
       companyId: head.employee.legalCompanyId,
-      mode,
       decision: makerChecker,
     },
     async (w) => {

@@ -119,6 +119,7 @@ export const LEGACY_PATH_MODULES: Record<string, string | null> = {
   'src/app/api/claims/': 'assets',
   'src/app/api/companies/': 'org',
   'src/app/api/compliance/': 'gov',
+  'src/app/api/controls-mode/': 'iam', // BL-PAY-021: the computed controls mode for the banner
   'src/app/api/dashboard/': 'reporting',
   'src/app/api/departments/': 'org',
   'src/app/api/dept-manager/': null,

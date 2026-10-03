@@ -5,7 +5,8 @@
 //   cd <app> && set -a && . ./.env && set +a && node scripts/vendor.mjs < request.json
 //
 //   { "command": "status" | "set-root" | "suspend-root" | "register-person" | "revoke-person" | "link-person"
-//                | "invite-person" | "set-owner-contact" | "release-code",
+//                | "invite-person" | "set-owner-contact" | "release-code"
+//                | "controls" | "digest" | "owner-confirm" | "controls-ready" | "controls-not-ready"   (BL-PAY-021),
 //     "operator": "<radeef-manage user>", "requestId": "<hex, one per submission>", "requestRef": "<owner request>",
 //     …the command's fields }
 //
@@ -15,6 +16,15 @@
 // Built into dist/vendor/vendor.cjs by scripts/build-jobs.mjs; a CLI, never an HTTP endpoint (DEC-009).
 // Nothing is logged; the only secret ever written is release-code's code, on the first call only, to stdout
 // (the SSH channel to the panel, which shows it once to its operator).
+//
+// BL-PAY-021: `controls` (read) shows the computed controls mode, the owner digest's delivery and the owner
+// confirmations waiting; `digest` (read, { month: "YYYY-MM" }) returns one month's queued digest so Radeef can
+// relay it while no email provider is configured (G8); `owner-confirm` ({ discrepancyId, decision:
+// CONFIRMED|REJECTED, expectedVersion }) records the owner's answer received by Radeef (DEC-PO-022 channel; the
+// only path until G8, RT-PAY-1205: no tenant route or page accepts it). DEC-PO-144: `controls-ready` ({ companyId,
+// basis: ATTESTED|ONE_PERSON }) marks a legal company ready for the computed controls mode (until then it is
+// ENFORCED whatever its count); `controls-not-ready` ({ companyId }) takes the mark back. Both need the owner
+// request reference; `controls` takes optional { companyIds } to show companies no approver is scoped to.
 //
 // No static value import on purpose: the Prisma pool is capped in DATABASE_URL before the client is created.
 
@@ -31,6 +41,11 @@ export const VENDOR_COMMANDS = [
   'invite-person',
   'set-owner-contact',
   'release-code',
+  'controls',
+  'digest',
+  'owner-confirm',
+  'controls-ready',
+  'controls-not-ready',
 ] as const;
 export type VendorCommand = (typeof VENDOR_COMMANDS)[number];
 
@@ -45,6 +60,8 @@ function withConnectionLimit(url: string, limit = VENDOR_CONNECTION_LIMIT): stri
 }
 
 const REQUEST_ID = /^[a-f0-9]{16,64}$/;
+/** Read-only commands: no requestId (nothing to replay). */
+export const VENDOR_READ_COMMANDS: readonly VendorCommand[] = ['status', 'controls', 'digest'];
 
 /** Parses the request (pure): the command and its validated common fields. */
 export function parseVendorRequest(raw: string): { command: VendorCommand; operator: string; requestId: string; requestRef: string; body: Record<string, unknown> } {
@@ -59,7 +76,7 @@ export function parseVendorRequest(raw: string): { command: VendorCommand; opera
   const command = String(b.command ?? '') as VendorCommand;
   if (!(VENDOR_COMMANDS as readonly string[]).includes(command)) throw Object.assign(new Error('unknown command'), { status: 400 });
   const requestId = String(b.requestId ?? '');
-  if (command !== 'status' && !REQUEST_ID.test(requestId)) throw Object.assign(new Error('requestId must be 16-64 lowercase hex'), { status: 400 });
+  if (!VENDOR_READ_COMMANDS.includes(command) && !REQUEST_ID.test(requestId)) throw Object.assign(new Error('requestId must be 16-64 lowercase hex'), { status: 400 });
   return { command, operator: String(b.operator ?? ''), requestId, requestRef: String(b.requestRef ?? ''), body: b };
 }
 
@@ -81,12 +98,13 @@ export async function main(stdin: string, env: Env = process.env, out: Out = { w
   }
   env.DATABASE_URL = withConnectionLimit(env.DATABASE_URL);
 
-  const [{ prisma }, { runIdentityTransaction }, vendor, transitions, credentials] = await Promise.all([
+  const [{ prisma }, { runIdentityTransaction }, vendor, transitions, credentials, platform] = await Promise.all([
     import('@/lib/prisma'),
     import('./run'),
     import('./vendor'),
     import('./transitions/vendor'),
     import('./credentials'),
+    import('@/modules/platform'),
   ]);
   const ctx = { operator: req.operator, requestRef: req.requestRef, operationKey: `vendor:${req.command}:${req.requestId}` };
   const b = req.body;
@@ -121,6 +139,35 @@ export async function main(stdin: string, env: Env = process.env, out: Out = { w
       case 'set-owner-contact':
         result = await run((tx) =>
           transitions.setOwnerContact(tx, { ctx, email: b.email == null || b.email === '' ? null : String(b.email), mobile: b.mobile == null || b.mobile === '' ? null : String(b.mobile), name: b.name == null ? null : String(b.name) }),
+        );
+        break;
+      case 'controls':
+        result = await vendor.vendorControls(prisma, env, b.companyIds);
+        break;
+      case 'digest':
+        result = await vendor.vendorDigest(prisma, b.month);
+        break;
+      case 'owner-confirm': {
+        const c = vendor.validContext(ctx);
+        const expectedVersion = Number(b.expectedVersion);
+        if (!Number.isInteger(expectedVersion) || expectedVersion < 0) throw Object.assign(new Error('expectedVersion مطلوب (نسخة البند كما عرضها controls)'), { status: 400 });
+        const discrepancyId = String(b.discrepancyId ?? '').trim();
+        if (!/^[0-9a-f-]{36}$/i.test(discrepancyId)) throw Object.assign(new Error('رقم البند غير صالح'), { status: 400 });
+        const decision = vendor.ownerDecisionOf(b.decision);
+        const out = await platform.confirmSingleOperatorAct(prisma, {
+          discrepancyId,
+          expectedVersion,
+          key: req.requestId,
+          decision,
+          channelRef: `radeef:${c.operator}:${c.requestRef}`,
+        });
+        result = { ...out.result, replayed: out.replayed };
+        break;
+      }
+      case 'controls-ready':
+      case 'controls-not-ready':
+        result = await run((tx) =>
+          transitions.setControlsReadiness(tx, { ctx, companyId: String(b.companyId ?? ''), ready: req.command === 'controls-ready', basis: b.basis == null ? null : String(b.basis) }),
         );
         break;
       case 'release-code': {

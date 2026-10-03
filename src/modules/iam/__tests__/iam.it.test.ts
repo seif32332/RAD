@@ -9,6 +9,7 @@
 import { randomUUID } from 'crypto';
 import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { employeeFixture } from '@/test/money-fixtures';
+import { scopeFixture } from '@/test/money-fixtures';
 
 const RUN = process.env.SCOPE_IT === '1';
 
@@ -118,7 +119,7 @@ describe.skipIf(!RUN)('company scope (P1-FND-SCOPE) on PostgreSQL', { timeout: 6
       // BL-PAY-005: Employee.userId is the identity projection (money.gateway guards it): a link fixture.
       if (u.employeeId) await (await import('@/test/money-fixtures')).linkFixture(u.id, u.employeeId);
     }
-    await prisma.userCompanyScope.createMany({
+    await scopeFixture.createMany({
       data: [
         { userId: users.hrA.id, companyId: co.A },
         { userId: users.hrB.id, companyId: co.B },

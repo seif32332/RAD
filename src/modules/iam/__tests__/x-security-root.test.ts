@@ -60,10 +60,12 @@ describe('BL-PAY-017 money.gateway: TENANT_ROOT and the named list are the vendo
     const ops = moneyOperations().filter((o) => o.name !== 'test.fixture.write');
     expect(ops.length).toBeGreaterThan(20);
     const vendor = ops.filter((o) => o.name.startsWith('iam.vendor.'));
-    expect(vendor.map((o) => o.name).sort()).toEqual(['iam.vendor.invite', 'iam.vendor.namedPerson', 'iam.vendor.releaseCode', 'iam.vendor.setRoot', 'iam.vendor.suspendRoot']);
+    // BL-PAY-021 (ADR-0009): + controlsReadiness, Radeef's per-company readiness mark.
+    expect(vendor.map((o) => o.name).sort()).toEqual(['iam.vendor.controlsReadiness', 'iam.vendor.invite', 'iam.vendor.namedPerson', 'iam.vendor.releaseCode', 'iam.vendor.setRoot', 'iam.vendor.suspendRoot']);
     for (const o of vendor) expect(o.source, o.name).toBe('SYSTEM');
     for (const o of ops.filter((x) => !x.name.startsWith('iam.vendor.'))) {
       expect(Object.keys(o.writes), o.name).not.toContain('TenantNamedPerson');
+      expect(Object.keys(o.writes), o.name).not.toContain('ControlsReadiness');
       const user = o.writes.User;
       expect(user, o.name).not.toBe('*');
       if (Array.isArray(user)) {

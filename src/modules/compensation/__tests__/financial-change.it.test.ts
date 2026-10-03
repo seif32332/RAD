@@ -16,6 +16,7 @@
 // Opt-in: PAY_IT=1 with DATABASE_URL on a THROWAWAY migrated database (rows are not cleaned up).
 import { randomUUID } from 'crypto';
 import { beforeAll, describe, expect, it } from 'vitest';
+import { withControlsMode } from '@/test/controls-mode';
 
 const RUN = process.env.PAY_IT === '1';
 
@@ -167,7 +168,7 @@ describe.skipIf(!RUN)('financial change requests and the compensation facts on P
     expect((await periods(e)).length).toBe(1);
     const r2 = await request(e, { compensation: pay(7100) });
     const k = key('single');
-    const single = await decide(r2.changes[0].id, actors.hr, 'APPROVE', { operationKey: k, mode: 'SINGLE_OPERATOR' });
+    const single = await withControlsMode('SINGLE_OPERATOR', () => decide(r2.changes[0].id, actors.hr, 'APPROVE', { operationKey: k }));
     expect([single.selfAct, single.change.status, single.change.decisionSelfAct]).toEqual([true, 'APPLIED', true]);
     expect(await prisma.auditRecord.count({ where: { operationKey: k, action: 'SELF_ACT_SINGLE_OPERATOR' } })).toBe(1);
     expect(await prisma.domainEvent.count({ where: { type: 'money.guard.selfAct', idempotencyKey: `money.guard.selfAct:${k}` } })).toBe(1);

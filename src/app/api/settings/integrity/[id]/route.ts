@@ -1,8 +1,9 @@
 // Actions on one discrepancy (P1-FND-INV; ARCHITECTURE_INVARIANTS §4.3, ADR-0002 #1): explain, request
 // a waiver, approve or reject the pending one, resolve. The rules (second person, the beneficiary,
 // single operator, verified resolution) live in the platform transitions; this route authenticates,
-// applies the company scope of the discrepancy and resolves the operator mode on the server. The
-// owner's confirmation of a single-operator act arrives over the DEC-PO-022 channel, not here.
+// applies the company scope of the discrepancy; the transitions read the controls mode in their own
+// transaction (BL-PAY-021). The owner's confirmation of a single-operator act arrives over the DEC-PO-022
+// channel (Radeef's vendor CLI until G8), never here.
 import { NextResponse } from 'next/server';
 import { z } from 'zod';
 import { prisma } from '@/lib/prisma';
@@ -19,7 +20,6 @@ import {
   requestDiscrepancyWaiver,
   resolveDiscrepancy,
   registerInvariantCheck,
-  resolveOperatorMode,
 } from '@/modules/platform';
 import { INV_RULE_02_ID, belowLegalOverrideCheck } from '@/modules/rules';
 import { INV_PAY_04_ID, employmentChangeCheck } from '@/modules/payroll';
@@ -68,11 +68,11 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
     const outcome = await (async () => {
       switch (body.action) {
         case 'explain':
-          return explainDiscrepancy(prisma, { ...common, explanation: body.explanation, reference: body.reference, category: body.category }, who, { operatorMode: await resolveOperatorMode(prisma) });
+          return explainDiscrepancy(prisma, { ...common, explanation: body.explanation, reference: body.reference, category: body.category }, who);
         case 'approve-explanation':
           return approveDiscrepancyExplanation(prisma, common, who);
         case 'waive':
-          return requestDiscrepancyWaiver(prisma, { ...common, reason: body.reason }, who, { operatorMode: await resolveOperatorMode(prisma) });
+          return requestDiscrepancyWaiver(prisma, { ...common, reason: body.reason }, who);
         case 'approve-waiver':
           return approveDiscrepancyWaiver(prisma, common, who);
         case 'reject':

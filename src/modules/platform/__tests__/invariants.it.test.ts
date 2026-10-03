@@ -11,6 +11,7 @@
 import { randomUUID } from 'crypto';
 import { beforeAll, describe, expect, it } from 'vitest';
 import { employeeFixture } from '@/test/money-fixtures';
+import { withControlsMode } from '@/test/controls-mode';
 
 const RUN = process.env.INV_IT === '1';
 
@@ -40,7 +41,6 @@ describe.skipIf(!RUN)('invariant engine on PostgreSQL (P1-FND-INV)', { timeout: 
   const emp = { term: '', org: '', clean: '', waive: '' };
   const u1 = { userId: `u1-${tag}`, employeeId: null };
   const u2 = { userId: `u2-${tag}`, employeeId: null };
-  const ENFORCED = { operatorMode: 'ENFORCED' as const };
 
   async function employee(k: 'A' | 'B', over: Record<string, unknown>) {
     return (
@@ -132,8 +132,8 @@ describe.skipIf(!RUN)('invariant engine on PostgreSQL (P1-FND-INV)', { timeout: 
   it('explainDiscrepancy + approveDiscrepancyExplanation: two people, idempotent on a double call (sequential and concurrent)', async () => {
     const d = await rowOf(emp.org, 'branch-not-in-actual-company');
     const input = { discrepancyId: d.id, expectedVersion: d.version, explanation: 'الفرع مستعار مؤقتاً بقرار إداري موثق', reference: 'DEC-2026-17' };
-    const [a, b] = await Promise.all([explainDiscrepancy(prisma, input, u1, ENFORCED), explainDiscrepancy(prisma, input, u1, ENFORCED)]);
-    const again = await explainDiscrepancy(prisma, input, u1, ENFORCED);
+    const [a, b] = await Promise.all([explainDiscrepancy(prisma, input, u1), explainDiscrepancy(prisma, input, u1)]);
+    const again = await explainDiscrepancy(prisma, input, u1);
     expect([a.replayed, b.replayed].sort()).toEqual([false, true]);
     expect(again.replayed).toBe(true);
     expect(again.result).toEqual(a.result);
@@ -155,15 +155,15 @@ describe.skipIf(!RUN)('invariant engine on PostgreSQL (P1-FND-INV)', { timeout: 
     expect(await eventsOf(d.id, 'platform.discrepancy.explained')).toBe(1);
     await expect(assertNoBlockingDiscrepancies(prisma, { operation: 'settlement.pay', companyId: co.A, employeeIds: [emp.org] })).resolves.toBeUndefined();
     // A stale version is refused, not applied twice.
-    await expect(explainDiscrepancy(prisma, { ...input, expectedVersion: d.version }, u2, ENFORCED)).rejects.toMatchObject({ status: 409 });
+    await expect(explainDiscrepancy(prisma, { ...input, expectedVersion: d.version }, u2)).rejects.toMatchObject({ status: 409 });
   });
 
   it('requestDiscrepancyWaiver + rejectDiscrepancyAction + approveDiscrepancyWaiver: idempotent on a double call, owner alert on the waiver', async () => {
     const d = await rowOf(emp.waive, 'exit-reason-while-active');
     const ask = { discrepancyId: d.id, expectedVersion: d.version, reason: 'سبب الخروج سُجل مبكراً لاستقالة مقدمة' };
-    const [r1, r2] = await Promise.all([requestDiscrepancyWaiver(prisma, ask, u1, ENFORCED), requestDiscrepancyWaiver(prisma, ask, u1, ENFORCED)]);
+    const [r1, r2] = await Promise.all([requestDiscrepancyWaiver(prisma, ask, u1), requestDiscrepancyWaiver(prisma, ask, u1)]);
     expect([r1.replayed, r2.replayed].sort()).toEqual([false, true]);
-    expect((await requestDiscrepancyWaiver(prisma, ask, u1, ENFORCED)).replayed).toBe(true);
+    expect((await requestDiscrepancyWaiver(prisma, ask, u1)).replayed).toBe(true);
     expect(r1.result.pendingAction).toBe('WAIVER');
 
     // The second person refuses it (double call replays)...
@@ -173,7 +173,7 @@ describe.skipIf(!RUN)('invariant engine on PostgreSQL (P1-FND-INV)', { timeout: 
     expect(j1.result).toMatchObject({ status: 'OPEN', pendingAction: null });
 
     // ...then approves a second request.
-    const ask2 = await requestDiscrepancyWaiver(prisma, { ...ask, expectedVersion: j1.result.version }, u1, ENFORCED);
+    const ask2 = await requestDiscrepancyWaiver(prisma, { ...ask, expectedVersion: j1.result.version }, u1);
     const ok = { discrepancyId: d.id, expectedVersion: ask2.result.version };
     await expect(approveDiscrepancyWaiver(prisma, ok, u1)).rejects.toMatchObject({ status: 403 });
     const [w1, w2] = await Promise.all([approveDiscrepancyWaiver(prisma, ok, u2), approveDiscrepancyWaiver(prisma, ok, u2)]);
@@ -190,7 +190,7 @@ describe.skipIf(!RUN)('invariant engine on PostgreSQL (P1-FND-INV)', { timeout: 
   it('the beneficiary never classifies his own finding', async () => {
     const d = await rowOf(emp.term, 'terminated-without-date');
     await expect(
-      explainDiscrepancy(prisma, { discrepancyId: d.id, expectedVersion: d.version, explanation: 'أنا المعني وأشرح بنفسي هنا', reference: 'SELF' }, { userId: `self-${tag}`, employeeId: emp.term }, ENFORCED),
+      explainDiscrepancy(prisma, { discrepancyId: d.id, expectedVersion: d.version, explanation: 'أنا المعني وأشرح بنفسي هنا', reference: 'SELF' }, { userId: `self-${tag}`, employeeId: emp.term }),
     ).rejects.toMatchObject({ status: 403 });
   });
 
@@ -232,11 +232,9 @@ describe.skipIf(!RUN)('invariant engine on PostgreSQL (P1-FND-INV)', { timeout: 
         entityType: 'BankExport', entityId: `bx-${tag}`, period: '2026-09', severity: 'BLOCKING', blocking: true, blocks: ['payroll.export', 'payroll.pay'],
       },
     });
-    const explained = await explainDiscrepancy(
-      prisma,
-      { discrepancyId: d.id, expectedVersion: 0, explanation: 'المبلغ عُدّل بقرار المالك قبل الإرسال', reference: 'OWNER-7' },
-      u1,
-      { operatorMode: 'SINGLE_OPERATOR' },
+    // BL-PAY-021: the transition reads the controls mode itself (the test switch stands in for the computed one).
+    const explained = await withControlsMode('SINGLE_OPERATOR', () =>
+      explainDiscrepancy(prisma, { discrepancyId: d.id, expectedVersion: 0, explanation: 'المبلغ عُدّل بقرار المالك قبل الإرسال', reference: 'OWNER-7' }, u1),
     );
     expect(explained.result).toMatchObject({ status: 'OPEN', pendingAction: 'EXPLANATION', ownerConfirmation: 'PENDING' });
     await expect(assertNoBlockingDiscrepancies(prisma, { operation: 'payroll.export', companyId: co.A, period: '2026-09' })).rejects.toBeInstanceOf(BlockingDiscrepanciesError);

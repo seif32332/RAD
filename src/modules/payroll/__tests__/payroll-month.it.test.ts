@@ -8,6 +8,7 @@
 import { randomUUID } from 'crypto';
 import { beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { employeeFixture } from '@/test/money-fixtures';
+import { withControlsMode } from '@/test/controls-mode';
 
 const RUN = process.env.PAY_IT === '1';
 
@@ -67,8 +68,9 @@ describe.skipIf(!RUN)('payroll month on PostgreSQL (P1-PAY-A)', { timeout: 240_0
   const lines = (companyId: string, month: number) => prisma.payroll.findMany({ where: { companyId, year, month }, orderBy: { employeeId: 'asc' } });
   const events = (type: string, aggregateId: string) => prisma.domainEvent.count({ where: { type, aggregateId } });
   const generate = async (month: number, companyId = co.A) => lib.generatePayrollMonth(prisma, { companyId, year, month, actor: actors.hr });
-  const approve = (month: number, who: keyof typeof actors, key = `it:approve:${randomUUID()}`, mode?: 'ENFORCED' | 'SINGLE_OPERATOR') =>
-    runPayrollTransaction(prisma, (tx) => approvePayrollMonth(tx, { actor: actors[who], companyId: co.A, year, month, operationKey: key, mode }));
+  // BL-PAY-021: the controls mode is the one resolver's answer (the test switch, src/test/controls-mode.ts).
+  const approve = (month: number, who: keyof typeof actors, key = `it:approve:${randomUUID()}`, mode: 'ENFORCED' | 'SINGLE_OPERATOR' = 'ENFORCED') =>
+    withControlsMode(mode, () => runPayrollTransaction(prisma, (tx) => approvePayrollMonth(tx, { actor: actors[who], companyId: co.A, year, month, operationKey: key })));
   const pay = (month: number, who: keyof typeof actors, key = `it:pay:${randomUUID()}`) =>
     runPayrollTransaction(prisma, (tx) => markPayrollMonthPaid(tx, { actor: actors[who], companyId: co.A, year, month, operationKey: key }));
   const status = (p: Promise<unknown>) => p.then(() => 200, (e: { status?: number }) => e?.status ?? 500);

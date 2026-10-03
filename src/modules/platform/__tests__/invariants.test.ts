@@ -27,7 +27,6 @@ import {
   invariantById,
   isBlocking,
   measuredInvariants,
-  resolveOperatorMode,
   type DiscrepancyState,
 } from '@/modules/platform';
 
@@ -211,11 +210,4 @@ describe('classification policy (§4.3 rules 2 and 5, ADR-0002 #1)', () => {
     expect(() => decideResolve(row({ status: 'AUTO_CLOSED' }), u1, { resolution: 'صُحّح فرع الموظف بقرار نقل', resolutionRef: 'TD-1' }, now)).toThrow(HttpError);
   });
 
-  it('the operator mode comes from the server and fails closed', async () => {
-    const db = (value: string | null) => ({ systemSetting: { findUnique: vi.fn(async () => (value === null ? null : { value })) } }) as never;
-    await expect(resolveOperatorMode(db(null))).resolves.toBe('ENFORCED');
-    await expect(resolveOperatorMode(db('"SINGLE_OPERATOR"'))).resolves.toBe('SINGLE_OPERATOR');
-    await expect(resolveOperatorMode(db('SINGLE_OPERATOR'))).resolves.toBe('SINGLE_OPERATOR');
-    await expect(resolveOperatorMode(db('single'))).resolves.toBe('ENFORCED');
-  });
 });

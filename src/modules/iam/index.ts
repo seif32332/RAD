@@ -8,6 +8,8 @@
 //   const ctx = scopedContext(await resolveActor(prisma, user));
 //   authz.assert(ctx, 'recruitment.jobRequest.decide', { companyId });
 //   const db = scopedPrisma(ctx);
+import { registerControlsModeResolver } from './controls';
+
 export {
   ALL_COMPANIES,
   MissingScopeContextError,
@@ -122,6 +124,8 @@ export {
   rehashLegacyPassword,
   changeOwnEmail,
   confirmOwnEmail,
+  setUserCompanyScope,
+  scopeChangeDrops,
 } from './transitions/identity';
 export type {
   CreateUserInput,
@@ -133,9 +137,37 @@ export type {
   ChangeOutcome,
   AdminChangeInput,
   AdminChangeOutcome,
+  ScopeChangeInput,
+  ScopeChangeOutcome,
 } from './transitions/identity';
 export { CODE_MAX_ATTEMPTS, credentialCodeFor, credentialTokenId, appBaseUrl } from './credentials';
 export { runIdentityTransaction } from './run';
+
+// BL-PAY-021: the computed controlsMode (BR-PAY-020). iam registers it as platform's one controls-mode
+// resolver when this index is loaded; every reader asks platform.resolveOperatorMode.
+registerControlsModeResolver();
+export {
+  CONTROLS_MODE_CHANGED_EVENT,
+  CONTROLS_AGGREGATE_TYPE,
+  ENFORCED_MIN_APPROVERS,
+  READINESS_BASES,
+  controlsModeFor,
+  controlsApprovers,
+  approverScopes,
+  actsIn,
+  countedApproversIn,
+  readinessOf,
+  readyCompanies,
+  readControlsMode,
+  controlsOfCompanies,
+  approverExitEffect,
+  isCountedApprover,
+  registerControlsModeResolver,
+  lastRecordedControlsMode,
+  recordControlsMode,
+  recordControlsModeQuietly,
+} from './controls';
+export type { ControlsModeRecord, ControlsModeChange, CompanyControls, ApproverExitEffect, ApproverScope, Readiness, ReadinessBasis } from './controls';
 export { runExitAccessChange } from './exit-access';
 export {
   CREDENTIAL_LINK_MAIL_CONSUMER,
@@ -146,6 +178,33 @@ export {
   ACCOUNT_NOTICE_MAIL_CONSUMER,
   accountNoticeMail,
   accountNoticeMailConsumer,
+  CONTROLS_OWNER_ALERT_CONSUMER,
+  controlsDropMail,
+  controlsOwnerAlertConsumer,
   registerIamConsumers,
 } from './consumers';
+
+// BL-PAY-021: the owner's monthly digest (job owner-digest) and Radeef's reads of it.
+export {
+  OWNER_DIGEST_JOB,
+  OWNER_DIGEST_QUEUED_EVENT,
+  OWNER_DIGEST_KEY_PREFIX,
+  DIGEST_SECTION_LINES,
+  DIGEST_DELIVERY_PROBLEMS,
+  previousMonth,
+  monthPeriod,
+  monthLabel,
+  ownerDigestKey,
+  ownerContactOf,
+  modeSpanOf,
+  buildOwnerDigest,
+  runOwnerDigest,
+  createOwnerDigestJob,
+  OwnerContactMissingError,
+  recentDigests,
+  queuedDigest,
+  controlsNotice,
+  SINGLE_OPERATOR_BANNER,
+} from './digest';
+export type { DigestMonth, ModeSpan, OwnerDigest, OwnerDigestRun, DigestDelivery, DigestCounts, CompanyDigest, CompanyNames } from './digest';
 

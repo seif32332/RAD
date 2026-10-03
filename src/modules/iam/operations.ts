@@ -68,7 +68,19 @@ export const CHANGE_DECIDE = defineMoneyOperation<IdentitySubject>({
   act: 'APPROVE',
   source: 'USER',
   notBeneficiary: false,
-  writes: { IdentityChangeRequest: '*', User: [...USER_STANDING, ...USER_CREDENTIALS, ...IDENTITY_RESET], CredentialToken: '*' },
+  writes: { IdentityChangeRequest: '*', User: [...USER_STANDING, ...USER_CREDENTIALS, ...IDENTITY_RESET], CredentialToken: '*', UserCompanyScope: '*' },
+});
+
+/**
+ * BL-PAY-021 (security re-check): an account's company scope (UserCompanyScope). Applied at once when no company
+ * drops below two counted approvers; otherwise a two-person CHANGE_SCOPE request (CHANGE_REQUEST / CHANGE_DECIDE).
+ */
+export const USER_SCOPE_SET = defineMoneyOperation<IdentitySubject>({
+  name: 'iam.user.scope',
+  owner: 'iam',
+  act: 'APPLY_CHANGE',
+  source: 'USER',
+  writes: { UserCompanyScope: '*' },
 });
 
 /** identity.resetCredentials: the account becomes UNATTESTED, every session ends, a one-time link is issued. */
@@ -223,6 +235,18 @@ export const VENDOR_INVITE = defineMoneyOperation<IdentitySubject>({
   act: 'APPLY_CHANGE',
   source: 'SYSTEM',
   writes: { User: '*', TenantNamedPerson: '*', CredentialToken: '*' },
+});
+
+/**
+ * BL-PAY-021 (ADR-0009, DEC-PO-144): Radeef marks a legal company ready for the computed controls mode, or takes
+ * the mark back (the company is then ENFORCED whatever its count). ControlsReadiness only.
+ */
+export const VENDOR_CONTROLS_READINESS = defineMoneyOperation<IdentitySubject>({
+  name: 'iam.vendor.controlsReadiness',
+  owner: 'iam',
+  act: 'APPLY_CHANGE',
+  source: 'SYSTEM',
+  writes: { ControlsReadiness: '*' },
 });
 
 /** ROOT_ATTEST_OWN: Radeef releases the second-channel code once to its operator (RT-PAY-1301). */

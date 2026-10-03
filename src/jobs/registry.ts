@@ -11,8 +11,9 @@ import { expiryDigestJob } from '@/lib/alerts-digest';
 import { applyEmployeeChangesJob } from '@/lib/documents/change-orders';
 import { documentsIntegrityJob, documentsRetentionJob } from '@/lib/documents/jobs';
 import { purgeAttendanceBiometricsJob } from '@/lib/self-attendance-retention';
-import { credentialOutboxRender, type SystemContext } from '@/modules/iam';
+import { createOwnerDigestJob, credentialOutboxRender, type SystemContext } from '@/modules/iam';
 import { noticeEndJob, stateOpeningJob } from '@/modules/lifecycle';
+import { companyNames } from '@/modules/org';
 import { applyFinancialChangesJob } from '@/modules/compensation';
 import { createDomainEventsJob, createOutboxDispatchJob, createReconcileJob, defineJobs, type JobDefinition } from '@/modules/platform';
 // DomainEvent consumers register themselves when their module's consumers.ts is imported. List each
@@ -33,6 +34,9 @@ export const JOBS: readonly JobDefinition<SystemContext>[] = defineJobs<SystemCo
   createDomainEventsJob<SystemContext>(),
   noticeEndJob,
   stateOpeningJob,
+  // BL-PAY-021: records the computed controls mode per company and queues the owner's monthly digest (DEC-PO-022 /
+  // 144); org names the companies (iam does not read Company).
+  createOwnerDigestJob({ companyNames: (db, ids) => companyNames(db as never, ids) }),
 ]);
 
 export const JOB_NAMES: readonly string[] = Object.freeze(JOBS.map((j) => j.name));

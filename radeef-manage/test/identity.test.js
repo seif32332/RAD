@@ -36,7 +36,7 @@ function match(pattern, path) {
   return params;
 }
 
-function makeReq({ method, path, body, cookie, origin, contentType = 'application/json', ip = '10.0.0.1' }) {
+function makeReq({ method, path, body, cookie, origin, contentType = 'application/json', ip = '10.0.0.1', query = {} }) {
   const headers = { host: HOST };
   if (cookie) headers.cookie = cookie;
   if (origin) headers.origin = origin;
@@ -45,6 +45,7 @@ function makeReq({ method, path, body, cookie, origin, contentType = 'applicatio
     method,
     path,
     body,
+    query,
     headers,
     ip,
     params: {},
@@ -99,6 +100,8 @@ function setup(overrides = {}) {
       (async (row, request) => {
         calls.push({ row, request });
         if (request.command === 'status') return { root: null, namedPeople: [], ownerContact: null, pendingCodes: [] };
+        if (request.command === 'controls') return { mode: 'SINGLE_OPERATOR', approvers: [], pendingOwnerConfirmations: [], alerts: ['OWNER_CONTACT_MISSING'] };
+        if (request.command === 'digest') return { month: request.month, subject: 's', body: 'b', status: 'PENDING' };
         if (request.command === 'release-code') return { tokenId: 't1', expiresAt: '2030-01-01T00:00:00.000Z', replayed: false, code: '1234-5678' };
         return { ok: true };
       }),
@@ -301,4 +304,74 @@ test('runVendorCommand: a refusal keeps its status and message; a crash or garba
   await assert.rejects(run('Segmentation fault'), (e) => e.status === 502);
   await assert.rejects(run(''), (e) => e.status === 502);
   await assert.rejects(run('{"ok":true,"result":{}}', 1), (e) => e.status === 502);
+});
+
+
+/* ------------------------------------------------------------------ BL-PAY-021: controls, digest, owner-confirm */
+
+test('BL-PAY-021 controls / digest: signed-in reads with no requestId and no owner request, no-store; denied without a session; a bad month is refused', async () => {
+  const { auth, app, calls } = setup();
+  const anon = await dispatch(app, auth, { method: 'GET', path: '/api/tenants/acme/controls' });
+  assert.equal(anon.statusCode, 401);
+  assert.equal(calls.length, 0);
+  const cookie = await loginCookie(auth);
+  const controls = await dispatch(app, auth, { method: 'GET', path: '/api/tenants/acme/controls', cookie });
+  assert.equal(controls.statusCode, 200, JSON.stringify(controls.body));
+  assert.equal(controls.body.mode, 'SINGLE_OPERATOR');
+  assert.equal(controls.headers['cache-control'], 'no-store');
+  const digest = await dispatch(app, auth, { method: 'GET', path: '/api/tenants/acme/digest', query: { month: '2026-09' }, cookie });
+  assert.equal(digest.statusCode, 200, JSON.stringify(digest.body));
+  assert.deepEqual(calls.map((c) => [c.request.command, c.request.requestId, c.request.requestRef, c.request.month]), [
+    ['controls', '', '', undefined],
+    ['digest', '', '', '2026-09'],
+  ]);
+  for (const month of ['2026-13', '26-09', '', '2026-09; rm -rf /']) {
+    const bad = await dispatch(app, auth, { method: 'GET', path: '/api/tenants/acme/digest', query: { month }, cookie });
+    assert.equal(bad.statusCode, 400, month);
+  }
+  assert.equal((await dispatch(app, auth, { method: 'GET', path: '/api/tenants/nobody/controls', cookie })).statusCode, 404);
+  assert.equal(calls.length, 2);
+});
+
+test("BL-PAY-021 owner-confirm: the owner's answer received by Radeef, with the owner request and the tenant name typed again; validated; a retry keeps its requestId", async () => {
+  const { auth, app, calls } = setup();
+  const cookie = await loginCookie(auth);
+  const id = '0f8fad5b-d9cb-469f-a165-70867728950e';
+  const base = { name: 'acme', command: 'owner-confirm', requestRef: 'OWNER-MAIL-77', discrepancyId: id.toUpperCase(), decision: 'confirmed', expectedVersion: 3 };
+  assert.equal((await dispatch(app, auth, { ...write(base), cookie })).statusCode, 400); // no confirm
+  const requestId = 'cd'.repeat(16);
+  const ok = await dispatch(app, auth, { ...write({ ...base, confirm: 'acme', requestId }), cookie });
+  assert.equal(ok.statusCode, 200, JSON.stringify(ok.body));
+  assert.deepEqual(
+    { ...calls[0].request },
+    { command: 'owner-confirm', operator: USER, requestId, requestRef: 'OWNER-MAIL-77', discrepancyId: id, decision: 'CONFIRMED', expectedVersion: 3 },
+  );
+  for (const bad of [{ decision: 'yes' }, { discrepancyId: 'x' }, { expectedVersion: -1 }, { expectedVersion: 'a' }, { requestRef: '' }]) {
+    const res = await dispatch(app, auth, { ...write({ ...base, confirm: 'acme', ...bad }), cookie });
+    assert.equal(res.statusCode, 400, JSON.stringify(bad));
+  }
+  assert.equal(calls.length, 1);
+});
+
+test('DEC-PO-144 controls-ready / controls-not-ready: owner request and the tenant name typed again; basis ATTESTED by default or ONE_PERSON; a bad company id or basis is refused', async () => {
+  const { auth, app, calls } = setup();
+  const cookie = await loginCookie(auth);
+  const companyId = '0f8fad5b-d9cb-469f-a165-70867728950e';
+  const base = { name: 'acme', command: 'controls-ready', requestRef: 'OWNER-REQ-5', companyId: companyId.toUpperCase() };
+  assert.equal((await dispatch(app, auth, { ...write(base), cookie })).statusCode, 400); // no confirm
+  assert.equal((await dispatch(app, auth, { ...write({ ...base, confirm: 'acme' }), cookie })).statusCode, 200);
+  assert.equal((await dispatch(app, auth, { ...write({ ...base, confirm: 'acme', basis: 'one_person' }), cookie })).statusCode, 200);
+  assert.equal((await dispatch(app, auth, { ...write({ ...base, command: 'controls-not-ready', confirm: 'acme' }), cookie })).statusCode, 200);
+  assert.deepEqual(calls.map((c) => [c.request.command, c.request.companyId, c.request.basis]), [
+    ['controls-ready', companyId, 'ATTESTED'],
+    ['controls-ready', companyId, 'ONE_PERSON'],
+    ['controls-not-ready', companyId, undefined],
+  ]);
+  for (const bad of [{ companyId: 'x' }, { basis: 'maybe' }, { requestRef: '' }]) {
+    assert.equal((await dispatch(app, auth, { ...write({ ...base, confirm: 'acme', ...bad }), cookie })).statusCode, 400, JSON.stringify(bad));
+  }
+  const ctl = await dispatch(app, auth, { method: 'GET', path: '/api/tenants/acme/controls', query: { companyIds: `${companyId},${companyId}` }, cookie });
+  assert.equal(ctl.statusCode, 200);
+  assert.deepEqual(calls[calls.length - 1].request.companyIds, [companyId, companyId]);
+  assert.equal((await dispatch(app, auth, { method: 'GET', path: '/api/tenants/acme/controls', query: { companyIds: 'nope' }, cookie })).statusCode, 400);
 });

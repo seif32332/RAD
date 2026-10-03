@@ -28,6 +28,7 @@ import {
   activeAt,
   assertTransactionClient,
   audit,
+  decideByMode,
   emitEvent,
   idempotent,
   resolveOperatorMode,
@@ -36,6 +37,7 @@ import {
   type GuardDecision,
   type GuardReason,
   type MoneyActor,
+  type OperatorMode,
   type TxClient,
 } from '@/modules/platform';
 import { employeeForCompensation } from '@/modules/people';
@@ -261,8 +263,6 @@ export interface DecideFinancialChangeInput {
    * (payroll sits above compensation: the route passes payroll's check down). Applied to a pay change only.
    */
   assertEffectiveDateOpen?: (tx: TxClient, employeeId: string, effectiveDate: string) => Promise<void>;
-  /** The tenant's operator mode when the caller already read it (tests); default: read in the transaction. */
-  mode?: 'ENFORCED' | 'SINGLE_OPERATOR';
 }
 
 export interface DecideFinancialChangeResult {
@@ -274,12 +274,11 @@ export interface DecideFinancialChangeResult {
 }
 
 /** The second-person rule of a decision, in the tenant's operator mode (ENFORCED refuses, SINGLE_OPERATOR records). */
-function secondPersonDecision(row: ChangeRow, actor: MoneyActor, mode: 'ENFORCED' | 'SINGLE_OPERATOR'): GuardDecision {
+function secondPersonDecision(row: ChangeRow, actor: MoneyActor, mode: OperatorMode): GuardDecision {
   const reasons: GuardReason[] = [];
   if ((row.requestedById && row.requestedById === actor.id) || row.legacyFiledByUserIds.includes(actor.id)) reasons.push('SAME_PERSON_TWICE');
   if (actor.employeeId && actor.employeeId === row.employeeId) reasons.push('SELF_BENEFICIARY');
-  if (!reasons.length) return { ok: true, reasons, selfAct: false };
-  return mode === 'SINGLE_OPERATOR' ? { ok: true, reasons, selfAct: true } : { ok: false, reasons, selfAct: false };
+  return decideByMode(reasons, mode);
 }
 
 /**
@@ -295,10 +294,10 @@ export async function decideFinancialChange(tx: TxClient, input: DecideFinancial
     if (row.status !== 'PENDING') throw conflict('تم البت في هذا الطلب مسبقاً', { code: 'FINANCIAL_CHANGE_NOT_PENDING', status: row.status });
     const effective = row.effectiveDate.toISOString().slice(0, 10);
     if (input.decision === 'APPROVE' && row.field === 'COMPENSATION' && input.assertEffectiveDateOpen) await input.assertEffectiveDateOpen(t, row.employeeId, effective);
-    const mode = input.mode ?? (await resolveOperatorMode(t));
+    const mode = await resolveOperatorMode(t, companyId);
     const decision = secondPersonDecision(row, input.actor, mode);
     const op = input.decision === 'APPROVE' ? FINANCIAL_CHANGE_DECIDE : FINANCIAL_CHANGE_REJECT;
-    const decided = await runMoneyOperation(t, op, { actor: input.actor, input: { employeeId: row.employeeId }, operationKey: input.operationKey, companyId, mode, decision }, async (w, info) => {
+    const decided = await runMoneyOperation(t, op, { actor: input.actor, input: { employeeId: row.employeeId }, operationKey: input.operationKey, companyId, decision }, async (w, info) => {
       const now = new Date();
       const moved = await w.employeeFinancialChange.updateMany({
         where: { id: row.id, status: 'PENDING' },

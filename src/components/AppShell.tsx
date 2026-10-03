@@ -16,6 +16,7 @@ import { ShellContext } from "@/components/shell/ShellContext";
 import { MENU_ICONS } from "@/components/shell/menu-icons";
 import EditProfileModal from "@/components/shell/EditProfileModal";
 import AccessDenied from "@/components/shell/AccessDenied";
+import ControlsModeBanner from "@/components/shell/ControlsModeBanner";
 
 interface ShellNotification {
   id: string;
@@ -553,6 +554,9 @@ export function ShellFrame({ children }: { children: React.ReactNode }) {
               </div>
             </div>
           </header>
+
+          {/* BL-PAY-021: persistent while the tenant is in SINGLE_OPERATOR (BR-PAY-020). */}
+          {user && <ControlsModeBanner />}
 
           {isEditProfileOpen && user && (
             <EditProfileModal

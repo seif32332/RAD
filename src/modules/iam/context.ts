@@ -304,6 +304,9 @@ export const CROSS_COMPANY_JOBS: readonly string[] = Object.freeze([
   // logins of terminated employees (User is tenant-wide) and erasing their biometric data (PDPL).
   'deactivate-terminated',
   'purge-attendance-biometrics',
+  // BL-PAY-021: the owner and the computed controls mode are tenant-wide; the digest reads every company's
+  // records for the owner (DOMAIN_BOUNDARIES §5.4.3 "ملخص المالك المجمع"), and writes only the outbox row.
+  'owner-digest',
 ]);
 
 /** A scheduled job: one company, or every company for a job declared in CROSS_COMPANY_JOBS. */

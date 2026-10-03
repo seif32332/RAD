@@ -13,7 +13,9 @@
 //      value); a SYSTEM operation (payroll.generate, settlement.approve's named effects) acts under its
 //      fixed name, and the person who triggered it is recorded;
 //   3. applies BR-PAY-001 (actor ∉ beneficiaries) and BR-PAY-002 (payer ∉ approvers) for the act, in
-//      the tenant's operator mode (platform.operatorMode, DEC-PO-018): ENFORCED refuses, recording
+//      the controls mode of THE COMPANY OF THE ACT (spec.companyId, else the operation's companyOf), which
+//      the gateway itself reads in the transaction from the one resolver (../controls.ts, computed per company
+//      by iam, BL-PAY-021 / DEC-PO-144; no caller passes a mode; an unknown company is ENFORCED): ENFORCED refuses, recording
 //      money.guard.blocked with the ROOT client (the refused transaction rolls back, the record stays,
 //      keyed by the operation key so a retry records once); SINGLE_OPERATOR lets the act through and
 //      records SELF_ACT_SINGLE_OPERATOR (audit + money.guard.selfAct event) in the transaction;
@@ -22,12 +24,12 @@
 // Rule values are company defaults (DEC-PO-116); the gateway, its extension and ARCH-004 are not settings.
 import { audit, type AuditActor } from '../audit';
 import { emitEvent } from '../events';
-import { resolveOperatorMode } from '../invariants/policy';
+import { resolveOperatorMode } from '../controls';
 import type { OperatorMode } from '../invariants/types';
 import { assertTransactionClient, type TxClient } from '../tx';
 import { HttpError } from '@/lib/http';
 import { runInMoneyContext, type MoneyContext } from './context';
-import { GUARD_MESSAGES, MONEY_ACTS, decideReversal, decideSelfDealing, type GuardActor, type GuardDecision, type GuardReason, type MoneyAct } from './guards';
+import { GUARD_MESSAGES, MONEY_ACTS, decideByMode, decideReversal, decideSelfDealing, type GuardActor, type GuardDecision, type GuardReason, type MoneyAct } from './guards';
 import type { Columns } from './writes';
 
 /** The session user as the gateway needs it (AuthUser / iam Actor shaped). */
@@ -64,6 +66,11 @@ export interface MoneyOperationDefinition<I> {
   /** User ids that approved the subject or its inputs (BR-PAY-002 "approvers"). */
   approvers?: (tx: TxClient, input: I) => Promise<readonly (string | null | undefined)[]>;
   /**
+   * BL-PAY-021 (DEC-PO-144): the legal company of the subject, when the caller does not pass spec.companyId. The
+   * controls mode is per company; null (unknown, or several companies) reads ENFORCED.
+   */
+  companyOf?: (tx: TxClient, input: I) => Promise<string | null>;
+  /**
    * A legacy writer site that is wrapped, not yet moved into the owning module's transitions (listed
    * in the package report, shrinks with ARCH-004): the file that holds the write.
    */
@@ -74,6 +81,9 @@ export interface MoneyOperation<I> extends Readonly<MoneyOperationDefinition<I>>
   readonly notBeneficiary: boolean;
   readonly notApprover: boolean;
 }
+
+/** decideSelfDealing is asked for its reasons only; the gateway decides them below in the company's mode. */
+const REASONS_ONLY: OperatorMode = 'ENFORCED';
 
 const NAME = /^[a-z][A-Za-z0-9]*(\.[a-z][A-Za-z0-9]*){1,3}$/;
 const registry = new Map<string, MoneyOperation<never>>();
@@ -124,9 +134,11 @@ export interface MoneyRunSpec<I> {
   operationKey: string;
   /** Company of the subject, recorded on the blocked / self-act records. */
   companyId?: string | null;
-  /** Operator mode already read by the caller (else read here, in the transaction). */
-  mode?: OperatorMode;
-  /** An extra decision the caller already took (the two-person REVERSE, a maker-checker). */
+  /**
+   * An extra rule check the caller already made (the two-person REVERSE, a maker-checker, a link
+   * confirmation). Only its REASONS count: the gateway decides them again in the mode it reads itself, so
+   * a decision taken in another mode (a stale read) can never let an act through.
+   */
   decision?: GuardDecision;
 }
 
@@ -193,22 +205,31 @@ export async function runMoneyOperation<I, T>(
   if (!spec.operationKey?.trim()) throw new Error(`money.gateway: ${op.name} needs an operation key`);
   if (op.source === 'USER' && !spec.actor?.id) throw new HttpError(401, 'يجب تسجيل الدخول أولاً');
 
-  const mode = spec.mode ?? (await resolveOperatorMode(tx));
   const actor = guardActor(spec.actor);
-  let decision: GuardDecision = { ok: true, reasons: [], selfAct: false };
+  let reasons: GuardReason[] = [];
   if (op.source === 'USER' && actor) {
     const [beneficiaries, approvers] = await Promise.all([
       op.notBeneficiary && op.beneficiaries ? op.beneficiaries(tx, spec.input) : Promise.resolve([]),
       op.notApprover && op.approvers ? op.approvers(tx, spec.input) : Promise.resolve([]),
     ]);
-    decision = decideSelfDealing({ act: op.act, actor, beneficiaries, approvers, notBeneficiary: op.notBeneficiary, notApprover: op.notApprover, mode });
+    reasons = decideSelfDealing({ act: op.act, actor, beneficiaries, approvers, notBeneficiary: op.notBeneficiary, notApprover: op.notApprover, mode: REASONS_ONLY }).reasons;
   }
   if (spec.decision) {
-    const reasons = [...new Set([...decision.reasons, ...spec.decision.reasons])];
-    decision = { ok: decision.ok && spec.decision.ok, reasons, selfAct: (decision.ok && spec.decision.ok) && reasons.length > 0 };
+    // A refusal without a reason is malformed: refuse (fail closed) rather than guess.
+    if (!spec.decision.ok && !spec.decision.reasons.length) throw new Error(`money.gateway: ${op.name} got a refusing decision without a reason`);
+    reasons = [...new Set([...reasons, ...spec.decision.reasons])];
   }
+  // The one resolver, in this transaction, for the company of the act (BL-PAY-021 / DEC-PO-144): read only when a
+  // rule is broken (a clean act is the same in both modes). Unknown company: ENFORCED.
+  let companyId: string | null = spec.companyId ?? null;
+  let mode: OperatorMode = 'ENFORCED';
+  if (reasons.length) {
+    if (!companyId && op.companyOf) companyId = await op.companyOf(tx, spec.input);
+    mode = await resolveOperatorMode(tx, companyId);
+  }
+  const decision: GuardDecision = decideByMode(reasons, mode);
   if (!decision.ok) {
-    await recordBlocked(op as unknown as MoneyOperation<never>, spec as MoneyRunSpec<unknown>, decision.reasons);
+    await recordBlocked(op as unknown as MoneyOperation<never>, { ...(spec as MoneyRunSpec<unknown>), companyId }, decision.reasons);
     throw new MoneyGuardBlockedError(op.name, decision.reasons);
   }
 
@@ -217,7 +238,7 @@ export async function runMoneyOperation<I, T>(
     await audit(tx, {
       actor: auditActor,
       action: 'SELF_ACT_SINGLE_OPERATOR',
-      entity: { type: 'MoneyOperation', id: op.name, companyId: spec.companyId ?? null },
+      entity: { type: 'MoneyOperation', id: op.name, companyId },
       after: { reasons: decision.reasons, act: op.act },
       reason: `SELF_ACT_SINGLE_OPERATOR: ${decision.reasons.join(',')}`,
       operationKey: spec.operationKey,
@@ -228,7 +249,7 @@ export async function runMoneyOperation<I, T>(
       aggregateId: op.name,
       idempotencyKey: `money.guard.selfAct:${spec.operationKey}`,
       payload: { operation: op.name, act: op.act, reasons: decision.reasons, operationKey: spec.operationKey },
-      companyId: spec.companyId ?? null,
+      companyId,
       actorId: spec.actor?.id ?? null,
     });
   }
@@ -264,8 +285,8 @@ export async function reverseMoney<I, T>(
 ): Promise<T> {
   if (op.act !== 'REVERSE') throw new Error(`money.gateway: ${op.name} is not a REVERSE operation`);
   if (!spec.actor) throw new HttpError(401, 'يجب تسجيل الدخول أولاً');
-  const mode = spec.mode ?? (await resolveOperatorMode(tx));
+  const mode = await resolveOperatorMode(tx, spec.companyId ?? (op.companyOf ? await op.companyOf(tx, spec.input) : null));
   const beneficiaries = op.beneficiaries ? await op.beneficiaries(tx, spec.input) : [];
   const decision = decideReversal({ requestedBy: guardActor(spec.requestedBy)!, approver: guardActor(spec.actor)!, beneficiaries, mode });
-  return runMoneyOperation(tx, op, { ...spec, mode, decision }, fn);
+  return runMoneyOperation(tx, op, { ...spec, decision }, fn);
 }

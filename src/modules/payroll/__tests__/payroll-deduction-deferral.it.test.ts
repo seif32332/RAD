@@ -33,7 +33,7 @@ describe.skipIf(!RUN)('payroll deduction deferral on PostgreSQL (BL-PAY-030)', {
   const key = (m: number) => `${year}-${String(m).padStart(2, '0')}`;
   const generate = (month: number) => lib.generatePayrollMonth(prisma, { companyId, year, month, actor });
   const approve = (month: number, operationKey = `it:approve:${randomUUID()}`) =>
-    runPayrollTransaction(prisma, (tx) => approvePayrollMonth(tx, { actor, companyId, year, month, operationKey, mode: 'ENFORCED' }));
+    runPayrollTransaction(prisma, (tx) => approvePayrollMonth(tx, { actor, companyId, year, month, operationKey }));
   const lineOf = (employeeId: string, month: number) => prisma.payroll.findFirstOrThrow({ where: { employeeId, year, month } });
   const ded = (id: string) => prisma.deduction.findUniqueOrThrow({ where: { id } });
   const deduction = (employeeId: string, date: Date, amount: number) =>

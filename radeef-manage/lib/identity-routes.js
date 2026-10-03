@@ -7,7 +7,12 @@
  *   GET  /api/tenants/:name/identity     the root, the named people, the owner contact, codes waiting for Radeef
  *   POST /api/tenants/identity           { name, command, requestRef, confirm?, requestId?, …fields }
  *        set-root | suspend-root | register-person | revoke-person | link-person | invite-person |
- *        set-owner-contact | release-code
+ *        set-owner-contact | release-code | owner-confirm (BL-PAY-021)
+ *   GET  /api/tenants/:name/controls?companyIds=a,b   the computed controls mode per company and Radeef's
+ *                                        readiness mark (DEC-PO-144), the owner digest's delivery, the owner
+ *                                        confirmations waiting (BL-PAY-021)
+ *   POST … controls-ready { companyId, basis: ATTESTED|ONE_PERSON } / controls-not-ready { companyId } (DEC-PO-144)
+ *   GET  /api/tenants/:name/digest?month=YYYY-MM   one month's queued owner digest (relayed by Radeef until G8)
  *
  * release-code answers the 8-digit code ONCE (no-store); nothing here logs a code, a national id or an email:
  * the panel log line names the operator, the command, the tenant and the owner's request reference only.
@@ -51,6 +56,22 @@ function registerIdentityRoutes(app, deps) {
       sendIdentityError(res, err, log);
     }
   });
+
+  // BL-PAY-021: the reads of the controls mode and of the owner digest (no-store: the digest is the owner's).
+  for (const command of ['controls', 'digest']) {
+    app.get(`/api/tenants/:name/${command}`, authenticate, async (req, res) => {
+      try {
+        const name = V.validateExistingName(req.params.name);
+        const request = identity.readRequest(command, req.session.username, req.query || {});
+        const row = await managed(name);
+        const result = await runVendor(row, request);
+        res.setHeader('Cache-Control', 'no-store');
+        res.json({ success: true, tenant: name, ...result });
+      } catch (err) {
+        sendIdentityError(res, err, log);
+      }
+    });
+  }
 
   app.post('/api/tenants/identity', authenticate, async (req, res) => {
     try {

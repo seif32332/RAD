@@ -1,12 +1,12 @@
 // Classification rules of a discrepancy (ARCHITECTURE_INVARIANTS §4.3 rules 2 and 5, ADR-0002 #1,
 // DEC-PO-120 / DEC-PO-122). Pure functions: given the row, its invariant, the actor and the operator
 // mode, they return the change to write or throw. The transitions (../transitions/discrepancy.ts) run
-// them inside their transaction; these conditions are not company settings.
-import type { Prisma, PrismaClient } from '@prisma/client';
+// them inside their transaction, with the mode they read there (../controls.ts, computed, BL-PAY-021);
+// these conditions are not company settings.
+import type { Prisma } from '@prisma/client';
 import { badRequest, conflict, forbidden } from '@/lib/http';
 import type { InvariantDefinition, OperatorMode, OwnerConfirmation, PendingAction } from './types';
 
-type Db = PrismaClient | Prisma.TransactionClient;
 
 export interface DiscrepancyActor {
   userId: string;
@@ -38,26 +38,6 @@ export interface Decision {
   status: string;
   pendingAction: PendingAction | null;
   ownerConfirmation: OwnerConfirmation | null;
-}
-
-/** Setting written by the single-operator detection of P1-PAY-B (DEC-PO-018). Absent = ENFORCED. */
-export const OPERATOR_MODE_SETTING = 'platform.operatorMode';
-
-/**
- * The tenant's operator mode, from the server (never from the client). Until P1-PAY-B derives it from
- * the attested approvers (DEC-PO-018), it is a platform SystemSetting; anything but SINGLE_OPERATOR is
- * ENFORCED (fail closed: every two-person condition applies).
- */
-export async function resolveOperatorMode(db: Db): Promise<OperatorMode> {
-  const row = await db.systemSetting.findUnique({ where: { key: OPERATOR_MODE_SETTING }, select: { value: true } });
-  const raw = row?.value?.trim() ?? '';
-  let value: unknown = raw;
-  try {
-    value = JSON.parse(raw);
-  } catch {
-    /* plain string */
-  }
-  return value === 'SINGLE_OPERATOR' ? 'SINGLE_OPERATOR' : 'ENFORCED';
 }
 
 const MIN_TEXT = 10;

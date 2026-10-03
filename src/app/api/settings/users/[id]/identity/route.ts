@@ -24,6 +24,7 @@ import {
   scopedContext,
 } from '@/modules/iam';
 import { moneyActorOf } from '@/modules/platform';
+import { legalCompanyOfEmployees } from '@/modules/people';
 import { loadSecurityPolicy } from '../../../security';
 
 export const dynamic = 'force-dynamic';
@@ -138,10 +139,12 @@ export async function POST(req: Request, { params }: Ctx) {
     const key = `users.identity.${body.action}:${actor.id}:${id}:${idem}`;
 
     if (body.action === 'confirmLink' || body.action === 'rejectLink') {
-      const link = await prisma.userEmployeeLink.findUnique({ where: { id: body.linkId }, select: { userId: true } });
+      const link = await prisma.userEmployeeLink.findUnique({ where: { id: body.linkId }, select: { userId: true, employeeId: true } });
       if (!link || link.userId !== id) throw notFound('طلب الربط غير موجود');
       if (body.action === 'confirmLink') {
-        const r = await runIdentityTransaction(prisma, (tx) => confirmLink(tx, { actor: me, linkId: body.linkId, operationKey: key, ipAddress: ip }));
+        // BL-PAY-021: the controls mode of the employee file's company decides a single-operator self-act.
+        const companyId = await legalCompanyOfEmployees(prisma, [link.employeeId]);
+        const r = await runIdentityTransaction(prisma, (tx) => confirmLink(tx, { actor: me, linkId: body.linkId, operationKey: key, ipAddress: ip, companyId }));
         return NextResponse.json({
           message: r.selfAct ? 'تم تأكيد الربط وتسجيله كتصرف منفرد (وضع المشغّل الواحد)' : 'تم تأكيد ربط الحساب بملف الموظف',
           link: r.link,

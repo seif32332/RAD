@@ -16,7 +16,7 @@ src/modules/<domain>/
 
 الكود الحالي في `src/lib/*` و`src/app/api/*` **يُنقل تدريجياً** مع كل حزمة من الخطة، ولا يُنقل دفعة واحدة. ويحرس الانتقالَ الخطُّ الأساسي في اختبارات ARCH.
 
-**استثناء iam (ADR-0008):** `src/modules/iam/vendor-cli.ts` نقطة دخول iam الخاصة بسطر الأوامر، تشغّلها لوحة المورّد وحدها عبر SSH؛ و`transitions/vendor.ts` (كتّاب TENANT_ROOT و`TenantNamedPerson`) لا يصدّره `index.ts`، فلا يصل إليه مسار ولا صفحة ولا مهمة.
+**استثناء iam (ADR-0008):** `src/modules/iam/vendor-cli.ts` نقطة دخول iam الخاصة بسطر الأوامر، تشغّلها لوحة المورّد وحدها عبر SSH؛ و`transitions/vendor.ts` (كتّاب TENANT_ROOT و`TenantNamedPerson` و`ControlsReadiness`، ADR-0009) لا يصدّره `index.ts`، فلا يصل إليه مسار ولا صفحة ولا مهمة.
 
 المسارات (`src/app/api/**/route.ts`) رقيقة: تتحقق من المدخلات، وتبني السياق، وتستدعي الوحدة، وتعيد الاستجابة. **لا منطق عمل في المسار.**
 
@@ -27,7 +27,7 @@ src/modules/<domain>/
 | الوحدة | تملك (الحالي) | تملك (جديد في الخطة) |
 |---|---|---|
 | **platform** | AuditLog (قديم، يُكتب بالإضافة فقط، ADR-0003)، SystemSetting، JobRun، NotificationOutbox، UploadedFile | DomainEvent، EventConsumption، OperationLog، AuditRecord (سجل التدقيق غير القابل للتعديل، ADR-0003)، Discrepancy، InvariantRun |
-| **iam** | User، RolePermission، UserCompanyScope | Permission، RoleGrant (P6-AUTHZ)، MfaFactor، UserEmployeeLink، CredentialToken، IdentityChangeRequest (BL-PAY-005، ADR-0007)، TenantNamedPerson (BL-PAY-022، ADR-0008) |
+| **iam** | User، RolePermission، UserCompanyScope | Permission، RoleGrant (P6-AUTHZ)، MfaFactor، UserEmployeeLink، CredentialToken، IdentityChangeRequest (BL-PAY-005، ADR-0007)، TenantNamedPerson (BL-PAY-022، ADR-0008)، ControlsReadiness (BL-PAY-021، ADR-0009) |
 | **rules** | RuleParameter، GosiRate | CompanyRuleOverride |
 | **calendar** | WorkSchedule (يصبح WorkPattern) | HolidayCalendar، RamadanPeriod |
 | **org** | Company، Administration، Branch، Department، TransferRequest (يُدمج في قرار النقل الموحد، P3-ORG) | AssignmentPeriod، Position، JobGrade، CostCenter |
@@ -80,6 +80,9 @@ people · org
 rules · calendar
 iam · platform
 
+platform ← منفذ قراءة وضع الضوابط (`registerOperatorModeResolver`) تسجّله iam (ADR-0009)، بنمط منافذ محرك الموافقات:
+           كل قارئ يمرّر شركة الفعل إلى `resolveOperatorMode`، وعمليات البوابة تعرّف `companyOf`، ولا يمرّر أحد وضعاً
+
 workflow core  ← يعتمد على platform وiam فقط. محوّلات كل وحدة تعيش داخلها وتُسجَّل لدى المحرك،
                  ومنافذ القراءة (سلسلة المدير، التوفر، أيام العمل، حالة المستفيد) تسجلها org وleave
                  وcalendar وlifecycle (ADR-0001 #5)
@@ -126,7 +129,7 @@ DB constraints        ← companyId NOT NULL وFK على النماذج التش
 | `SelfContext(employeeId)` | الموظف في البوابة | سجلاته فقط؛ `employeeId` من الجلسة لا من العميل (قائم وصحيح، EV-6008) |
 | `TeamContext(managerId)` | المدير | فريقه حسب الفرع والقسم والتقارير المباشرة، داخل شركته (قائم، EV-6009) |
 | `CrossCompanyContext(reason)` | دور مالك صريح، أو عملية مسماة | عبر الشركات، ويُسجَّل السبب في التدقيق لكل عملية |
-| `SystemContext(job)` | المهام المجدولة | تمر على **كل شركة على حدة** بـScopedContext لكل شركة، إلا المهام المعرفة عابرةً للشركات (مثل تنظيف الـoutbox) |
+| `SystemContext(job)` | المهام المجدولة | تمر على **كل شركة على حدة** بـScopedContext لكل شركة، إلا المهام المعرفة عابرةً للشركات (مثل تنظيف الـoutbox، و`owner-digest`: تقرأ سجلات كل الشركات لملخص المالك ولا تكتب إلا صف الصندوق الصادر، ADR-0009) |
 
 ### 5.4.3 العقد لكل وحدة
 
@@ -144,6 +147,7 @@ DB constraints        ← companyId NOT NULL وFK على النماذج التش
 | recruitment / onboarding | `JobRequest.companyId` و`OnboardingRequest.companyId` (إلزاميان، ADR-0001 #14) | كذلك | كذلك | فحص أهلية إعادة التعيين عبر الشركات: `CrossCompanyContext('rehire-eligibility')` يعيد الأهلية فقط | FK من OnboardingRequest إلى JobApplication |
 | workflow | `WorkflowInstance.companyId` = شركة المستفيد عند البدء | المكلَّف يرى مهامه، وHR نطاقه | — | نوع يعلن `crossCompany` فقط. والتفويض بـ`companyIds[]` ضمن نطاق الطرفين | ADR-0001 #14 |
 | assets | `Asset.companyId` (إلزامي) | الشركات المسموحة | الحجز والتسليم داخل الشركة | نقل عهدة بين شركتين بسياق عابر مسجل | ADR-0001 #14 |
+| iam (وضع الضوابط، ADR-0009) | الشركة النظامية للفعل | مسار الشريط يجيب كل مستخدم عن شركاته فقط (نطاق الموظف = شركة ملفه)، ولا يذكر شركة خارجها | جاهزية الشركة: لوحة المورّد فقط | ملخص المالك المجمع (قراءة، `owner-digest`) | الشركة المجهولة أو غير الجاهزة ENFORCED |
 | communications (تعاميم) | الشركة المصدرة | موظفو الشركة المستهدفة فقط | — | تعميم لكل المجموعة (مالك) | Circular القديم بلا نطاق (EV-6027) يُدمج |
 
 ### 5.4.4 التجميع وSQL الخام والتصدير
@@ -168,5 +172,6 @@ DB constraints        ← companyId NOT NULL وFK على النماذج التش
 | assets | `assets.request.*`، `assets.custody.changed` | `employment.terminated` (سياسة الخروج للطلبات) |
 | onboarding | `onboarding.request.approved` | `employment.terminated` (سياسة الخروج لحالات التهيئة والتجربة، ADR-0002 #6) |
 | documents | `document.issued`، `document.acknowledged` | معظم أحداث الوحدات الأخرى (إصدار آلي) |
+| iam | `iam.controls.modeChanged` (لكل شركة)، `iam.ownerDigest.queued`، `iam.vendor.controlsReadinessChanged` (ADR-0009) | `iam.controls.modeChanged` (تنبيه المالك عند النزول إلى SINGLE_OPERATOR). ويستهلك محرك الموافقات `iam.controls.modeChanged` (X-WFE-012) ويقرأ `resolveOperatorMode` بشركة المثيل وقت الفعل |
 | platform/notifications | — | كل الأحداث ذات قالب إشعار |
 | gov | `wps.fileSent/bankConfirmed`، `muqeem.*`، `gosi.*` | `payroll.month.approved`، `employment.terminated` |

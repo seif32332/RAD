@@ -8,6 +8,7 @@
 // session, wrong role) and the other company, and the Idempotency-Key replay.
 import { randomUUID } from 'crypto';
 import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { scopeFixture } from '@/test/money-fixtures';
 
 const RUN = process.env.CAL_IT === '1';
 
@@ -59,7 +60,7 @@ describe.skipIf(!RUN)('calendar routes: allow, deny, other company (P1-CAL)', { 
     for (const [key, u] of Object.entries(users)) {
       u.id = (await prisma.user.create({ data: { email: `cal-${key}-${tag}@example.test`, passwordHash: 'x', role: u.role as 'HR_MANAGER' } })).id;
     }
-    await prisma.userCompanyScope.createMany({
+    await scopeFixture.createMany({
       data: [
         { userId: users.hrA.id, companyId: co.A },
         { userId: users.payA.id, companyId: co.A },

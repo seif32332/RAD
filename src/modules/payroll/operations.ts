@@ -4,6 +4,7 @@
 // subject. The resolvers read payroll's own tables and the public read side of the modules below it
 // (compensation: bonus approvers; time: overtime deciders), never another module's tables (ARCH-001).
 import { bonusApproversOfLines } from '@/modules/compensation';
+import { legalCompanyOfEmployees } from '@/modules/people';
 import { defineMoneyOperation, type TxClient } from '@/modules/platform';
 import { overtimeApproversOfLines } from '@/modules/time';
 import { payrollMonthKey } from '@/lib/payroll-core';
@@ -119,6 +120,7 @@ export const GOSI_DEDUCTION_SET = defineMoneyOperation<{ employeeId: string }>({
   source: 'USER',
   writes: { Employee: ['gosiDeduction'] },
   beneficiaries: async (_tx, input) => [input.employeeId],
+  companyOf: (tx, input) => legalCompanyOfEmployees(tx, [input.employeeId]),
 });
 
 // ---------------------------------------------------------------------------------------------------
@@ -151,6 +153,7 @@ export const LOAN_APPROVE = defineMoneyOperation<LoanSubject>({
   source: 'USER',
   writes: { Loan: '*' },
   beneficiaries: loanEmployee,
+  companyOf: async (tx, input) => legalCompanyOfEmployees(tx, await loanEmployee(tx, input)),
 });
 
 /** A rejection of a loan still in decision; it zeroes the balance (BL-PAY-027, DEC-PO-113). */
@@ -170,6 +173,7 @@ export const LOAN_TRANSFER = defineMoneyOperation<LoanSubject>({
   source: 'USER',
   writes: { Loan: ['status', 'isFinanceTransferred', 'financeTransferredAt', 'receiptUrl', 'transferredById'] },
   beneficiaries: loanEmployee,
+  companyOf: async (tx, input) => legalCompanyOfEmployees(tx, await loanEmployee(tx, input)),
   approvers: async (tx, input) => {
     const loan = await tx.loan.findUnique({ where: { id: input.loanId }, select: { managerApprovedById: true, hrApprovedById: true, ownerApprovedById: true } });
     return loan ? [loan.managerApprovedById, loan.hrApprovedById, loan.ownerApprovedById] : [];
@@ -184,6 +188,7 @@ export const LOAN_FINANCE_REVIEW = defineMoneyOperation<LoanSubject>({
   source: 'USER',
   writes: { Loan: ['status', 'isFinanceApproved', 'financeApprovedAt', 'financeReviewedById'] },
   beneficiaries: loanEmployee,
+  companyOf: async (tx, input) => legalCompanyOfEmployees(tx, await loanEmployee(tx, input)),
 });
 
 export const LOAN_FORGIVE = defineMoneyOperation<LoanSubject>({
@@ -193,6 +198,7 @@ export const LOAN_FORGIVE = defineMoneyOperation<LoanSubject>({
   source: 'USER',
   writes: { Loan: ['isForgiven', 'remainingAmount', 'status', 'forgivenById'], ...DRAFT_EFFECTS },
   beneficiaries: loanEmployee,
+  companyOf: async (tx, input) => legalCompanyOfEmployees(tx, await loanEmployee(tx, input)),
 });
 
 /** The settlement pays off the employee's loans (effect of the settlement approval) — SYSTEM. */
@@ -237,6 +243,7 @@ export const DEDUCTION_APPROVE = defineMoneyOperation<DeductionSubject>({
   source: 'USER',
   writes: { Deduction: '*' },
   beneficiaries: deductionEmployees,
+  companyOf: async (tx, input) => legalCompanyOfEmployees(tx, await deductionEmployees(tx, input)),
 });
 
 /** The penalty is dropped (rejection, waiver, accepted objection, innocent verdict): never one's own. */
@@ -247,6 +254,7 @@ export const DEDUCTION_WAIVE = defineMoneyOperation<DeductionSubject>({
   source: 'USER',
   writes: { ...DRAFT_EFFECTS, Deduction: '*' },
   beneficiaries: deductionEmployees,
+  companyOf: async (tx, input) => legalCompanyOfEmployees(tx, await deductionEmployees(tx, input)),
 });
 
 /** The penalty is suspended (referred to an investigation): never one's own. */
@@ -257,6 +265,7 @@ export const DEDUCTION_SUSPEND = defineMoneyOperation<DeductionSubject>({
   source: 'USER',
   writes: { ...DRAFT_EFFECTS, Deduction: '*' },
   beneficiaries: deductionEmployees,
+  companyOf: async (tx, input) => legalCompanyOfEmployees(tx, await deductionEmployees(tx, input)),
 });
 
 /** The employee objects, or a manager asks HR to waive: a request (the decision is guarded). */

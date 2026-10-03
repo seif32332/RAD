@@ -69,11 +69,19 @@ export const GUARD_MESSAGES: Readonly<Record<GuardReason, string>> = Object.free
   UNATTESTED_SECOND_PERSON: 'الشخص الثاني يجب أن يكون مستخدماً مُقرّاً بهويته (من سلسلة الجذر)',
 });
 
-function decide(reasons: GuardReason[], mode: OperatorMode): GuardDecision {
-  if (!reasons.length) return { ok: true, reasons, selfAct: false };
-  if (mode === 'SINGLE_OPERATOR') return { ok: true, reasons, selfAct: true };
-  return { ok: false, reasons, selfAct: false };
+/**
+ * The decision of the rules an act breaks, in a controls mode (BR-PAY-020): none broken → proceed; broken in
+ * SINGLE_OPERATOR → proceed as a recorded self-act; broken in ENFORCED → refuse. Anything but SINGLE_OPERATOR
+ * is ENFORCED (fail closed).
+ */
+export function decideByMode(reasons: readonly GuardReason[], mode: OperatorMode): GuardDecision {
+  const list = [...reasons];
+  if (!list.length) return { ok: true, reasons: list, selfAct: false };
+  if (mode === 'SINGLE_OPERATOR') return { ok: true, reasons: list, selfAct: true };
+  return { ok: false, reasons: list, selfAct: false };
 }
+
+const decide = decideByMode;
 
 /** BR-PAY-001: the actor is not one of the beneficiaries (employee ids). */
 export function isBeneficiary(actor: GuardActor, beneficiaries: readonly (string | null | undefined)[]): boolean {

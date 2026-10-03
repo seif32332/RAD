@@ -9,6 +9,7 @@
 import { randomUUID } from 'crypto';
 import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { employeeFixture } from '@/test/money-fixtures';
+import { scopeFixture } from '@/test/money-fixtures';
 
 const RUN = process.env.INV_IT === '1';
 
@@ -85,7 +86,7 @@ describe.skipIf(!RUN)('integrity dashboard routes: allow, deny, other company (P
     for (const [key, u] of Object.entries(users)) {
       u.id = (await prisma.user.create({ data: { email: `inv-${key}-${tag}@example.test`, passwordHash: 'x', role: u.role as 'HR_MANAGER' } })).id;
     }
-    await prisma.userCompanyScope.createMany({
+    await scopeFixture.createMany({
       data: [
         { userId: users.payA.id, companyId: co.A },
         { userId: users.hrA.id, companyId: co.A },

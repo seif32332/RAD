@@ -1,6 +1,7 @@
 // finance's money operations (money.gateway, ARCH-004): the payment request (PaymentRequest) from
 // filing to payment. finance sits BELOW payroll (DOMAIN_BOUNDARIES §5.3, ADR-0002 #7): it calls
 // nothing above it; the linked records (settlement, loan, visa) are the callers' business.
+import { legalCompanyOfEmployees } from '@/modules/people';
 import { defineMoneyOperation, type TxClient } from '@/modules/platform';
 
 export interface PaymentSubject {
@@ -34,6 +35,7 @@ export const PAYMENT_APPROVE = defineMoneyOperation<PaymentSubject>({
   source: 'USER',
   writes: { PaymentRequest: ['status', 'returnReason', 'approvedById', 'approvedAt'] },
   beneficiaries: beneficiaryOf,
+  companyOf: async (tx, input) => legalCompanyOfEmployees(tx, await beneficiaryOf(tx, input)),
 });
 
 /**
@@ -47,6 +49,7 @@ export const PAYMENT_PAY = defineMoneyOperation<PaymentSubject>({
   source: 'USER',
   writes: { PaymentRequest: ['status', 'receiptUrl', 'paidById', 'paidAt'] },
   beneficiaries: beneficiaryOf,
+  companyOf: async (tx, input) => legalCompanyOfEmployees(tx, await beneficiaryOf(tx, input)),
   approvers: approversOf,
 });
 

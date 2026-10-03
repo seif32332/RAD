@@ -9,6 +9,7 @@ import path from 'path';
 import { beforeAll, describe, expect, it } from 'vitest';
 import { storedNameFromSegments } from '@/lib/storage';
 import { moneyFixture, payrollLineFixture } from '@/test/money-fixtures';
+import { scopeFixture } from '@/test/money-fixtures';
 
 const RUN = process.env.DOCUMENTS_IT === '1';
 const fixtures = path.join(process.cwd(), 'services', 'render', 'test', 'fixtures', 'F2-ar-en');
@@ -302,7 +303,7 @@ describe.skipIf(!RUN)('document issuance pipeline (Postgres + radeef-render)', {
     const issued = await svc.createDocumentRequest({ typeKey: 'EMPLOYMENT_CERTIFICATE', employeeId: e.employeeId, params: { language: 'ar' }, source: 'HR' }, scoped, renderer);
     expect(issued.status).toBe('ISSUED'); // no scope rows yet: all companies
 
-    await prisma.userCompanyScope.create({ data: { userId: scopedUser.id, companyId: other.id } });
+    await scopeFixture.create({ data: { userId: scopedUser.id, companyId: other.id } });
     const e2 = await newEmployee(801);
     await expect(svc.createDocumentRequest({ typeKey: 'EMPLOYMENT_CERTIFICATE', employeeId: e2.employeeId, params: { language: 'ar' }, source: 'HR' }, scoped, renderer)).rejects.toThrow(/خارج نطاق صلاحيتك/);
     await expect(svc.readIssuedDocument(issued.documentId!, scoped)).rejects.toThrow(/غير موجود/);
@@ -311,7 +312,7 @@ describe.skipIf(!RUN)('document issuance pipeline (Postgres + radeef-render)', {
     const view = await staffDocumentOverview(scoped);
     expect(view.issued.some((d) => d.id === issued.documentId)).toBe(false);
 
-    await prisma.userCompanyScope.create({ data: { userId: scopedUser.id, companyId } });
+    await scopeFixture.create({ data: { userId: scopedUser.id, companyId } });
     await svc.readIssuedDocument(issued.documentId!, scoped); // now in scope
   });
 

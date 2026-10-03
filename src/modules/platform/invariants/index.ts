@@ -7,8 +7,6 @@ export type { Finding, InvariantOutcome, InvariantSnapshot, SnapshotOptions, Com
 export { assertNoBlockingDiscrepancies, listBlockingDiscrepancies, blockingWhere, BlockingDiscrepanciesError, MAX_LISTED } from './gate';
 export type { GateScope, Blocker } from './gate';
 export {
-  resolveOperatorMode,
-  OPERATOR_MODE_SETTING,
   assertNotBeneficiary,
   needsSecondPerson,
   decideExplain,

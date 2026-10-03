@@ -13,6 +13,8 @@ import { randomUUID } from 'crypto';
 import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { moneyFixture } from '@/test/money-fixtures';
 import { employeeFixture } from '@/test/money-fixtures';
+import { withControlsMode } from '@/test/controls-mode';
+import { scopeFixture } from '@/test/money-fixtures';
 
 const RUN = process.env.LCY_IT === '1';
 
@@ -79,7 +81,7 @@ describe.skipIf(!RUN)('P1-LCY routes: exits through transitionEmploymentState (r
     for (const [key, u] of Object.entries(users)) {
       u.id = (await prisma.user.create({ data: { email: `lr-${key}-${tag}@example.test`, passwordHash: 'x', role: u.role as 'HR_MANAGER' } })).id;
     }
-    await prisma.userCompanyScope.createMany({ data: [{ userId: users.hrA.id, companyId: co.A }, { userId: users.hrB.id, companyId: co.B }] });
+    await scopeFixture.createMany({ data: [{ userId: users.hrA.id, companyId: co.A }, { userId: users.hrB.id, companyId: co.B }] });
   });
   beforeEach(() => {
     state.token = undefined;
@@ -307,7 +309,7 @@ describe.skipIf(!RUN)('P1-LCY routes: exits through transitionEmploymentState (r
     it('the creator approving (BL-PAY-027, RT-WFE-710): ENFORCED refuses (403 SAME_PERSON_TWICE, nothing written); SINGLE_OPERATOR approves as a recorded self-act', async () => {
       const { e, s } = await pendingSettlement('A', { createdById: users.owner.id });
       await as('owner');
-      const refused = await approve(s.id); // the tenant setting is absent: ENFORCED
+      const refused = await approve(s.id); // the test switch defaults to ENFORCED (src/test/controls-mode.ts)
       expect(refused.status).toBe(403);
       expect((await refused.json()).details).toMatchObject({ code: 'MONEY_GUARD_BLOCKED', reasons: ['SAME_PERSON_TWICE'] });
       expect((await prisma.settlement.findUniqueOrThrow({ where: { id: s.id } })).status).toBe('PENDING_APPROVAL');
@@ -317,8 +319,8 @@ describe.skipIf(!RUN)('P1-LCY routes: exits through transitionEmploymentState (r
       const { recordSettlementEffects } = await import('@/modules/offboarding');
       const owner = { id: users.owner.id, email: 'owner@example.test', role: 'SUPER_ADMIN', name: 'owner', avatarUrl: null, employeeId: null, sessionVersion: 0 } as const;
       const key = `it:settlement.approve:${randomUUID()}`;
-      const ctx = { operationKey: key, recordEffects: recordSettlementEffects, mode: 'SINGLE_OPERATOR' as const };
-      await prisma.$transaction((tx) => finance.approveSettlement(tx, s.id, owner, null, ctx), { timeout: 60_000 });
+      const ctx = { operationKey: key, recordEffects: recordSettlementEffects };
+      await withControlsMode('SINGLE_OPERATOR', () => prisma.$transaction((tx) => finance.approveSettlement(tx, s.id, owner, null, ctx), { timeout: 60_000 }));
       const approved = await prisma.settlement.findUniqueOrThrow({ where: { id: s.id } });
       expect([approved.status, approved.createdById, approved.approvedById]).toEqual(['OWNER_APPROVED', users.owner.id, users.owner.id]);
       expect(await prisma.auditRecord.count({ where: { operationKey: key, action: 'SELF_ACT_SINGLE_OPERATOR' } })).toBe(1);

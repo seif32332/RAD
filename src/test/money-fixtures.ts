@@ -138,3 +138,12 @@ export async function holdTenantRoot(userId: string, timeoutMs = 240_000): Promi
 export async function releaseTenantRoot(userId: string): Promise<void> {
   await identityFixture(userId, { tenantRoot: false, rootSuspendedAt: null });
 }
+
+/**
+ * UserCompanyScope rows as a fixture (BL-PAY-021: the scope decides where a counted approver counts, so it is an
+ * identity table only iam.setUserCompanyScope writes in the application; tests write their fixtures here).
+ */
+export const scopeFixture = {
+  create: (args: Parameters<TxClient['userCompanyScope']['create']>[0]) => moneyFixture((tx) => tx.userCompanyScope.create(args)),
+  createMany: (args: Parameters<TxClient['userCompanyScope']['createMany']>[0]) => moneyFixture((tx) => tx.userCompanyScope.createMany(args)),
+};

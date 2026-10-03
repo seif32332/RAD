@@ -30,7 +30,6 @@
       "src/lib/documents/candidate.ts": 2,
       "src/lib/documents/change-orders.ts": 4,
       "src/lib/documents/notify.ts": 1,
-      "src/lib/documents/settings.ts": 2,
       "src/lib/finance.ts": 5,
       "src/lib/hr-workflows.ts": 20,
       "src/lib/muqeem/transactions.ts": 1
@@ -104,8 +103,7 @@
       "src/app/api/documents/[id]/recipients/route.ts": 1,
       "src/app/api/documents/[id]/route.ts": 1,
       "src/app/api/documents/requests/[id]/route.ts": 1,
-      "src/app/api/documents/requests/route.ts": 1,
-      "src/app/api/documents/settings/route.ts": 1
+      "src/app/api/documents/requests/route.ts": 1
     },
     "ARCH-019": {
       "scripts/seed-demo.mjs": 1,

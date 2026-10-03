@@ -12,6 +12,9 @@ export default defineConfig({
   test: {
     environment: 'node',
     include: ['src/**/*.test.ts'],
+    // BL-PAY-021: the controls mode is computed from the shared test database's users; every test file reads
+    // it through a switch instead (default ENFORCED, see src/test/controls-mode.ts).
+    setupFiles: ['src/test/setup-controls-mode.ts'],
     // Tests pass explicit `now` values; pin the zone so accidental local-time usage shows up.
     env: { TZ: 'UTC' },
   },

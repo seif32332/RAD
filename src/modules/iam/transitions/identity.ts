@@ -30,18 +30,20 @@
 // through the outbox, and the link secret is rendered only at send time (../credentials.ts).
 import { randomUUID } from 'crypto';
 import { Prisma, type Role, type UserEmployeeLinkStatus } from '@prisma/client';
-import { isAppRole, type AppRole } from '@/lib/constants';
+import { ROLE_GROUPS, isAppRole, roleIn, type AppRole } from '@/lib/constants';
 import { HttpError, badRequest, conflict, forbidden, notFound } from '@/lib/http';
 import {
   assertTransactionClient,
   audit,
   auditTrailOf,
+  decideByMode,
   emitEvent,
   idempotent,
   resolveOperatorMode,
   runMoneyOperation,
   type GuardDecision,
   type MoneyActor,
+  type OperatorMode,
   type MoneyOperation,
   type MoneyRunInfo,
   type TxClient,
@@ -72,6 +74,7 @@ import {
   protectedByTwoPerson,
   type IdentityUser,
 } from '../identity';
+import { actsIn, approverScopes, controlsApprovers, ENFORCED_MIN_APPROVERS, type ApproverScope } from '../controls';
 import {
   ATTEST,
   CHANGE_DECIDE,
@@ -87,6 +90,7 @@ import {
   USER_CHANGE,
   USER_CREATE,
   USER_PROMOTE,
+  USER_SCOPE_SET,
   type IdentitySubject,
 } from '../operations';
 import { issueToken, revokeOpenTokens } from '../tokens';
@@ -112,19 +116,18 @@ async function loadIdentity(tx: TxClient, userId: string, what = 'المستخد
   return u;
 }
 
-function selfActDecision(reasons: GuardDecision['reasons'], mode: 'ENFORCED' | 'SINGLE_OPERATOR'): GuardDecision {
-  if (!reasons.length) return { ok: true, reasons, selfAct: false };
-  return mode === 'SINGLE_OPERATOR' ? { ok: true, reasons, selfAct: true } : { ok: false, reasons, selfAct: false };
+function selfActDecision(reasons: GuardDecision['reasons'], mode: OperatorMode): GuardDecision {
+  return decideByMode(reasons, mode);
 }
 
 /** Runs `fn` behind the gateway under the iam operation `op` for `subject`. */
 function guarded<T>(
   tx: TxClient,
   op: MoneyOperation<IdentitySubject>,
-  spec: { actor: MoneyActor | null; userId: string; operationKey: string; decision?: GuardDecision; mode?: 'ENFORCED' | 'SINGLE_OPERATOR' },
+  spec: { actor: MoneyActor | null; userId: string; operationKey: string; decision?: GuardDecision; companyId?: string | null },
   fn: (w: TxClient, info: MoneyRunInfo) => Promise<T>,
 ): Promise<T> {
-  return runMoneyOperation(tx, op, { actor: spec.actor, input: { userId: spec.userId }, operationKey: spec.operationKey, decision: spec.decision, mode: spec.mode }, fn);
+  return runMoneyOperation(tx, op, { actor: spec.actor, input: { userId: spec.userId }, operationKey: spec.operationKey, decision: spec.decision, companyId: spec.companyId ?? null }, fn);
 }
 
 /**
@@ -306,8 +309,12 @@ export async function confirmLink(
     linkId: string;
     operationKey: string;
     ipAddress?: string | null;
-    /** Operator mode already read by a server-side caller (never from a client); else read here. */
-    mode?: 'ENFORCED' | 'SINGLE_OPERATOR';
+    /**
+     * BL-PAY-021 (DEC-PO-144): the legal company of the linked employee file, read on the server by the caller
+     * (iam does not read Employee). The controls mode of that company decides the single-operator self-act;
+     * absent: ENFORCED.
+     */
+    companyId?: string | null;
   },
 ): Promise<{ link: LinkView; selfAct: boolean; replayed: boolean }> {
   assertTransactionClient(tx, 'confirmLink');
@@ -321,9 +328,9 @@ export async function confirmLink(
     if (link.userId === input.actor.id) throw forbidden('لا يجوز تأكيد ربط حسابك بنفسك (لا ربط ذاتي)');
     if (input.actor.employeeId && input.actor.employeeId === link.employeeId) throw forbidden('لا يجوز تأكيد ربط ملفك الوظيفي بحساب');
     const [confirmer, target] = await Promise.all([loadIdentity(t, input.actor.id), loadIdentity(t, link.userId)]);
-    const mode = input.mode ?? (await resolveOperatorMode(t));
+    const mode = await resolveOperatorMode(t, input.companyId ?? null);
     const decision = selfActDecision(linkConfirmReasons({ confirmer, proposedById: link.proposedById, target }), mode);
-    return guarded(t, LINK_CONFIRM, { actor: input.actor, userId: link.userId, operationKey: key, decision, mode }, async (w, info) => {
+    return guarded(t, LINK_CONFIRM, { actor: input.actor, userId: link.userId, operationKey: key, decision, companyId: input.companyId ?? null }, async (w, info) => {
       const done = await w.userEmployeeLink.updateMany({
         where: { id: link.id, status: 'PROPOSED' },
         data: { status: 'CONFIRMED', confirmedById: input.actor.id, confirmedAt: new Date(), selfActSingleOperator: info.selfAct },
@@ -684,15 +691,17 @@ export async function completeCredentialSetup(
 export interface ChangeRequestView {
   id: string;
   userId: string;
-  kind: 'DEACTIVATE' | 'CHANGE_ROLE' | 'RESET_CREDENTIALS';
+  kind: 'DEACTIVATE' | 'CHANGE_ROLE' | 'RESET_CREDENTIALS' | 'CHANGE_SCOPE';
   nextRole: Role | null;
+  /** CHANGE_SCOPE: the requested companies (empty = every company). */
+  nextCompanyIds: string[];
   status: 'PENDING' | 'EXECUTED' | 'REJECTED' | 'CANCELLED';
   twoPerson: boolean;
   requestedById: string;
   decidedById: string | null;
 }
 
-const CHANGE_SELECT = { id: true, userId: true, kind: true, nextRole: true, status: true, twoPerson: true, requestedById: true, decidedById: true } as const;
+const CHANGE_SELECT = { id: true, userId: true, kind: true, nextRole: true, nextCompanyIds: true, status: true, twoPerson: true, requestedById: true, decidedById: true } as const;
 
 export interface ChangeOutcome {
   request: ChangeRequestView;
@@ -717,7 +726,7 @@ async function previousAddressNotice(w: TxClient, target: IdentityUser): Promise
 /** Executes an approved change (inside an iam operation). */
 async function executeChange(
   w: TxClient,
-  req: { id: string; kind: ChangeRequestView['kind']; nextRole: Role | null; requestedById: string },
+  req: { id: string; kind: ChangeRequestView['kind']; nextRole: Role | null; nextCompanyIds: string[]; requestedById: string },
   target: IdentityUser,
   actorId: string,
   opts: { linkHours: number; operationKey: string },
@@ -725,6 +734,11 @@ async function executeChange(
   if (req.kind === 'DEACTIVATE') {
     await w.user.update({ where: { id: target.id }, data: { isActive: false, sessionVersion: { increment: 1 } } });
     return { tokenId: null, after: { isActive: false, sessionsRevoked: true } };
+  }
+  if (req.kind === 'CHANGE_SCOPE') {
+    // BL-PAY-021: the two-person scope change, approved by the holder or another counted approver.
+    const before = await writeScope(w, target.id, req.nextCompanyIds, req.requestedById);
+    return { tokenId: null, after: { companyIds: [...req.nextCompanyIds].sort(), previousCompanyIds: before } };
   }
   if (req.kind === 'CHANGE_ROLE') {
     const nextRole = req.nextRole as Role;
@@ -1151,4 +1165,129 @@ export async function confirmOwnEmail(
     });
   });
   return { replayed: out.replayed };
+}
+
+// ---------------------------------------------------------------------------------------------------
+// BL-PAY-021 (security re-check HIGH): the company scope of an account
+// ---------------------------------------------------------------------------------------------------
+
+/** Replaces the account's UserCompanyScope rows (inside an operation that may write them); returns the previous companies. */
+async function writeScope(w: TxClient, userId: string, companyIds: readonly string[], createdById: string): Promise<string[]> {
+  const before = (await w.userCompanyScope.findMany({ where: { userId }, select: { companyId: true } })).map((r) => r.companyId).sort();
+  await w.userCompanyScope.deleteMany({ where: { userId } });
+  const ids = [...new Set(companyIds)];
+  if (ids.length) await w.userCompanyScope.createMany({ data: ids.map((companyId) => ({ userId, companyId, createdById })) });
+  return before;
+}
+
+/**
+ * The companies (of `allCompanyIds`) that a new scope for `userId` would drop below two counted approvers, from two
+ * or more (BR-PAY-020 per company, DEC-PO-144; readiness ignored: fail closed). An owner role acts everywhere
+ * whatever its rows (iam actorCompanies), so its rows change nothing.
+ */
+export async function scopeChangeDrops(tx: TxClient, userId: string, companyIds: readonly string[], allCompanyIds: readonly string[]): Promise<string[]> {
+  const approvers = await controlsApprovers(tx);
+  const subject = approvers.find((u) => u.id === userId);
+  if (!subject) return [];
+  const scopes = await approverScopes(tx, approvers);
+  const before = scopes.get(subject.id);
+  const next = [...new Set(companyIds)];
+  const after: ApproverScope = roleIn(subject.role, ROLE_GROUPS.OWNER) || !next.length ? 'ALL' : new Set(next);
+  return [...new Set(allCompanyIds)].filter((c) => {
+    const others = approvers.filter((u) => u.id !== subject.id && actsIn(scopes.get(u.id), c)).length;
+    const was = others + (actsIn(before, c) ? 1 : 0);
+    const will = others + (actsIn(after, c) ? 1 : 0);
+    return was >= ENFORCED_MIN_APPROVERS && will < ENFORCED_MIN_APPROVERS;
+  });
+}
+
+export interface ScopeChangeInput {
+  actor: MoneyActor;
+  userId: string;
+  /** The account's companies (empty = every company). */
+  companyIds: readonly string[];
+  /** Every company of the tenant (the caller lists them; iam does not read Company). */
+  allCompanyIds: readonly string[];
+  operationKey: string;
+  reason?: string | null;
+  ipAddress?: string | null;
+}
+
+export interface ScopeChangeOutcome {
+  /** The scope was written now. */
+  applied: boolean;
+  /** Otherwise the two-person request opened (DEC-PO-021): the holder or another counted approver decides it. */
+  request: ChangeRequestView | null;
+  /** The companies that would drop below two counted approvers. */
+  dropsCompanies: string[];
+  replayed: boolean;
+}
+
+/**
+ * Sets an account's company scope (the only in-app writer of UserCompanyScope, BL-PAY-021). When the change would
+ * drop a company below two counted approvers (from two or more), the scope is NOT written: a PENDING CHANGE_SCOPE
+ * request is opened instead, executed by decideChangeRequest when the holder (consent) or another counted approver
+ * who is not the requester approves (DEC-PO-021; never a self-declared approver id). The caller answers 409
+ * TWO_PERSON_REQUIRED. Once per operation key (a repeat replays).
+ */
+export async function setUserCompanyScope(tx: TxClient, input: ScopeChangeInput): Promise<ScopeChangeOutcome> {
+  assertTransactionClient(tx, 'setUserCompanyScope');
+  const key = needKey(input.operationKey, 'setUserCompanyScope');
+  const ids = [...new Set(input.companyIds)].sort();
+  const out = await idempotent(tx, { key, operation: USER_SCOPE_SET.name, actorId: input.actor.id }, async (t) => {
+    const target = await loadIdentity(t, input.userId);
+    const drops = await scopeChangeDrops(t, target.id, ids, input.allCompanyIds);
+    if (drops.length) {
+      return guarded(t, CHANGE_REQUEST, { actor: input.actor, userId: target.id, operationKey: key }, async (w) => {
+        if (await w.identityChangeRequest.findFirst({ where: { userId: target.id, status: 'PENDING' }, select: { id: true } })) {
+          throw conflict('يوجد طلب تغيير قائم على هذا الحساب بانتظار شخص ثانٍ');
+        }
+        const request = await w.identityChangeRequest.create({
+          data: { userId: target.id, kind: 'CHANGE_SCOPE', nextCompanyIds: ids, status: 'PENDING', twoPerson: true, requestedById: input.actor.id, reason: input.reason ?? null },
+          select: CHANGE_SELECT,
+        });
+        await audit(w, {
+          actor: { type: 'USER', id: input.actor.id },
+          action: 'iam.user.scope.requested',
+          entity: { type: 'User', id: target.id },
+          after: { requestId: request.id, companyIds: ids, dropsCompanies: drops },
+          reason: input.reason ?? null,
+          operationKey: key,
+          ipAddress: input.ipAddress ?? null,
+        });
+        await emitEvent(w, {
+          type: 'iam.identity.changeRequested',
+          aggregateType: 'User',
+          aggregateId: target.id,
+          idempotencyKey: `${key}:iam.identity.changeRequested`,
+          payload: { requestId: request.id, userId: target.id, kind: 'CHANGE_SCOPE' },
+          actorId: input.actor.id,
+        });
+        return { applied: false, request: request as ChangeRequestView, dropsCompanies: drops };
+      });
+    }
+    return guarded(t, USER_SCOPE_SET, { actor: input.actor, userId: target.id, operationKey: key }, async (w) => {
+      const before = await writeScope(w, target.id, ids, input.actor.id);
+      await audit(w, {
+        actor: { type: 'USER', id: input.actor.id },
+        action: USER_SCOPE_SET.name,
+        entity: { type: 'User', id: target.id },
+        before: { companyIds: before },
+        after: { companyIds: ids },
+        reason: input.reason ?? null,
+        operationKey: key,
+        ipAddress: input.ipAddress ?? null,
+      });
+      await emitEvent(w, {
+        type: 'iam.user.scopeChanged',
+        aggregateType: 'User',
+        aggregateId: target.id,
+        idempotencyKey: `${key}:iam.user.scopeChanged`,
+        payload: { userId: target.id, companyIds: ids, previousCompanyIds: before },
+        actorId: input.actor.id,
+      });
+      return { applied: true, request: null, dropsCompanies: [] as string[] };
+    });
+  });
+  return { ...out.result, replayed: out.replayed };
 }

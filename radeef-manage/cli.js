@@ -16,9 +16,13 @@
  *                                 [--vat-rate N] [--includes-vat true|false]   (omitted = cleared)
  *   node cli.js notices                       (last license e-mails and their outcome)
  *   node cli.js identity <name> status        (TENANT_ROOT, named people, owner contact, codes waiting; read only)
+ *   node cli.js identity <name> controls      (BL-PAY-021: controls mode, owner digest delivery, owner confirmations waiting)
+ *   node cli.js identity <name> digest YYYY-MM  (one month's queued owner digest, to relay to the owner until G8)
  *   node cli.js identity <name> <command> < request.json
  *                                 set-root | suspend-root | register-person | revoke-person | link-person |
- *                                 invite-person | set-owner-contact | release-code (BL-PAY-017 / BL-PAY-022).
+ *                                 invite-person | set-owner-contact | release-code (BL-PAY-017 / BL-PAY-022) |
+ *                                 owner-confirm (BL-PAY-021: { discrepancyId, decision, expectedVersion, confirm }) |
+ *                                 controls-ready ({ companyId, basis, confirm }) | controls-not-ready ({ companyId, confirm }).
  *                                 The JSON (requestRef, confirm, fields) comes on stdin, never on the command
  *                                 line (it can carry a national id). Same validation as the panel.
  *
@@ -95,8 +99,10 @@ ${c.bright}رديف — Radeef Tenant Manager CLI${c.reset}
       الحقول التجارية الاختيارية (ما لم يُمرَّر يُفرَّغ)
   ${c.green}node cli.js notices${c.reset}                           آخر رسائل الترخيص ونتيجتها
   ${c.green}node cli.js identity <name> status${c.reset}             جذر الثقة والأشخاص المسمَّون وبريد المالك (قراءة فقط)
+  ${c.green}node cli.js identity <name> controls${c.reset}           وضع الضوابط وملخص المالك والتأكيدات المنتظرة (قراءة فقط)
+  ${c.green}node cli.js identity <name> digest YYYY-MM${c.reset}       نص ملخص المالك لشهر (لإيصاله للمالك حتى G8)
   ${c.green}node cli.js identity <name> <command> < request.json${c.reset}
-      set-root | suspend-root | register-person | revoke-person | link-person | invite-person | set-owner-contact | release-code
+      set-root | suspend-root | register-person | revoke-person | link-person | invite-person | set-owner-contact | release-code | owner-confirm | controls-ready | controls-not-ready
       الطلب JSON على stdin (requestRef، confirm، الحقول؛ اسم الشخص personName)، لا على سطر الأوامر
 `);
 }
@@ -238,6 +244,8 @@ async function main() {
         const operator = cliOperator();
         let request;
         if (sub === 'status') request = identity.statusRequest(operator);
+        else if (sub === 'controls') request = identity.readRequest('controls', operator, { companyIds: args[3] });
+        else if (sub === 'digest') request = identity.readRequest('digest', operator, { month: args[3] });
         else {
           let body;
           try {
@@ -250,7 +258,7 @@ async function main() {
         const result = await ssh.withConnection(sshOptions, (conn) =>
           identity.runVendorCommand({ exec: ssh.exec, conn, appDir: ops.appDirFor(row, cfg), request }),
         );
-        if (request.command !== 'status') console.error(`[audit] ${operator} identity ${request.command} on ${name} (owner request ${request.requestRef}; id ${request.requestId})`);
+        if (!identity.READ_COMMANDS[request.command]) console.error(`[audit] ${operator} identity ${request.command} on ${name} (owner request ${request.requestRef}; id ${request.requestId})`);
         // The result goes to stdout only (release-code: the code, once; nothing is written to a log).
         console.log(JSON.stringify(result, null, 2));
         break;

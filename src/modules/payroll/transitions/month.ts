@@ -27,7 +27,6 @@ import {
   resolveOperatorMode,
   runMoneyOperation,
   type MoneyActor,
-  type OperatorMode,
   type TxClient,
 } from '@/modules/platform';
 import { lockEmployees } from '@/modules/people';
@@ -195,8 +194,6 @@ export interface MonthActInput {
   month: number;
   operationKey: string;
   ipAddress?: string | null;
-  /** The tenant's operator mode when the caller already read it on the server (never a client value); else read here. */
-  mode?: OperatorMode;
 }
 
 export interface ApproveMonthResult {
@@ -259,7 +256,9 @@ export async function approvePayrollMonth(
     await assertEmploymentGate(t, { year: input.year, month: input.month, employeeIds: drafts.map((d) => d.employeeId) });
     if (input.precheck) await input.precheck(t, drafts);
 
-    const mode = input.mode ?? (await resolveOperatorMode(t));
+    // The controls mode decides whether the approver's own line is held back; the gateway reads it again
+    // itself and decides the act (a mode that moved in between can only refuse, never let a self-act through).
+    const mode = await resolveOperatorMode(t, input.companyId);
     const own = input.actor.employeeId;
     // ENFORCED: the approver's own line is reserved for someone else. If it is the only one, the
     // gateway refuses the act (recorded as money.guard.blocked). SINGLE_OPERATOR: approved as a self-act.
@@ -271,7 +270,7 @@ export async function approvePayrollMonth(
     return runMoneyOperation(
       t,
       PAYROLL_APPROVE,
-      { actor: input.actor, input: { companyId: input.companyId, year: input.year, month: input.month, lineEmployeeIds: toApprove.map((d) => d.employeeId) }, operationKey: input.operationKey, companyId: input.companyId, mode },
+      { actor: input.actor, input: { companyId: input.companyId, year: input.year, month: input.month, lineEmployeeIds: toApprove.map((d) => d.employeeId) }, operationKey: input.operationKey, companyId: input.companyId },
       async (w, info) => {
         // ADR-0002 #2 / ARCH-019: the employees of the approved lines are locked first, by ascending id.
         await lockEmployees(w, toApprove.map((d) => d.employeeId), 'ALL');
@@ -371,7 +370,7 @@ export async function markPayrollMonthPaid(tx: TxClient, input: MonthActInput): 
       );
     }
     await assertNoBlockingDiscrepancies(t, { operation: 'payroll.pay', companyId: input.companyId, period: period(input.year, input.month) });
-    return runMoneyOperation(t, PAYROLL_PAY, { actor: input.actor, input: { companyId: input.companyId, year: input.year, month: input.month }, operationKey: input.operationKey, companyId: input.companyId, mode: input.mode }, async (w, info) => {
+    return runMoneyOperation(t, PAYROLL_PAY, { actor: input.actor, input: { companyId: input.companyId, year: input.year, month: input.month }, operationKey: input.operationKey, companyId: input.companyId }, async (w, info) => {
       const lineEmployees = await w.payroll.findMany({ where: { payrollMonthId: monthRow.id }, select: { employeeId: true } });
       await lockEmployees(w, lineEmployees.map((l) => l.employeeId), 'ALL'); // ADR-0002 #2
       const moved = await w.payrollMonth.updateMany({ where: { id: monthRow.id, version: monthRow.version, status: PAYROLL_MONTH_STATUS.APPROVED }, data: { version: { increment: 1 } } });

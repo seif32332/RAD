@@ -10,7 +10,7 @@
 import { conflict, notFound } from '@/lib/http';
 import { assertPayrollReady } from '@/modules/compensation';
 import { roundMoney } from '@/lib/money';
-import { assertTransactionClient, audit, emitEvent, idempotent, runMoneyOperation, type MoneyActor, type OperatorMode, type TxClient } from '@/modules/platform';
+import { assertTransactionClient, audit, emitEvent, idempotent, runMoneyOperation, type MoneyActor, type TxClient } from '@/modules/platform';
 import { OVERTIME_ASSIGN, OVERTIME_DECIDE, OVERTIME_PAYROLL_LINK, OVERTIME_SETTLEMENT_LINK } from './operations';
 
 const uniq = (ids: readonly string[]) => [...new Set(ids.filter(Boolean))];
@@ -92,8 +92,6 @@ export interface DecideOvertimeInput {
   status: 'APPROVED' | 'REJECTED';
   operationKey: string;
   ipAddress?: string | null;
-  /** Operator mode already read by the caller (else the gateway reads it; never from the client). */
-  mode?: OperatorMode;
 }
 
 /**
@@ -104,7 +102,7 @@ export interface DecideOvertimeInput {
 export async function decideOvertime(tx: TxClient, input: DecideOvertimeInput) {
   assertTransactionClient(tx, 'decideOvertime');
   const outcome = await idempotent(tx, { key: input.operationKey, operation: OVERTIME_DECIDE.name, actorId: input.actor.id }, (t) =>
-    runMoneyOperation(t, OVERTIME_DECIDE, { actor: input.actor, input: { overtimeId: input.overtimeId }, operationKey: input.operationKey, mode: input.mode }, async (w, info) => {
+    runMoneyOperation(t, OVERTIME_DECIDE, { actor: input.actor, input: { overtimeId: input.overtimeId }, operationKey: input.operationKey }, async (w, info) => {
       if (input.status === 'APPROVED') {
         // BR-PAY-009: no overtime approval before the employee's pay is applied.
         const ot = await w.overtimeRequest.findUnique({ where: { id: input.overtimeId }, select: { employeeId: true } });

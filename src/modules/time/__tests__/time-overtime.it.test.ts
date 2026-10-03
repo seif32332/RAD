@@ -6,6 +6,7 @@
 import { randomUUID } from 'crypto';
 import { beforeAll, describe, expect, it } from 'vitest';
 import { employeeFixture } from '@/test/money-fixtures';
+import { withControlsMode } from '@/test/controls-mode';
 
 const RUN = process.env.PAY_IT === '1';
 
@@ -58,14 +59,14 @@ describe.skipIf(!RUN)('time overtime money writers on PostgreSQL (P1-PAY-A)', { 
   it('decideOvertime by the beneficiary (BL-PAY-027): ENFORCED 403 and still PENDING; SINGLE_OPERATOR decided as a recorded self-act with decidedById', async () => {
     const mine = await ot(self.employeeId!, 'PENDING');
     const blocked = `it:ot:${randomUUID()}`;
-    await expect(tx((t) => time.decideOvertime(t, { actor: self, overtimeId: mine.id, status: 'APPROVED', operationKey: blocked, mode: 'ENFORCED' }))).rejects.toMatchObject({
+    await expect(tx((t) => time.decideOvertime(t, { actor: self, overtimeId: mine.id, status: 'APPROVED', operationKey: blocked }))).rejects.toMatchObject({
       status: 403,
       details: { code: 'MONEY_GUARD_BLOCKED', reasons: ['SELF_BENEFICIARY'] },
     });
     expect((await prisma.overtimeRequest.findUniqueOrThrow({ where: { id: mine.id } })).status).toBe('PENDING');
     expect(await prisma.domainEvent.count({ where: { idempotencyKey: `money.guard.blocked:${blocked}` } })).toBe(1);
     const key = `it:ot:${randomUUID()}`;
-    const single = await tx((t) => time.decideOvertime(t, { actor: self, overtimeId: mine.id, status: 'APPROVED', operationKey: key, mode: 'SINGLE_OPERATOR' }));
+    const single = await withControlsMode('SINGLE_OPERATOR', () => tx((t) => time.decideOvertime(t, { actor: self, overtimeId: mine.id, status: 'APPROVED', operationKey: key })));
     expect([single.status, single.decidedById]).toEqual(['APPROVED', self.id]);
     expect(await prisma.auditRecord.count({ where: { operationKey: key, action: 'SELF_ACT_SINGLE_OPERATOR' } })).toBe(1);
   });

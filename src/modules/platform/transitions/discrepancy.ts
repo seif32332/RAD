@@ -23,7 +23,7 @@ import {
   type DiscrepancyState,
 } from '../invariants/policy';
 import { findingsOf, requireInvariant } from '../invariants/reconcile';
-import type { OperatorMode } from '../invariants/types';
+import { resolveOperatorMode } from '../controls';
 
 const STATE_SELECT = {
   id: true, ruleId: true, status: true, blocking: true, subjectEmployeeId: true, pendingAction: true,
@@ -114,15 +114,17 @@ async function apply(
 
 const user = (a: DiscrepancyActor) => ({ type: 'USER' as const, id: a.userId });
 
-/** Explain (EXPLAINED, or a proposal waiting for the second person / the owner's confirmation). */
+/**
+ * Explain (EXPLAINED, or a proposal waiting for the second person / the owner's confirmation). The controls
+ * mode is read in the transaction from the one resolver (BL-PAY-021), never passed in.
+ */
 export function explainDiscrepancy(
   prisma: RootClient,
   input: Common & { explanation: string; reference: string; category?: string | null },
   actor: DiscrepancyActor,
-  opts: { operatorMode: OperatorMode },
 ) {
-  return apply(prisma, 'platform.discrepancy.explain', input, user(actor), (row, _tx, now) =>
-    decideExplain(row, requireInvariant(row.ruleId), actor, opts.operatorMode, input, now),
+  return apply(prisma, 'platform.discrepancy.explain', input, user(actor), async (row, tx, now) =>
+    decideExplain(row, requireInvariant(row.ruleId), actor, await resolveOperatorMode(tx, row.companyId), input, now),
   );
 }
 
@@ -131,15 +133,14 @@ export function approveDiscrepancyExplanation(prisma: RootClient, input: Common,
   return apply(prisma, 'platform.discrepancy.approveExplanation', input, user(actor), (row, _tx, now) => decideApproveExplanation(row, actor, now));
 }
 
-/** Request a waiver (two people, or the single-operator path). */
+/** Request a waiver (two people, or the single-operator path; the mode is read in the transaction). */
 export function requestDiscrepancyWaiver(
   prisma: RootClient,
   input: Common & { reason: string },
   actor: DiscrepancyActor,
-  opts: { operatorMode: OperatorMode },
 ) {
-  return apply(prisma, 'platform.discrepancy.requestWaiver', input, user(actor), (row, _tx, now) =>
-    decideWaiver(row, requireInvariant(row.ruleId), actor, opts.operatorMode, input, now),
+  return apply(prisma, 'platform.discrepancy.requestWaiver', input, user(actor), async (row, tx, now) =>
+    decideWaiver(row, requireInvariant(row.ruleId), actor, await resolveOperatorMode(tx, row.companyId), input, now),
   );
 }
 
@@ -176,7 +177,8 @@ export function resolveDiscrepancy(
 /**
  * The owner's answer to a SELF_ACT_SINGLE_OPERATOR classification, received over the DEC-PO-022
  * channel (outside the tenant). Called by that channel's handler as a SYSTEM actor; `channelRef`
- * identifies the confirmation message.
+ * identifies the confirmation message. Until G8 the only handler is Radeef's vendor CLI (iam
+ * vendor-cli.ts `owner-confirm`, BL-PAY-021): no route or page of the tenant calls it.
  */
 export function confirmSingleOperatorAct(
   prisma: RootClient,

@@ -12,13 +12,15 @@
 //     eligible, when fewer than two eligible accounts remain after it, is itself a two-person act
 //     (or single operator), flagged for the owner (N-LCY-006).
 //
-// Not here yet (declared dependencies of BL-LCY-010, lcy-to-be.md §24): the financial approver's exit
-// (DEC-PO-021 / 039 / 042 / 052). BL-PAY-005 now provides identityStatus, isVendorStaff, tenantRoot /
-// rootSuspendedAt and the iam reads (protectedByTwoPerson, countsTowardEnforced, canApproveChange); the
-// computed controlsMode is BL-PAY-021 and the root's lifecycle BL-PAY-022. See assertFinancialApproverExit below.
+// The financial approver's exit (DEC-PO-021 / 039; BL-PAY-021 security review): assertFinancialApproverExit below
+// refuses a one-person exit of a login that counts toward ENFORCED when it would leave a company it acts in with
+// fewer than two counted approvers (iam.approverExitEffect, the read port; lifecycle does not read iam's tables).
+// Still open for BL-LCY-010: DEC-PO-039 (the owner's confirmation over Radeef when the approver is absent or
+// refuses), DEC-PO-042 (root suspension) and DEC-PO-052.
 import { ROLE_GROUPS } from '@/lib/constants';
 import { forbidden } from '@/lib/http';
-import { activeUsersWithRoles } from '@/modules/iam';
+import { activeUsersWithRoles, approverExitEffect, isCountedApprover } from '@/modules/iam';
+import { listCompanyIds } from '@/modules/org';
 import { employeesOfUsers } from '@/modules/people';
 import type { TxClient } from '@/modules/platform';
 import { effectiveState } from './states';
@@ -28,8 +30,8 @@ export const TERMINATE_ROLES: readonly string[] = Object.freeze([...ROLE_GROUPS.
 export class TwoPersonRequiredError extends Error {
   readonly status = 409;
   readonly code = 'TWO_PERSON_REQUIRED';
-  constructor() {
-    super('هذا الإجراء يتطلب اعتماد شخص ثانٍ مؤهل من الموارد البشرية أو الإدارة القانونية (BR-LCY-012)');
+  constructor(message = 'هذا الإجراء يتطلب اعتماد شخص ثانٍ مؤهل من الموارد البشرية أو الإدارة القانونية (BR-LCY-012)') {
+    super(message);
     this.name = 'TwoPersonRequiredError';
   }
 }
@@ -86,14 +88,29 @@ export async function removesLastEligible(tx: TxClient, subject: { employeeId: s
   return all.length - 1 < 2;
 }
 
+export const FINANCIAL_APPROVER_EXIT_MESSAGE =
+  'إنهاء خدمة هذا الموظف يُسقط عدد المعتمدين الماليين المُقرّ بهم في شركته إلى أقل من اثنين، فيحتاج اعتماد معتمد مالي آخر مُقرّ به (غير منفّذ الإجراء؛ ويجوز أن يكون الموظف المغادر نفسه) قبل التنفيذ (DEC-PO-021)';
+
 /**
- * TODO(BL-LCY-010 with BL-PAY-005 / BL-PAY-021 / BL-PAY-022): the exit of an attested financial
- * approver follows DEC-PO-021 literally (approval by the approver himself or another attested one,
- * DEC-PO-039 owner confirmation over Radeef when absent or refusing, DEC-PO-042 root suspension, no
- * re-attestation during notice). identityStatus / controlsMode / rootSuspendedAt / isVendorStaff do
- * not exist yet, so there is nothing to check; this seam is where the check goes, inside the
- * transition, before T1 / T3.
+ * The exit (T1 / T3, ACTIVE → NOTICE or TERMINATED) of an employee whose login counts toward ENFORCED (DEC-PO-021,
+ * BL-PAY-021 security review). Ending that login can drop a company to SINGLE_OPERATOR, after which one person
+ * approves and pays alone; so when the exit would leave ANY company the login acts in with fewer than two counted
+ * approvers (readiness ignored: fail closed), it needs the approval of a counted approver other than the actor
+ * (`approvedById`, recorded through the pending request): DEC-PO-021 literally, so the leaver's own consent counts
+ * (actor and leaver are two real people; there is no one-person path). Otherwise TwoPersonRequiredError
+ * (409 TWO_PERSON_REQUIRED) and nothing is written. Returns whether such an approver is being removed (the
+ * eligibleApproverRemoved flag of the event, N-LCY-006).
  */
-export async function assertFinancialApproverExit(_tx: TxClient, _subject: { employeeId: string; userId: string | null }): Promise<void> {
-  return;
+export async function assertFinancialApproverExit(
+  tx: TxClient,
+  subject: { employeeId: string; userId: string | null },
+  act: { actorId: string | null; approvedById: string | null } = { actorId: null, approvedById: null },
+): Promise<{ approverRemoved: boolean }> {
+  if (!subject.userId) return { approverRemoved: false };
+  const effect = await approverExitEffect(tx, subject.userId, await listCompanyIds(tx));
+  if (!effect.counts || !effect.companiesBelowTwo.length) return { approverRemoved: false };
+  const second = act.approvedById;
+  const valid = !!second && second !== act.actorId && (await isCountedApprover(tx, second));
+  if (!valid) throw new TwoPersonRequiredError(FINANCIAL_APPROVER_EXIT_MESSAGE);
+  return { approverRemoved: true };
 }

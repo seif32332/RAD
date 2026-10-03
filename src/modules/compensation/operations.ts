@@ -4,6 +4,7 @@
 // CompensationPeriod / BankIdentityPeriod (the facts, through platform/effective) and refreshes the
 // Employee projection columns (ARC-PAY-A4). One-off bonuses (Allowance isMonthly=false) keep their
 // P1-PAY-A operations until BL-PAY-007 makes them PENDING.
+import { legalCompanyOfEmployees } from '@/modules/people';
 import { EMPLOYEE_MONEY_COLUMNS, defineMoneyOperation } from '@/modules/platform';
 
 /** The Employee projection columns compensation writes (gosiDeduction is payroll's projection). */
@@ -23,6 +24,7 @@ export const BONUS_CREATE = defineMoneyOperation<EmployeeSubject>({
   source: 'USER',
   writes: { Allowance: '*' },
   beneficiaries: subject,
+  companyOf: (tx, input) => legalCompanyOfEmployees(tx, [input.employeeId]),
 });
 
 /** payroll.generate reserves the due bonuses of a draft line; approval marks them paid; release undoes. */
@@ -58,6 +60,7 @@ export const FINANCIAL_CHANGE_DECIDE = defineMoneyOperation<EmployeeSubject>({
   source: 'USER',
   writes: { EmployeeFinancialChange: '*' },
   beneficiaries: subject,
+  companyOf: (tx, input) => legalCompanyOfEmployees(tx, [input.employeeId]),
 });
 
 /** Rejecting a request: the same two-person rule as the approval (the beneficiary never decides his own). */

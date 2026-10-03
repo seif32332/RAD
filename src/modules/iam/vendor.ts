@@ -21,6 +21,7 @@ export const VENDOR_EVENTS = Object.freeze({
   ownerContactChanged: 'iam.vendor.ownerContactChanged',
   invited: 'iam.vendor.invited',
   codeReleased: 'iam.vendor.codeReleased',
+  controlsReadinessChanged: 'iam.vendor.controlsReadinessChanged',
 });
 
 const OPERATOR = /^[A-Za-z0-9._@-]{1,64}$/;
@@ -111,4 +112,123 @@ export async function vendorStatus(db: Prisma.TransactionClient): Promise<Vendor
     ownerContact: owner ? { email: owner.email, mobile: owner.mobile, name: owner.name, requestRef: owner.requestRef, addedAt: owner.addedAt.toISOString() } : null,
     pendingCodes: codes.map((c) => ({ email: c.user.email, expiresAt: c.expiresAt.toISOString(), released: !!c.codeReleasedAt })),
   };
+}
+
+// ---------------------------------------------------------------------------------------------------
+// BL-PAY-021: the controls mode, the owner digest and the owner's confirmations, as Radeef sees them
+// ---------------------------------------------------------------------------------------------------
+
+export interface VendorCompanyControls {
+  companyId: string;
+  /** Radeef's readiness mark (DEC-PO-144): not ready = ENFORCED whatever the count. */
+  ready: boolean;
+  basis: string | null;
+  /** Counted approvers who can act in the company. */
+  approvers: number;
+  mode: 'ENFORCED' | 'SINGLE_OPERATOR';
+  lastRecorded: { mode: string | null; at: string | null };
+}
+
+export interface VendorControls {
+  /** Per legal company (DEC-PO-144): every company marked, in an approver's scope, named by a pending item, or asked for. */
+  companies: VendorCompanyControls[];
+  /** Who counts toward ENFORCED, and where ('ALL': an owner role or no scope row). */
+  approvers: { email: string; role: string; root: boolean; companies: 'ALL' | string[] }[];
+  ownerContact: { present: boolean; hasEmail: boolean; hasMobile: boolean };
+  /** Whether the outbox can send now (G8 / SES via SMTP) and why not. */
+  delivery: { live: boolean; reason: string | null };
+  digests: { month: string; status: string; attempts: number; sentAt: string | null; createdAt: string }[];
+  /** Classifications waiting for the owner's answer, which Radeef records with `owner-confirm`. */
+  pendingOwnerConfirmations: {
+    id: string;
+    ruleId: string;
+    companyId: string | null;
+    status: string;
+    blocksUntilConfirmed: boolean;
+    version: number;
+    kind: 'EXPLANATION' | 'WAIVER';
+    text: string | null;
+    reference: string | null;
+    actedByEmail: string | null;
+    actedAt: string | null;
+  }[];
+  /** What Radeef must act on (DEC-PO-022: a delivery failure alerts the tenant and Radeef). */
+  alerts: string[];
+}
+
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/** The `controls` read of the vendor CLI (no national id, no hash, no digest body). `companyIds`: extra companies to show. */
+export async function vendorControls(db: Prisma.TransactionClient, env: Record<string, string | undefined>, companyIdsValue?: unknown): Promise<VendorControls> {
+  const [controls, { recentDigests, ownerContactOf, DIGEST_DELIVERY_PROBLEMS }, platform] = await Promise.all([import('./controls'), import('./digest'), import('@/modules/platform')]);
+  const asked = Array.isArray(companyIdsValue) ? companyIdsValue.map((x) => String(x).trim().toLowerCase()) : [];
+  if (asked.some((x) => !UUID.test(x)) || asked.length > 200) throw badRequest('أرقام الشركات غير صالحة');
+  const approvers = await controls.controlsApprovers(db);
+  const scopes = await controls.approverScopes(db, approvers);
+  const pending = await platform.pendingOwnerConfirmations(db);
+  const marked = await db.controlsReadiness.findMany({ distinct: ['companyId'], select: { companyId: true } });
+  const scoped = await db.userCompanyScope.findMany({ distinct: ['companyId'], select: { companyId: true } });
+  const ids = [...new Set([...marked.map((m) => m.companyId), ...scoped.map((m) => m.companyId), ...pending.map((p) => p.companyId).filter((x): x is string => !!x), ...asked])].sort();
+  const states = await controls.controlsOfCompanies(db, ids);
+  const companies: VendorCompanyControls[] = [];
+  for (const st of states) {
+    const last = await controls.lastRecordedControlsMode(db, st.companyId);
+    companies.push({ ...st, lastRecorded: { mode: last.mode, at: last.at?.toISOString() ?? null } });
+  }
+  const contact = await ownerContactOf(db);
+  const cfg = platform.outboxSendConfig(env);
+  const digests = await recentDigests(db);
+  const actors = await db.user.findMany({ where: { id: { in: pending.map((p) => p.actedById).filter((x): x is string => !!x) } }, select: { id: true, email: true } });
+  const single = companies.filter((c) => c.ready && c.mode === 'SINGLE_OPERATOR');
+  const alerts: string[] = [];
+  if (!contact) alerts.push(single.length ? `OWNER_CONTACT_MISSING (FATAL: ${single.length} ready company(ies) in SINGLE_OPERATOR; the owner-digest job fails)` : 'OWNER_CONTACT_MISSING');
+  else if (!contact.email) alerts.push('OWNER_EMAIL_MISSING');
+  if (!cfg.live) alerts.push(`DELIVERY_NOT_CONFIGURED: ${cfg.reason}`);
+  for (const d of digests) if (DIGEST_DELIVERY_PROBLEMS.includes(d.status)) alerts.push(`DIGEST_${d.status}: ${d.month}`);
+  if (pending.length) alerts.push(`OWNER_CONFIRMATIONS_PENDING: ${pending.length}`);
+  return {
+    companies,
+    approvers: approvers.map((u) => {
+      const sc = scopes.get(u.id);
+      return { email: u.email, role: u.role, root: u.tenantRoot && !u.rootSuspendedAt, companies: sc === 'ALL' || !sc ? ('ALL' as const) : [...sc].sort() };
+    }),
+    ownerContact: { present: !!contact, hasEmail: !!contact?.email, hasMobile: !!contact?.mobile },
+    delivery: { live: cfg.live, reason: cfg.reason },
+    digests,
+    pendingOwnerConfirmations: pending.map((p) => ({
+      id: p.id,
+      ruleId: p.ruleId,
+      companyId: p.companyId,
+      status: p.status,
+      blocksUntilConfirmed: !!p.pendingAction,
+      version: p.version,
+      kind: p.waiverReason ? ('WAIVER' as const) : ('EXPLANATION' as const),
+      text: p.waiverReason ?? p.explanation,
+      reference: p.explanationRef,
+      actedByEmail: actors.find((a) => a.id === p.actedById)?.email ?? null,
+      actedAt: p.actedAt?.toISOString() ?? null,
+    })),
+    alerts,
+  };
+}
+
+const MONTH = /^(\d{4})-(\d{2})$/;
+
+/** The `digest` read: one month's queued digest (the text Radeef relays to the owner until G8). */
+export async function vendorDigest(db: Prisma.TransactionClient, monthValue: unknown) {
+  const m = MONTH.exec(String(monthValue ?? '').trim());
+  if (!m) throw badRequest('الشهر بصيغة YYYY-MM');
+  const { queuedDigest, monthPeriod } = await import('./digest');
+  const month = { year: Number(m[1]), month: Number(m[2]) };
+  monthPeriod(month); // validates the range
+  const row = await queuedDigest(db, month);
+  if (!row) throw new HttpError(404, 'لا يوجد ملخص مسجّل لهذا الشهر (لم يكن فيه ما يُبلَّغ، أو لم تسجّل رديف جهة اتصال المالك بعد)');
+  return row;
+}
+
+/** The owner's answer recorded by Radeef (DEC-PO-022 channel until G8, RT-PAY-1205): CONFIRMED or REJECTED. */
+export function ownerDecisionOf(value: unknown): 'CONFIRMED' | 'REJECTED' {
+  const v = String(value ?? '').trim().toUpperCase();
+  if (v !== 'CONFIRMED' && v !== 'REJECTED') throw badRequest('قرار المالك: CONFIRMED أو REJECTED');
+  return v;
 }

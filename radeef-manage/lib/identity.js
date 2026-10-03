@@ -7,7 +7,15 @@
  * a national id) and ONE JSON line back.
  *
  * Every write needs the reference of the owner's formal request (requestRef); root changes, suspension and a
- * revocation also need the tenant name typed again (confirm). A submission carries a requestId: the same id is
+ * revocation also need the tenant name typed again (confirm).
+ *
+ * BL-PAY-021 (DEC-PO-022, RT-PAY-1205): `controls` (read) shows the tenant's computed controls mode, who counts
+ * toward it, the owner digest's delivery and the owner confirmations waiting; `digest` (read) returns one month's
+ * queued digest so Radeef can relay it while no email provider is configured (G8); `owner-confirm` records the
+ * owner's answer that Radeef received (requestRef = the owner's message), with the tenant name typed again.
+ * DEC-PO-144: `controls-ready` marks a legal company ready for the computed controls mode (basis ATTESTED, or
+ * ONE_PERSON for a genuine one-person company on the owner's request); `controls-not-ready` takes the mark back.
+ * Until marked, a company is ENFORCED whatever its count. Both need the owner request and the tenant name. A submission carries a requestId: the same id is
  * the same operation on the tenant (a retry replays it, never runs twice).
  */
 const crypto = require('crypto');
@@ -45,7 +53,12 @@ const COMMANDS = Object.freeze({
   'invite-person': { fields: ['email', 'role', 'name', 'linkHours'] },
   'set-owner-contact': { fields: ['email', 'mobile', 'name'] },
   'release-code': { fields: ['email'] },
+  'owner-confirm': { fields: ['discrepancyId', 'decision', 'expectedVersion'], confirm: true },
+  'controls-ready': { fields: ['companyId', 'basis'], confirm: true },
+  'controls-not-ready': { fields: ['companyId'], confirm: true },
 });
+/** Read-only commands (no requestId, no owner request): command -> its fields. */
+const READ_COMMANDS = Object.freeze({ status: [], controls: ['companyIds'], digest: ['month'] });
 const WRITE_COMMANDS = Object.keys(COMMANDS);
 
 function singleLine(value, label, { min = 0, max = 200 } = {}) {
@@ -81,6 +94,42 @@ function field(name, value) {
       return singleLine(value, 'السبب', { min: 5, max: 500 });
     case 'replaceCurrent':
       return value === true;
+    case 'companyId': {
+      const id = String(value ?? '').trim().toLowerCase();
+      if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(id)) throw new IdentityError('رقم الشركة غير صالح');
+      return id;
+    }
+    case 'companyIds': {
+      if (value == null || value === '') return [];
+      const list = (Array.isArray(value) ? value : String(value).split(',')).map((v) => String(v).trim().toLowerCase()).filter(Boolean);
+      if (list.length > 200 || list.some((id) => !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(id))) throw new IdentityError('أرقام الشركات غير صالحة');
+      return list;
+    }
+    case 'basis': {
+      const b = value == null || value === '' ? 'ATTESTED' : String(value).trim().toUpperCase();
+      if (b !== 'ATTESTED' && b !== 'ONE_PERSON') throw new IdentityError('أساس الجاهزية: ATTESTED أو ONE_PERSON');
+      return b;
+    }
+    case 'discrepancyId': {
+      const id = String(value ?? '').trim().toLowerCase();
+      if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(id)) throw new IdentityError('رقم البند غير صالح');
+      return id;
+    }
+    case 'decision': {
+      const d = String(value ?? '').trim().toUpperCase();
+      if (d !== 'CONFIRMED' && d !== 'REJECTED') throw new IdentityError('قرار المالك: CONFIRMED أو REJECTED');
+      return d;
+    }
+    case 'expectedVersion': {
+      const n = Number(value);
+      if (!Number.isInteger(n) || n < 0 || n > 1e9) throw new IdentityError('نسخة البند غير صالحة');
+      return n;
+    }
+    case 'month': {
+      const m = String(value ?? '').trim();
+      if (!/^(20\d{2})-(0[1-9]|1[0-2])$/.test(m)) throw new IdentityError('الشهر بصيغة YYYY-MM');
+      return m;
+    }
     case 'linkHours': {
       if (value == null || value === '') return 72;
       const n = Number(value);
@@ -122,6 +171,16 @@ function statusRequest(operator) {
   return { command: 'status', operator, requestId: '', requestRef: '' };
 }
 
+/** A read-only request (status | controls | digest), validated (pure). */
+function readRequest(command, operator, body = {}) {
+  const fields = READ_COMMANDS[command];
+  if (!fields) throw new IdentityError('إجراء غير صالح');
+  if (!/^[A-Za-z0-9._@-]{1,64}$/.test(String(operator ?? ''))) throw new IdentityError('مشغّل غير صالح', 500);
+  const request = { command, operator, requestId: '', requestRef: '' };
+  for (const f of fields) request[f] = field(f, body[f]);
+  return request;
+}
+
 /** The remote command: the tenant's own CLI with the tenant's own environment (no value interpolated but the path). */
 function remoteCommand(appDir) {
   const dir = V.validateSafePath(appDir, 'app dir');
@@ -160,4 +219,4 @@ async function runVendorCommand({ exec, conn, appDir, request }) {
   throw new IdentityError(status < 500 && typeof reply.error === 'string' ? reply.error : 'فشل أمر رديف على السيرفر', status);
 }
 
-module.exports = { IdentityError, COMMANDS, WRITE_COMMANDS, ROLES, buildVendorRequest, statusRequest, remoteCommand, parseVendorReply, runVendorCommand };
+module.exports = { IdentityError, COMMANDS, WRITE_COMMANDS, READ_COMMANDS, ROLES, buildVendorRequest, statusRequest, readRequest, remoteCommand, parseVendorReply, runVendorCommand };

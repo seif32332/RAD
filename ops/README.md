@@ -9,7 +9,7 @@
 | `restore.sh` | استعادة مستأجر من نسخة (مع نسخة أمان للوضع الحالي أولًا). |
 | `new-tenant.sh` | إنشاء مستأجر: دور وقاعدة Postgres مستقلان، `/etc/radeef/<tenant>.env` بأسرار عشوائية، المجلدات، موقع Nginx وشهادة TLS. `--nginx-only` للمستأجرين الحاليين. يضبط connection_limit=5 ومهلات الدور (statement_timeout=30s، idle_in_transaction_session_timeout=60s)، ويكتب SMTP_* (من TENANT_SMTP_* أو فارغة) مع سرد الناقص قبل الإنشاء. |
 | `restore-drill.sh` | تمرين استعادة شهري آلي لأحدث نسخة كل مستأجر في قاعدة مؤقتة، والنتيجة في `JobRun` (RUNBOOK 3.4). |
-| `jobs-setup.sh` | تثبيت `ops/systemd/radeef-jobs@*` وتفعيل مؤقتات **كل** المهام الاثنتي عشرة (`--check` للتحقق، `--cron` لبديل cron). RUNBOOK 4.1. |
+| `jobs-setup.sh` | تثبيت `ops/systemd/radeef-jobs@*` وتفعيل مؤقتات **كل** المهام الثلاث عشرة (`--check` للتحقق، `--cron` لبديل cron). RUNBOOK 4.1. |
 | `run-jobs.sh` | تشغيل مهمة من `scripts/jobs.mjs` (أي اسم في `JOB_NAMES`) لكل المستأجرين مع تأخير عشوائي، لمؤقت systemd أو cron (RUNBOOK 4.1). يتخطى `RADEEF_JOBS="off"` ويكمل بعد فشل مستأجر. |
 | `lib/common.sh` | دوال مشتركة (التحقق من اسم المستأجر، قراءة ملف البيئة بلا تنفيذه، تمرير كلمة مرور Postgres عبر `PGPASSWORD` لا سطر الأوامر). |
 | `nginx/tenant.conf.template` | قالب موقع Nginx: HTTP→HTTPS، TLS، HSTS وترويسات الأمان، `client_max_body_size 12m`، gzip، صفحة صيانة عامة لـ 502/503/504. ويرجع 404 لـ `/api/internal/`. |

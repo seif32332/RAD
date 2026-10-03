@@ -62,6 +62,21 @@ export async function employeesOfUsers(db: Db, userIds: readonly string[]): Prom
 }
 
 /**
+ * BL-PAY-021 (DEC-PO-144): the ONE legal company of these employees, for the controls mode of an act about them.
+ * null when there is no employee, an employee without a company, or several companies (the mode then reads ENFORCED).
+ */
+export async function legalCompanyOfEmployees(db: Db, employeeIds: readonly (string | null | undefined)[]): Promise<string | null> {
+  const ids = [...new Set(employeeIds.filter((x): x is string => !!x))];
+  if (!ids.length) return null;
+  const rows = await db.employee.findMany({ where: { id: { in: ids } }, select: { legalCompanyId: true } });
+  if (rows.length !== ids.length) return null;
+  const companies = new Set(rows.map((r) => r.legalCompanyId));
+  if (companies.size !== 1) return null;
+  const [only] = [...companies];
+  return only ?? null;
+}
+
+/**
  * Ids of the employees of `companyIds` (legal company) matching `where`, ascending. For the modules
  * above that select employees by their own projection columns (e.g. lifecycle: the notices due).
  */

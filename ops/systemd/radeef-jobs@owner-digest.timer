@@ -1,0 +1,11 @@
+# /etc/systemd/system/radeef-jobs@owner-digest.timer: daily 04:05 + up to 15 min, before outbox-dispatch 04:30 (BL-PAY-021: records the computed controls mode, then queues the owner's digest of the previous month once, DEC-PO-022)
+[Unit]
+Description=Radeef background job owner-digest (schedule)
+
+[Timer]
+OnCalendar=*-*-* 04:05:00 Asia/Riyadh
+RandomizedDelaySec=15min
+Persistent=true
+
+[Install]
+WantedBy=timers.target

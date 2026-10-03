@@ -54,6 +54,9 @@
 | الأشخاص المسمَّون للمالك (DEC-PO-018) | `TenantNamedPerson` بنوع NAMED_PERSON؛ رقم الهوية مجزأ بمفتاح فقط | `iam.vendor.*` | — | `iam.namedPersonOf`، `iam.namedLinkIntact` | لا يوجد | BL-PAY-022 (ADR-0008) |
 | جهة اتصال المالك (DEC-PO-022) | `TenantNamedPerson` بنوع OWNER_CONTACT (بدل `TenantControls.ownerEmail/ownerMobile` في pay-to-be §17) | `iam.vendor.*` | — | `iam` | لا يوجد | BL-PAY-022 (ADR-0008) |
 | ربط الحساب بالشخص المسمّى (RT-PAY-1403) | `TenantNamedPerson.userId` و`linkedAt` (بدل عمود `User.namedPersonId`)؛ «فك الربط عند تغيير البريد» محسوب (`emailSetAt > linkedAt`) | `iam.vendor.*` | — | `iam.namedLinkIntact` | لا يوجد | BL-PAY-022 (ADR-0008) |
+| وضع الضوابط controlsMode لكل شركة نظامية (BR-PAY-020، DEC-PO-144) | محسوب لكل شركة، بلا نسخة مخزنة: إن لم تعلّمها رديف جاهزة فـENFORCED، وإلا فـENFORCED إن عمل فيها معتمدان مُقرّ بهما أو أكثر (`countsTowardEnforced` ونطاق `UserCompanyScope`؛ دور المالك أو غياب صفوف النطاق = كل الشركات)، وإلا SINGLE_OPERATOR | سجل التغيّرات فقط: `iam.recordControlsMode` (AuditRecord + `iam.controls.modeChanged` لكل شركة) | — | `platform.resolveOperatorMode(db, companyId)` بشركة الفعل (محلّل تسجّله iam: `iam.readControlsMode`)؛ الشركة المجهولة ENFORCED | إعداد يدوي `platform.operatorMode` للمستأجر كله | BL-PAY-021 (ADR-0009) |
+| جاهزية الشركة لوضع الضوابط المحسوب (DEC-PO-144) | `ControlsReadiness` (صف مفتوح واحد لكل شركة؛ ATTESTED أو ONE_PERSON) | `iam.vendor.setControlsReadiness` (لوحة المورّد فقط، عملية بوابة VENDOR_ONLY) | — | `iam.readinessOf`، `iam.readyCompanies` | لا يوجد | BL-PAY-021 (ADR-0009) |
+| ملخص المالك الشهري | صف `NotificationOutbox` بمفتاح `owner-digest:<YYYY-MM>:<contactId>`، بقسم لكل شركة | مهمة iam `owner-digest` | — | أمر المورّد `digest` | لا يوجد | BL-PAY-021 (ADR-0009) |
 
 ## 3.2 الاستعلامات القانونية (Canonical Queries): التقارير
 

@@ -31,6 +31,7 @@ export {
   GUARD_MESSAGES,
   decideSelfDealing,
   decideMakerChecker,
+  decideByMode,
   decideReversal,
   isBeneficiary,
   isApprover,

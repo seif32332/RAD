@@ -87,7 +87,10 @@ export function isMoneyTable(model: string): boolean {
  * it and User.tenantRoot are written only by the iam VENDOR operations (VENDOR_ONLY_* below), which no in-app
  * operation's write list may name (iam's operations.ts, checked by x-security-root.test.ts).
  */
-export const IDENTITY_TABLES = ['UserEmployeeLink', 'CredentialToken', 'IdentityChangeRequest', 'TenantNamedPerson'] as const;
+// BL-PAY-021 (ADR-0009): ControlsReadiness, Radeef's per-company readiness mark for the computed controls mode; and
+// UserCompanyScope (security re-check HIGH): where a counted approver acts decides each company's controls mode, so
+// only iam's scope operations (iam.user.scope, the two-person CHANGE_SCOPE of iam.identity.changeDecide) write it.
+export const IDENTITY_TABLES = ['UserEmployeeLink', 'CredentialToken', 'IdentityChangeRequest', 'TenantNamedPerson', 'ControlsReadiness', 'UserCompanyScope'] as const;
 
 export const USER_CONTROL_COLUMNS = [
   'createdById',
@@ -109,7 +112,7 @@ export const USER_CREDENTIAL_COLUMNS = ['passwordHash', 'email', 'role', 'isActi
 
 /** Written only by the vendor operations (DEC-PO-016 / 018 / 022, ADR-0007 "لوحة المورّد فقط"). */
 export const VENDOR_ONLY_USER_COLUMNS = ['tenantRoot'] as const;
-export const VENDOR_ONLY_TABLES = ['TenantNamedPerson'] as const;
+export const VENDOR_ONLY_TABLES = ['TenantNamedPerson', 'ControlsReadiness'] as const;
 
 export const IDENTITY_COLUMNS: Readonly<Record<string, readonly ProtectedColumns[]>> = Object.freeze({
   User: [

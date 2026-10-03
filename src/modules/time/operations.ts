@@ -1,6 +1,7 @@
 // time's money operations (money.gateway, ARCH-004): the overtime reservation links and the overtime
 // decisions. The overtime row belongs to time (DOMAIN_BOUNDARIES §5.2); its links to the payroll line or
 // the settlement that pays it are money columns (platform MONEY_COLUMNS), written only here.
+import { legalCompanyOfEmployees } from '@/modules/people';
 import { defineMoneyOperation, type TxClient } from '@/modules/platform';
 
 export interface OvertimeLinkInput {
@@ -44,6 +45,7 @@ export const OVERTIME_DECIDE = defineMoneyOperation<OvertimeDecisionInput>({
   source: 'USER',
   writes: { OvertimeRequest: ['status', 'decidedById', 'decidedAt'] },
   beneficiaries: overtimeEmployee,
+  companyOf: async (tx, input) => legalCompanyOfEmployees(tx, await overtimeEmployee(tx, input)),
 });
 
 export interface OvertimeAssignInput {
@@ -58,4 +60,5 @@ export const OVERTIME_ASSIGN = defineMoneyOperation<OvertimeAssignInput>({
   source: 'USER',
   writes: { OvertimeRequest: '*' },
   beneficiaries: async (_tx, input) => [input.employeeId],
+  companyOf: (tx, input) => legalCompanyOfEmployees(tx, [input.employeeId]),
 });

@@ -268,7 +268,12 @@ async function apply(tx: TxClient, input: TransitionEmploymentStateInput): Promi
     approvedById = d.approvedById;
     singleOperator = d.singleOperator;
   }
-  if (exitsNow) await assertFinancialApproverExit(tx, { employeeId: input.employeeId, userId: emp.userId });
+  if (exitsNow) {
+    // DEC-PO-021 (BL-PAY-021 security review): a counted approver's exit that would leave a company with fewer than
+    // two counted approvers needs another counted approver's approval, whatever decideTwoPerson concluded.
+    const fa = await assertFinancialApproverExit(tx, { employeeId: input.employeeId, userId: emp.userId }, { actorId: input.actor.type === 'USER' ? input.actor.id : null, approvedById: input.approvedById ?? null });
+    if (fa.approverRemoved) eligibleApproverRemoved = true;
+  }
 
   const reason = input.reason?.trim() ? input.reason.trim().slice(0, 2000) : null;
   const periodOp = { key: input.operationKey, actor: auditActor, companyId, reason };
