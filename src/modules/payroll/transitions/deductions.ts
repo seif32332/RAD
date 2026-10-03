@@ -200,6 +200,8 @@ export async function waiveDeduction(tx: TxClient, input: DeductionActInput): Pr
 /**
  * Refers a violation to an investigation (→ UNDER_INVESTIGATION): it stops being payable and leaves any
  * draft line that reserved it. `notIn`: the statuses that cannot be referred (the caller's list).
+ * A referral is not a decision (BL-PAY-027, RT-WFE-712): decidedById keeps the person who decided the
+ * penalty (BR-PAY-002 reads it); the referrer is recorded in the audit row only.
  */
 export async function referDeductionToInvestigation(
   tx: TxClient,
@@ -212,12 +214,12 @@ export async function referDeductionToInvestigation(
     if (input.employeeId && current.employeeId !== input.employeeId) throw conflict('المخالفة المرتبطة لا تخص الموظف المحال للتحقيق');
     const res = await w.deduction.updateMany({
       where: { id: input.deductionId, investigationId: null, isReferredToInvestigation: false, isLinkedToPayroll: false, status: { notIn: [...input.notIn] } },
-      data: { isReferredToInvestigation: true, investigationId: input.investigationId, status: DEDUCTION_STATUS.UNDER_INVESTIGATION, decidedById: input.actor.id },
+      data: { isReferredToInvestigation: true, investigationId: input.investigationId, status: DEDUCTION_STATUS.UNDER_INVESTIGATION },
     });
     if (res.count === 0) throw conflict(input.message ?? 'لا يمكن إحالة المخالفة: تمت إحالتها أو معالجتها مسبقاً');
     await releaseDeductionReservation(w, current);
     const row = await w.deduction.findUniqueOrThrow({ where: { id: input.deductionId } });
-    await recordDeduction(w, info, input.operationKey, row, 'referred', current, { status: row.status, investigationId: input.investigationId }, input.ipAddress);
+    await recordDeduction(w, info, input.operationKey, row, 'referred', current, { status: row.status, investigationId: input.investigationId, referredById: input.actor.id }, input.ipAddress);
     return row;
   });
 }

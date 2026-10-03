@@ -56,6 +56,11 @@ describe.skipIf(process.env.SCOPE_IT !== '1')('settlements routes: company scope
     expect((await route.POST(h.req('POST', '/x', body))).status).toBe(201);
     expect((await route.POST(h.req('POST', '/x', body))).status).toBe(409);
     expect(await h.prisma.settlement.count({ where: { employeeId: fresh.id } })).toBe(1);
+    // BL-PAY-027: the leave days paid are stored with the settlement (payroll excludes exactly them).
+    const saved = await h.prisma.settlement.findFirstOrThrow({ where: { employeeId: fresh.id } });
+    expect(saved.leavePaidDays).not.toBeNull();
+    expect(saved.leavePaidDays).toBeGreaterThan(0);
+    expect((saved.leaveCompensation ?? 0) / (saved.leavePaidDays ?? 1)).toBeCloseTo(6000 / 30, 0); // basic 6000: 200 a day
   });
 
   it('PUT: HR 403, finance of another company 404 (untouched), own company allowed; a decision once, then 409', async () => {

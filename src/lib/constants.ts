@@ -103,6 +103,11 @@ export const LOAN_STATUS = {
 /** Loans whose installments payroll deducts. Legacy 'APPROVED' is accepted on read only. */
 export const LOAN_DEDUCTIBLE_STATUSES = [LOAN_STATUS.FINANCE_APPROVED, LOAN_STATUS.FINANCE_TRANSFERRED, 'APPROVED'];
 export const LOAN_PENDING_STATUSES = [LOAN_STATUS.PENDING, LOAN_STATUS.MANAGER_APPROVED, LOAN_STATUS.HR_APPROVED];
+/**
+ * Loans still in decision (BL-PAY-027, F4; wfe-money-adapters C13): the only statuses a rejection
+ * applies to. HR_APPROVED is decided (awaiting the transfer): it is cancelled, not rejected.
+ */
+export const LOAN_IN_DECISION_STATUSES: readonly string[] = [LOAN_STATUS.PENDING, LOAN_STATUS.MANAGER_APPROVED];
 
 export const DEDUCTION_STATUS = {
   /** Approved and due: will be deducted in payroll. */

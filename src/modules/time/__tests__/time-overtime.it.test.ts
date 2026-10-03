@@ -36,7 +36,8 @@ describe.skipIf(!RUN)('time overtime money writers on PostgreSQL (P1-PAY-A)', { 
     self.employeeId = (await employee({ userId: self.id })).id;
   });
   const tx = <T,>(fn: (t: import('@/modules/platform').TxClient) => Promise<T>) => runPayrollTransaction(prisma, fn);
-  const ot = (employeeId: string, status = 'APPROVED') => prisma.overtimeRequest.create({ data: { employeeId, date: new Date('2031-02-02'), hours: 2, status } });
+  // OvertimeRequest.status is a money column (BL-PAY-027): a fixture with a status is written inside the test fixture operation.
+  const ot = (employeeId: string, status = 'APPROVED') => moneyFixture((t) => t.overtimeRequest.create({ data: { employeeId, date: new Date('2031-02-02'), hours: 2, status } }));
 
   it('decideOvertime double call (sequential and concurrent): decided once, decidedById; never one\'s own; another decider gets 409', async () => {
     const e = (await employee()).id;
@@ -52,6 +53,21 @@ describe.skipIf(!RUN)('time overtime money writers on PostgreSQL (P1-PAY-A)', { 
     await expect(tx((t) => time.decideOvertime(t, { actor: hr, overtimeId: o2.id, status: 'APPROVED', operationKey: `it:${randomUUID()}` }))).rejects.toMatchObject({ status: 409 });
     const mine = await ot(self.employeeId!, 'PENDING');
     await expect(tx((t) => time.decideOvertime(t, { actor: self, overtimeId: mine.id, status: 'APPROVED', operationKey: `it:${randomUUID()}` }))).rejects.toMatchObject({ status: 403 });
+  });
+
+  it('decideOvertime by the beneficiary (BL-PAY-027): ENFORCED 403 and still PENDING; SINGLE_OPERATOR decided as a recorded self-act with decidedById', async () => {
+    const mine = await ot(self.employeeId!, 'PENDING');
+    const blocked = `it:ot:${randomUUID()}`;
+    await expect(tx((t) => time.decideOvertime(t, { actor: self, overtimeId: mine.id, status: 'APPROVED', operationKey: blocked, mode: 'ENFORCED' }))).rejects.toMatchObject({
+      status: 403,
+      details: { code: 'MONEY_GUARD_BLOCKED', reasons: ['SELF_BENEFICIARY'] },
+    });
+    expect((await prisma.overtimeRequest.findUniqueOrThrow({ where: { id: mine.id } })).status).toBe('PENDING');
+    expect(await prisma.domainEvent.count({ where: { idempotencyKey: `money.guard.blocked:${blocked}` } })).toBe(1);
+    const key = `it:ot:${randomUUID()}`;
+    const single = await tx((t) => time.decideOvertime(t, { actor: self, overtimeId: mine.id, status: 'APPROVED', operationKey: key, mode: 'SINGLE_OPERATOR' }));
+    expect([single.status, single.decidedById]).toEqual(['APPROVED', self.id]);
+    expect(await prisma.auditRecord.count({ where: { operationKey: key, action: 'SELF_ACT_SINGLE_OPERATOR' } })).toBe(1);
   });
 
   it('assignOvertime double call: one assignment; never to oneself', async () => {

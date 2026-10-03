@@ -60,7 +60,7 @@ import {
 } from '@/lib/payroll-core';
 import { DEFAULT_GOSI_RATES, pickGosiRate, type GosiRateLike } from '@/lib/gosi';
 import { createRulesReader } from '@/modules/rules';
-import { compensationOnDay, compensationSegments, type CompensationSegment } from '@/modules/compensation';
+import { PAYABLE_BONUS_STATUS, compensationOnDay, compensationSegments, type CompensationSegment } from '@/modules/compensation';
 import { currentPeriodStart, employedDuringWhere, employmentGapsWithin, employmentSpansOf } from '@/modules/lifecycle';
 import {
   approvePayrollMonth,
@@ -194,7 +194,7 @@ function settlementCoveragePrecheck(year: number, month: number) {
         // BL-LCY-012 site 2: void settlements (rejected / reversed) never count; period-scoped below.
         settlements: {
           where: { status: { notIn: [...SETTLEMENT_VOID_STATUSES] } },
-          select: { type: true, status: true, lastWorkingDate: true, createdAt: true, salaryBasis: true, leaveCompensation: true },
+          select: { type: true, status: true, lastWorkingDate: true, createdAt: true, salaryBasis: true, leaveCompensation: true, leavePaidDays: true },
         },
       },
     });
@@ -356,7 +356,8 @@ export async function computeGenerationPlan(db: Tx, input: PlanInput): Promise<P
       ...OVERTIME_BASIS_SELECT,
       // One-off bonuses only: the recurring allowances are part of the compensation (CompensationPeriod).
       allowances: {
-        where: { isMonthly: false, isPaid: false },
+        // BL-PAY-027 (RT-WFE-701): only APPROVED one-off bonuses pay (compensation PAYABLE_BONUS_STATUS).
+        where: { isMonthly: false, isPaid: false, status: PAYABLE_BONUS_STATUS },
         select: {
           id: true,
           name: true,
@@ -425,7 +426,7 @@ export async function computeGenerationPlan(db: Tx, input: PlanInput): Promise<P
       // BL-LCY-012 site 1: void settlements (rejected / reversed) never count; period-scoped below.
       settlements: {
         where: { status: { notIn: [...SETTLEMENT_VOID_STATUSES] } },
-        select: { type: true, status: true, lastWorkingDate: true, createdAt: true, salaryBasis: true, leaveCompensation: true },
+        select: { type: true, status: true, lastWorkingDate: true, createdAt: true, salaryBasis: true, leaveCompensation: true, leavePaidDays: true },
       },
       payrolls: {
         where: { status: { in: [PAYROLL_STATUS.APPROVED, PAYROLL_STATUS.PAID] } },

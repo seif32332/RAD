@@ -67,6 +67,19 @@ describe.skipIf(!RUN)('compensation money writers on PostgreSQL (P1-PAY-A)', { t
     expect((await prisma.allowance.findUniqueOrThrow({ where: { id: bonus.id } })).isPaid).toBe(true);
   });
 
+  it('linkBonusesToPayroll / markBonusesPaid take APPROVED bonuses only (BL-PAY-027): a PENDING bonus is not linked; a line holding a REJECTED one is a 409 and nothing is paid', async () => {
+    const e = (await employee()).id;
+    const pending = await moneyFixture((t) => t.allowance.create({ data: { employeeId: e, name: 'م', amount: 10, isMonthly: false, status: 'PENDING' } }));
+    const line = await moneyFixture((t) => payrollLineFixture(t, { employeeId: e, year: 2031, month: 7, basicSalary: 1, netSalary: 1, status: 'DRAFT' }));
+    const r = await prisma.$transaction((t) => comp.linkBonusesToPayroll(t, { reservations: [{ payrollId: line.id, allowanceIds: [pending.id] }], month: 7, year: 2031, operationKey: `it:${randomUUID()}` }));
+    expect(r.linked).toBe(0);
+    const ok = await moneyFixture((t) => t.allowance.create({ data: { employeeId: e, name: 'م', amount: 20, isMonthly: false } }));
+    const late = await moneyFixture((t) => t.allowance.create({ data: { employeeId: e, name: 'م', amount: 30, isMonthly: false, status: 'REJECTED', paidInPayrollId: line.id } }));
+    await prisma.$transaction((t) => comp.linkBonusesToPayroll(t, { reservations: [{ payrollId: line.id, allowanceIds: [ok.id] }], month: 7, year: 2031, operationKey: `it:${randomUUID()}` }));
+    await expect(prisma.$transaction((t) => comp.markBonusesPaid(t, { payrollIds: [line.id], operationKey: `it:${randomUUID()}` }))).rejects.toMatchObject({ status: 409, details: { code: 'BONUS_NOT_APPROVED', count: 1 } });
+    expect([(await prisma.allowance.findUniqueOrThrow({ where: { id: ok.id } })).isPaid, (await prisma.allowance.findUniqueOrThrow({ where: { id: late.id } })).isPaid]).toEqual([false, false]);
+  });
+
   it('applyChangeOrderPay double call (guarded by the order in the real flow): a CompensationPeriod from the order date, the projection and the SalaryChange follow; a repeat replays (SYSTEM operation)', async () => {
     const e = (await employee()).id;
     const housing = await moneyFixture((t) => t.allowance.create({ data: { employeeId: e, name: 'بدل سكن', amount: 1000, isMonthly: true, allowanceType: 'HOUSING' } }));

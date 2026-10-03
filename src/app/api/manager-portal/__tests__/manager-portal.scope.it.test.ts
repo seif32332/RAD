@@ -22,7 +22,7 @@ describe.skipIf(process.env.SCOPE_IT !== '1')('manager portal route: company sco
   const empA = await h.prisma.employee.findFirstOrThrow({ where: { userId: h.users.empA.id } });
   const day = new Date('2026-11-01');
   const leaveA = await h.prisma.leave.create({ data: { employeeId: a.id, startDate: day, endDate: day, totalDays: 1, status: 'APPROVED' } });
-  const otB = await h.prisma.overtimeRequest.create({ data: { employeeId: b.id, date: day, hours: 2, status: 'PENDING' } });
+  const otB = await h.prisma.overtimeRequest.create({ data: { employeeId: b.id, date: day, hours: 2 } }); // PENDING (default)
   const get = (action: string) => route.GET(h.req('GET', `/api/manager-portal?action=${action}`));
   const post = (body: Record<string, unknown>) => route.POST(h.req('POST', '/api/manager-portal', body));
   const overtime = (employeeId: string) => post({ actionType: 'ASSIGN_OVERTIME', employeeId, date: '2026-11-02', hours: 2 });
@@ -55,6 +55,8 @@ describe.skipIf(process.env.SCOPE_IT !== '1')('manager portal route: company sco
     expect((await overtime(stray.id)).status).toBe(404);
     expect(await h.prisma.overtimeRequest.count({ where: { employeeId: { in: [a.id, stray.id] } } })).toBe(0);
     expect((await overtime(a.id)).status).toBe(200);
+    // BL-PAY-027 (F9): the filer is recorded; the request is PENDING (no status is written on create).
+    expect(await h.prisma.overtimeRequest.findFirstOrThrow({ where: { employeeId: a.id }, select: { status: true, createdById: true } })).toEqual({ status: 'PENDING', createdById: h.users.branchMgrA.id });
     await h.as('hrB');
     expect((await post({ actionType: 'RETURN_FROM_LEAVE', leaveId: leaveA.id, actualReturnDate: '2026-11-02' })).status).toBe(404);
     expect((await h.prisma.leave.findUnique({ where: { id: leaveA.id } }))?.actualReturnDate).toBeNull();

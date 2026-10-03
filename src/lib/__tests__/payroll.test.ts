@@ -438,6 +438,26 @@ describe('settlementCoverage', () => {
     expect(r.basicSalary).toBe(3000);
   });
 
+  it('a raise after the settlement does not pay its leave days twice: the stored paid-days count is used (BL-PAY-027)', () => {
+    // Settled at 9000 basic (300 a day): 10 leave days = 3000. The employee gets a raise to 12000 (400 a day).
+    const settled = { type: 'LEAVE_SETTLEMENT', status: 'PAID', lastWorkingDate: d('2026-09-10'), createdAt: d('2026-09-05'), salaryBasis: 'basic', leaveCompensation: 3000 };
+    const ranges = (c: ReturnType<typeof settlementCoverage>) => c.excluded.map((x) => [x.start.toISOString().slice(0, 10), x.end.toISOString().slice(0, 10)]);
+    const stored = settlementCoverage([{ ...settled, leavePaidDays: 10 }], { basicSalary: 12000, allowances: [] });
+    expect(ranges(stored)).toEqual([
+      ['2026-09-01', '2026-09-10'],
+      ['2026-09-11', '2026-09-20'],
+    ]);
+    // Payroll pays the 10 days left of September at the new rate, none of the 10 settled leave days.
+    const r = line({ employee: { basicSalary: 12000 }, excluded: stored.excluded });
+    expect(r.eligibleDays).toBe(10);
+    // The former reading (a legacy row without the count) divided by today's rate: 3000 / 400 = 7.5 → 8
+    // days, so 2 settled leave days were paid again; a cut would have withheld days instead.
+    expect(ranges(settlementCoverage([{ ...settled, leavePaidDays: null }], { basicSalary: 12000, allowances: [] }))[1]).toEqual(['2026-09-11', '2026-09-18']);
+    expect(ranges(settlementCoverage([{ ...settled, leavePaidDays: 10 }], { basicSalary: 6000, allowances: [] }))[1]).toEqual(['2026-09-11', '2026-09-20']);
+    // No leave paid: only the working days of the month are excluded.
+    expect(ranges(settlementCoverage([{ ...settled, leaveCompensation: 0, leavePaidDays: 0 }], { basicSalary: 12000 }))).toEqual([['2026-09-01', '2026-09-10']]);
+  });
+
   it('an end-of-service settlement ends payroll; rejected settlements are ignored', () => {
     const cov = settlementCoverage(
       [

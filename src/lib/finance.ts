@@ -34,8 +34,7 @@ import { addDays, dateKey, today } from '@/lib/dates';
 import {
   DEDUCTION_PENDING_STATUSES,
   DEDUCTION_STATUS,
-  LOAN_PENDING_STATUSES,
-  LOAN_STATUS,
+  LOAN_IN_DECISION_STATUSES,
   PAYROLL_STATUS,
   ROLE_GROUPS,
   SETTLEMENT_STATUS,
@@ -55,7 +54,16 @@ import { dailyRate } from '@/lib/payroll-core';
 import { TERMINATION_TO_EXIT_REASON, type EmployeeExitReason } from '@/lib/workforce/reasons';
 import * as payroll from '@/modules/payroll';
 import { createPaymentRequest, payPaymentRequest } from '@/modules/finance';
-import { assertNoBlockingDiscrepancies, defineMoneyOperation, moneyActorOf, runMoneyOperation, type TxClient } from '@/modules/platform';
+import {
+  assertNoBlockingDiscrepancies,
+  decideMakerChecker,
+  defineMoneyOperation,
+  moneyActorOf,
+  resolveOperatorMode,
+  runMoneyOperation,
+  type OperatorMode,
+  type TxClient,
+} from '@/modules/platform';
 import { linkOvertimeToSettlement, unlinkOvertimeFromSettlement } from '@/modules/time';
 
 /** Article 70: a single disciplinary deduction may not exceed five days' wage. */
@@ -146,9 +154,13 @@ export function loanNeedsTeamScope(role: string | null | undefined): boolean {
   return !roleIn(role, ROLE_GROUPS.PAYROLL) && !roleIn(role, ROLE_GROUPS.OWNER);
 }
 
-/** Loan statuses a role may reject from: team managers only before HR approval, payroll any pending stage. */
-export function loanRejectableStatuses(role: string | null | undefined): string[] {
-  return loanNeedsTeamScope(role) ? [LOAN_STATUS.PENDING, LOAN_STATUS.MANAGER_APPROVED] : [...LOAN_PENDING_STATUSES];
+/**
+ * Loan statuses a rejection applies to (BL-PAY-027, F4): the in-decision statuses only, for every role.
+ * An HR_APPROVED loan is decided and waits for the transfer: rejecting it is no longer possible (its
+ * cancellation before the transfer is a later, two-person request, BL-WFE-012).
+ */
+export function loanRejectableStatuses(_role?: string | null): string[] {
+  return [...LOAN_IN_DECISION_STATUSES];
 }
 
 /**
@@ -576,6 +588,8 @@ function settlementEffects(
 /** The approval's context: the settlement effect log writer of offboarding (routes pass recordSettlementEffects). */
 export interface SettlementApprovalCtx extends FinanceCtx {
   recordEffects: RecordSettlementEffects;
+  /** The tenant's operator mode when the server already read it (never a client value); else read here. */
+  mode?: OperatorMode;
 }
 
 /**
@@ -599,7 +613,11 @@ export async function approveSettlement(tx: Tx, settlementId: string, user: Auth
     await assertNoBlockingDiscrepancies(tx, { operation: 'settlement.approve', companyId: head.employee.legalCompanyId, employeeIds: [head.employeeId] });
   }
   const actor = moneyActorOf(user);
-  const creatorIsApprover = !!head.createdById && head.createdById === user.id;
+  // The creator is not the approver (BR-PAY-012) in the tenant's operator mode (BL-PAY-027, RT-WFE-710):
+  // ENFORCED refuses (SAME_PERSON_TWICE); SINGLE_OPERATOR lets the sole owner approve the settlement he
+  // filed, recorded as SELF_ACT_SINGLE_OPERATOR by the gateway.
+  const mode = ctx.mode ?? (await resolveOperatorMode(tx));
+  const makerChecker = decideMakerChecker({ step: 'APPROVE', actor: { userId: actor.id, employeeId: actor.employeeId }, requestedById: head.createdById, mode });
   return runMoneyOperation(
     tx,
     SETTLEMENT_APPROVE,
@@ -608,7 +626,8 @@ export async function approveSettlement(tx: Tx, settlementId: string, user: Auth
       input: { settlementId },
       operationKey,
       companyId: head.employee.legalCompanyId,
-      decision: creatorIsApprover ? { ok: false, reasons: ['SAME_PERSON_TWICE'], selfAct: false } : undefined,
+      mode,
+      decision: makerChecker,
     },
     async (w) => {
       const now = new Date();

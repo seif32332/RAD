@@ -46,7 +46,9 @@ describe.skipIf(process.env.SCOPE_IT !== '1')('settlements and loans read lifecy
     employeeId, type: 'END_OF_SERVICE', salaryBasis: 'total', terminationReason: 'RESIGNATION', lastWorkingDate, ...extra,
   });
   const post = (body: unknown) => route.POST(h.req('POST', '/api/settlements', body));
-  const loan = (employeeId: string) => hub.POST(h.req('POST', '/api/payroll-hub', { actionType: 'CREATE_LOAN', payload: { employeeId, amount: 1000, monthlyInstallment: 100 } }));
+  // BL-PAY-027: a money creation carries its form's Idempotency-Key (one per call here: separate forms).
+  const loan = (employeeId: string) =>
+    hub.POST(h.req('POST', '/api/payroll-hub', { actionType: 'CREATE_LOAN', payload: { employeeId, amount: 1000, monthlyInstallment: 100 } }, { 'idempotency-key': randomUUID() }));
 
   it('POST end of service for an employee in NOTICE: another last day 409, the recorded one 201; finance 403, HR of B 404', async () => {
     const e = await h.employee('A');

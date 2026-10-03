@@ -5,6 +5,7 @@ import { Wallet, CheckCircle, XCircle, Clock, FileText, AlertTriangle, Plus, Dol
 import DashboardLayout from '@/components/DashboardLayout';
 import SearchableSelect from '@/components/SearchableSelect';
 import { toast, confirmDialog, readApiError } from '@/components/ui/feedback';
+import { useFormKey } from '@/components/form-key';
 import { DEDUCTION_STATUS, PAYROLL_STATUS, ROLE_GROUPS, roleIn } from '@/lib/constants';
 import { useRole } from '@/context/RoleContext';
 import { formatDate, riyadhDateKey, todayKey } from '@/lib/dates';
@@ -237,6 +238,9 @@ export default function PayrollsPage() {
   const [deductionForm, setDeductionForm] = useState(EMPTY_DEDUCTION);
   const [loanForm, setLoanForm] = useState(EMPTY_LOAN);
   const [overtimeForm, setOvertimeForm] = useState(EMPTY_OVERTIME);
+  const [deductionKey, renewDeductionKey] = useFormKey();
+  const [loanKey, renewLoanKey] = useFormKey();
+  const [overtimeKey, renewOvertimeKey] = useFormKey();
   const [isSubmitting, setIsSubmitting] = useState(false);
 
   /**
@@ -309,10 +313,11 @@ export default function PayrollsPage() {
   };
 
   /** POST to the payroll hub; returns true on success (toasts the server message). */
-  const postHub = async (body: Record<string, unknown>, successFallback: string): Promise<boolean> => {
+  const postHub = async (body: Record<string, unknown>, successFallback: string, idempotencyKey?: string): Promise<boolean> => {
     const res = await fetch('/api/payroll-hub', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      // BL-PAY-027: a money creation carries its form's Idempotency-Key (a double click replays).
+      headers: { 'Content-Type': 'application/json', ...(idempotencyKey ? { 'Idempotency-Key': idempotencyKey } : {}) },
       body: JSON.stringify(body)
     });
     if (res.status === 401) {
@@ -385,8 +390,9 @@ export default function PayrollsPage() {
     if (isSubmitting) return;
     setIsSubmitting(true);
     try {
-      if (await postHub({ actionType: 'CREATE_DEDUCTION', payload: deductionForm }, 'تم إدراج الخصم بنجاح!')) {
+      if (await postHub({ actionType: 'CREATE_DEDUCTION', payload: deductionForm }, 'تم إدراج الخصم بنجاح!', deductionKey)) {
         setDeductionForm(EMPTY_DEDUCTION);
+        renewDeductionKey();
         await refresh();
       }
     } catch {
@@ -427,8 +433,9 @@ export default function PayrollsPage() {
     if (isSubmitting) return;
     setIsSubmitting(true);
     try {
-      if (await postHub({ actionType: 'CREATE_LOAN', payload: loanForm }, 'تم تسجيل السلفة بنجاح!')) {
+      if (await postHub({ actionType: 'CREATE_LOAN', payload: loanForm }, 'تم تسجيل السلفة بنجاح!', loanKey)) {
         setLoanForm(EMPTY_LOAN);
+        renewLoanKey();
         await refresh();
       }
     } catch {
@@ -451,8 +458,9 @@ export default function PayrollsPage() {
       const payload = overtimeForm.hours
         ? { ...overtimeForm, type: 'HOURS', amount: '' }
         : { ...overtimeForm, type: 'LUMP_SUM', hours: '' };
-      if (await postHub({ actionType: 'CREATE_OVERTIME_ASSIGNMENT', payload }, 'تم تسجيل وتكليف العمل الإضافي بنجاح!')) {
+      if (await postHub({ actionType: 'CREATE_OVERTIME_ASSIGNMENT', payload }, 'تم تسجيل وتكليف العمل الإضافي بنجاح!', overtimeKey)) {
         setOvertimeForm(EMPTY_OVERTIME);
+        renewOvertimeKey();
         await refresh();
       }
     } catch {

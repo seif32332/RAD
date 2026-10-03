@@ -1871,6 +1871,9 @@ model Settlement {
   // بدل الاجازة
   unusedLeaveDays   Float? // أيام الإجازة غير المستخدمة
   leaveCompensation Float? // بدل الاجازة السنوية
+  /// BL-PAY-027 (9zh): leave days this settlement pays (leaveDaysToPay at creation). Payroll excludes them
+  /// by this count, never by leaveCompensation / today's daily rate. NULL = legacy row (former formula).
+  leavePaidDays     Float?
 
   // إضافات وخصومات
   additionalEntitlements Float?  @default(0)

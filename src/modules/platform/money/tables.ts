@@ -6,7 +6,9 @@
 //
 // MONEY_COLUMNS: columns of other tables that carry money and are protected the same way:
 //   - OvertimeRequest.paidInPayrollId / paidInSettlementId: the reservation links of payroll and of
-//     the settlement (the overtime row itself belongs to time; its approval is BL-PAY-007);
+//     the settlement; OvertimeRequest.status (BL-PAY-027, F9): the decision that makes overtime payable
+//     is written by time.decideOvertime / time.assignOvertime only (a create may not carry a status
+//     either: a new request takes the column default PENDING);
 //   - the Employee money projection columns of ARCH-004 (config EMPLOYEE_MONEY_FIELDS), on every
 //     write: UPDATE and, from P1-PAY-B on, CREATE too. A new employee starts without pay (the columns'
 //     defaults) and gets it through EmployeeFinancialChange (BR-PAY-009, ARC-PAY-A4): the key is refused
@@ -58,7 +60,7 @@ export interface ProtectedColumns {
 
 export const MONEY_COLUMNS: Readonly<Record<string, ProtectedColumns>> = Object.freeze({
   Employee: { columns: EMPLOYEE_MONEY_COLUMNS, on: 'all' },
-  OvertimeRequest: { columns: ['paidInPayrollId', 'paidInSettlementId'], on: 'all' },
+  OvertimeRequest: { columns: ['paidInPayrollId', 'paidInSettlementId', 'status'], on: 'all' },
 });
 
 /** Tables whose DELETE is refused outside the gateway although they are not money tables. */

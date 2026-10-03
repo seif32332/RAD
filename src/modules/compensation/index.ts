@@ -54,6 +54,7 @@ export {
   FINANCIAL_CHANGE_SELECT,
   IbanSelfServiceOnlyError,
   financialChangeView,
+  PAYABLE_BONUS_STATUS,
 } from './model';
 export type { FinancialChangeField, FinancialChangeSource, FinancialChangeStatus, FinancialChangeView } from './model';
 export { allowanceLineOf, toPeriodAllowances, sameCompensation, monthlyTotal } from './allowances';

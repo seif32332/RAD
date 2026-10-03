@@ -110,9 +110,12 @@ describe.skipIf(process.env.PAY_IT !== '1')('money.gateway extension on Postgres
     expect((await prisma.employee.findUniqueOrThrow({ where: { id: e.id } })).basicSalary).toBe(5100);
   });
 
-  it('protects the overtime reservation links (paidInPayrollId / paidInSettlementId)', async () => {
-    const ot = await prisma.overtimeRequest.create({ data: { employeeId: e.id, date: new Date('2026-09-01'), hours: 2, status: 'APPROVED' } });
+  it('protects the overtime reservation links (paidInPayrollId / paidInSettlementId) and the decision (status, BL-PAY-027)', async () => {
+    await refused(prisma.overtimeRequest.create({ data: { employeeId: e.id, date: new Date('2026-09-01'), hours: 2, status: 'APPROVED' } }), 'OvertimeRequest');
+    const ot = await prisma.overtimeRequest.create({ data: { employeeId: e.id, date: new Date('2026-09-01'), hours: 2 } });
+    expect(ot.status).toBe('PENDING');
     await refused(prisma.overtimeRequest.update({ where: { id: ot.id }, data: { paidInSettlementId: null } }), 'OvertimeRequest');
+    await refused(prisma.overtimeRequest.updateMany({ where: { id: ot.id, status: 'PENDING' }, data: { status: 'APPROVED' } }), 'OvertimeRequest');
     await prisma.overtimeRequest.update({ where: { id: ot.id }, data: { reason: 'تشغيل' } });
   });
 

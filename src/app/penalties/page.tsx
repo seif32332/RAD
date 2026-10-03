@@ -5,6 +5,7 @@ import { AlertTriangle, CheckCircle, XCircle, Shield, Briefcase, FileX2, Clock, 
 import DashboardLayout from '@/components/DashboardLayout';
 import SearchableSelect from '@/components/SearchableSelect';
 import { toast, confirmDialog, readApiError } from '@/components/ui/feedback';
+import { useFormKey } from '@/components/form-key';
 import { useRole } from '@/context/RoleContext';
 import { DEDUCTION_STATUS, ROLE_GROUPS, roleIn } from '@/lib/constants';
 import { daysBetween, formatDate, todayKey } from '@/lib/dates';
@@ -172,6 +173,7 @@ export default function PenaltiesPage() {
 
   // Form
   const [penaltyForm, setPenaltyForm] = useState(EMPTY_FORM);
+  const [penaltyKey, renewPenaltyKey] = useFormKey();
 
   const fetchHubData = useCallback(async () => {
     setIsLoading(true);
@@ -243,7 +245,8 @@ export default function PenaltiesPage() {
       const payload = isManager ? rest : { ...rest, amount };
       const res = await fetch('/api/payroll-hub', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        // BL-PAY-027: one Idempotency-Key per opened form (a double click replays).
+        headers: { 'Content-Type': 'application/json', 'Idempotency-Key': penaltyKey },
         body: JSON.stringify({ actionType: 'CREATE_DEDUCTION', payload })
       });
       if (res.status === 401) return redirectToLogin();
@@ -254,6 +257,7 @@ export default function PenaltiesPage() {
       const json: unknown = await res.json().catch(() => null);
       const body = (json && typeof json === 'object' ? json : {}) as { message?: unknown; warnings?: unknown };
       setPenaltyForm(EMPTY_FORM);
+      renewPenaltyKey();
       await fetchHubData();
       toast.success(isManager
         ? 'تم إرسال المخالفة للموارد البشرية لتقدير الخصم'

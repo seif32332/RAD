@@ -6,6 +6,7 @@
 // can never apply side effects twice.
 import { requestFinancialChange, type FinancialChangeView } from '@/modules/compensation';
 import { moneyActorOf } from '@/modules/platform';
+import { decideOvertime } from '@/modules/time';
 import { after, NextResponse } from 'next/server';
 import { z } from 'zod';
 import type { LeaveType, Prisma } from '@prisma/client';
@@ -904,9 +905,12 @@ const HANDLERS: Record<Exclude<RequestType, 'ONBOARDING'>, Handler> = {
 
   async OVERTIME(tx, { user, ip, approve, id, reason }) {
     requireGroup(user, ROLE_GROUPS.PAYROLL);
-    const status = approve ? SIMPLE_STATUS.APPROVED : SIMPLE_STATUS.REJECTED;
-    const res = await tx.overtimeRequest.updateMany({ where: { id, status: SIMPLE_STATUS.PENDING }, data: { status } });
-    if (res.count === 0) await guardFailed(tx.overtimeRequest.findUnique({ where: { id }, select: { id: true } }));
+    const status = approve ? 'APPROVED' : 'REJECTED';
+    // BL-PAY-027 (F9): time.decideOvertime behind money.gateway (OVERTIME_DECIDE): never one's own
+    // overtime (BR-PAY-001: 403 in ENFORCED, a recorded self-act in SINGLE_OPERATOR), decidedById /
+    // decidedAt recorded so monthApprovers keeps the decider from paying the month (BR-PAY-002). The
+    // derived key is the one of payroll-hub's UPDATE_OVERTIME_STATUS: a double click on either replays.
+    await decideOvertime(tx, { actor: moneyActorOf(user), overtimeId: id, status, operationKey: `overtime.decide:${id}:${status}:${user.id}`, ipAddress: ip });
     await logAudit(
       { userId: user.id, action: approve ? 'APPROVE' : 'REJECT', entityType: 'OVERTIME', entityId: id, details: { status, reason }, ipAddress: ip },
       tx,

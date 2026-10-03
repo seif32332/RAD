@@ -415,7 +415,9 @@ export async function POST(req: Request) {
             hours,
             amount,
             reason: data.reason ?? null,
-            status: 'PENDING',
+            // BL-PAY-027 (F9): the filer is recorded (BR-PAY-006). No status: a request starts PENDING
+            // (column default); OvertimeRequest.status is a money column only time.decideOvertime writes.
+            createdById: user.id,
           },
         });
         await logAudit({ userId: user.id, action: 'CREATE', entityType: 'OVERTIME', entityId: created.id, details: { employeeId: data.employeeId, type: data.type, hours, amount }, ipAddress: ip });

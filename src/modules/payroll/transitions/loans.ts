@@ -11,7 +11,7 @@
 import { conflict, notFound } from '@/lib/http';
 import { assertPayrollReady } from '@/modules/compensation';
 import { roundMoney, sumMoney } from '@/lib/money';
-import { LOAN_DEDUCTIBLE_STATUSES, LOAN_STATUS, PAYROLL_STATUS } from '@/lib/constants';
+import { LOAN_DEDUCTIBLE_STATUSES, LOAN_IN_DECISION_STATUSES, LOAN_STATUS, PAYROLL_STATUS } from '@/lib/constants';
 import { assertTransactionClient, audit, emitEvent, idempotent, runMoneyOperation, type MoneyActor, type MoneyOperation, type MoneyRunInfo, type TxClient } from '@/modules/platform';
 import { LOAN_APPROVE, LOAN_CREATE, LOAN_FINANCE_REVIEW, LOAN_FORGIVE, LOAN_REJECT, LOAN_SETTLE, LOAN_TRANSFER, type LoanSubject } from '../operations';
 import { loanStageRule, type LoanStage } from '../policy';
@@ -110,16 +110,24 @@ export async function approveLoanStep(tx: TxClient, input: LoanActInput & { stag
   });
 }
 
-/** Rejects a loan still pending, from the statuses the caller's role may reject. */
+/**
+ * Rejects a loan still in decision (BL-PAY-027, F4): only from PENDING / MANAGER_APPROVED (the caller's
+ * `from` is narrowed to them; never HR_APPROVED or later, nor a legacy row whose HR approval is in the
+ * flag), and the balance goes to 0 (DEC-PO-113: a rejected loan owes nothing).
+ */
 export async function rejectLoan(tx: TxClient, input: LoanActInput & { from: readonly string[]; reason?: string | null }): Promise<LoanRow> {
   assertTransactionClient(tx, 'rejectLoan');
+  const from = input.from.filter((s) => LOAN_IN_DECISION_STATUSES.includes(s));
   return loanAct(tx, LOAN_REJECT, input, async (w, info) => {
-    const before = await w.loan.findUnique({ where: { id: input.loanId }, select: { status: true } });
+    const before = await w.loan.findUnique({ where: { id: input.loanId }, select: { status: true, remainingAmount: true, isHrApproved: true } });
     const res = await w.loan.updateMany({
-      where: { id: input.loanId, status: { in: [...input.from] } },
-      data: { status: LOAN_STATUS.REJECTED, rejectedById: input.actor.id, rejectedAt: new Date() },
+      where: { id: input.loanId, status: { in: from }, isHrApproved: false, isFinanceTransferred: false },
+      data: { status: LOAN_STATUS.REJECTED, rejectedById: input.actor.id, rejectedAt: new Date(), remainingAmount: 0 },
     });
-    if (res.count === 0) await loanGuardFailed(w, input.loanId, 'لا يمكن رفض السلفة: تمت معالجتها مسبقاً');
+    if (res.count === 0) {
+      const decided = !!before && (before.isHrApproved || !LOAN_IN_DECISION_STATUSES.includes(before.status)) && before.status !== LOAN_STATUS.REJECTED;
+      await loanGuardFailed(w, input.loanId, decided ? 'لا يمكن رفض السلفة: اعتُمدت ولم تعد قيد القرار (الإلغاء قبل التحويل طلب مستقل)' : 'لا يمكن رفض السلفة: تمت معالجتها مسبقاً');
+    }
     const loan = await w.loan.findUniqueOrThrow({ where: { id: input.loanId } });
     await recordLoan(w, info, input.operationKey, loan, 'rejected', before, { status: loan.status, reason: input.reason ?? null }, input.ipAddress);
     return loan;

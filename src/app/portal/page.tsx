@@ -12,6 +12,7 @@ import { redirectToLogin } from './_components/redirect-to-login';
 import FileUploadField from '@/components/FileUploadField';
 import Link from 'next/link';
 import { toast, readApiError, confirmDialog } from '@/components/ui/feedback';
+import { useFormKey } from '@/components/form-key';
 import { formatDate, formatDateShort, inclusiveDays, todayKey } from '@/lib/dates';
 import { formatMoney, sumMoney } from '@/lib/money';
 import { LOAN_DEDUCTIBLE_STATUSES, PAYROLL_STATUS } from '@/lib/constants';
@@ -246,6 +247,7 @@ export default function EmployeePortalPage() {
 
   const [isLoanModalOpen, setIsLoanModalOpen] = useState(false);
   const [loanData, setLoanData] = useState(EMPTY_LOAN);
+  const [loanKey, renewLoanKey] = useFormKey();
 
   // One submitting flag per form (modals no longer share a single flag).
   const [submitting, setSubmitting] = useState<SubmitKey | null>(null);
@@ -703,7 +705,8 @@ export default function EmployeePortalPage() {
     try {
       const res = await fetch('/api/payroll-hub', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        // BL-PAY-027: one Idempotency-Key per opened form (a double click replays).
+        headers: { 'Content-Type': 'application/json', 'Idempotency-Key': loanKey },
         body: JSON.stringify({
           actionType: 'CREATE_LOAN',
           payload: {
@@ -723,6 +726,7 @@ export default function EmployeePortalPage() {
       toast.success('تم رفع طلب السلفة بنجاح، بانتظار اعتمادات الإدارة.');
       setIsLoanModalOpen(false);
       setLoanData(EMPTY_LOAN);
+      renewLoanKey();
       void loadPortal({ silent: true });
     } catch {
       toast.error('تعذر الاتصال بالخادم');

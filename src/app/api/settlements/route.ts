@@ -673,6 +673,8 @@ export async function POST(req: Request) {
           endOfServiceAmount: calc.endOfServiceAmount,
           unusedLeaveDays: calc.accruedLeaveDays,
           leaveCompensation: calc.leaveCompensation,
+          // BL-PAY-027: the leave days paid, so payroll excludes exactly them (never re-derived from a later rate).
+          leavePaidDays: calc.leaveDaysToPay,
           additionalEntitlements: calc.additionalEntitlements,
           additionalDeductions: calc.totalDeductions,
           additionalNotes: finalNotes,

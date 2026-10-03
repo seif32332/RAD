@@ -1031,6 +1031,8 @@ export interface SettlementCoverageLike {
   createdAt: Date;
   salaryBasis: string | null;
   leaveCompensation: number | null;
+  /** Leave days the settlement paid, stored at creation (BL-PAY-027, 9zh). null / absent: a legacy row. */
+  leavePaidDays?: number | null;
 }
 
 /** Options of the settlement readers (BL-LCY-012). */
@@ -1050,7 +1052,10 @@ export interface SettlementCoverageOptions {
  *   stops the month of the last working day (the settlement pays that month's working days) -> returns
  *   `finalDay`. One of an earlier period only excludes the days of its last month it paid.
  * - LEAVE_SETTLEMENT (not void): the settlement paid the working days of the month up to
- *   lastWorkingDate plus the compensated leave days after it -> excluded date ranges.
+ *   lastWorkingDate plus the compensated leave days after it -> excluded date ranges. The leave days are
+ *   the count stored on the settlement (leavePaidDays, BL-PAY-027): a raise or a cut after the
+ *   settlement changes nothing. Only a legacy row without it (9zh could not derive the rate it was paid
+ *   at) still divides the compensation by the given pay's daily rate.
  */
 export function settlementCoverage(
   settlements: ReadonlyArray<SettlementCoverageLike>,
@@ -1076,9 +1081,14 @@ export function settlementCoverage(
     }
     if (s.type === 'LEAVE_SETTLEMENT') {
       excluded.push({ start: monthStart, end: lastDay });
-      const basis: SalaryBasis = s.salaryBasis === 'basic' ? 'basic' : 'total';
-      const rate = dailyRate(emp, basis);
-      const paidLeaveDays = rate > 0 && (s.leaveCompensation ?? 0) > 0 ? Math.round((s.leaveCompensation ?? 0) / rate) : 0;
+      let paidLeaveDays: number;
+      if (s.leavePaidDays != null) {
+        paidLeaveDays = Math.max(0, Math.round(s.leavePaidDays));
+      } else {
+        const basis: SalaryBasis = s.salaryBasis === 'basic' ? 'basic' : 'total';
+        const rate = dailyRate(emp, basis);
+        paidLeaveDays = rate > 0 && (s.leaveCompensation ?? 0) > 0 ? Math.round((s.leaveCompensation ?? 0) / rate) : 0;
+      }
       if (paidLeaveDays > 0) excluded.push({ start: addDays(lastDay, 1), end: addDays(lastDay, paidLeaveDays) });
     }
   }

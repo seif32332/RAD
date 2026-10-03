@@ -153,12 +153,13 @@ export const LOAN_APPROVE = defineMoneyOperation<LoanSubject>({
   beneficiaries: loanEmployee,
 });
 
+/** A rejection of a loan still in decision; it zeroes the balance (BL-PAY-027, DEC-PO-113). */
 export const LOAN_REJECT = defineMoneyOperation<LoanSubject>({
   name: 'payroll.loan.reject',
   owner: 'payroll',
   act: 'REJECT',
   source: 'USER',
-  writes: { Loan: ['status', 'rejectedById', 'rejectedAt'] },
+  writes: { Loan: ['status', 'rejectedById', 'rejectedAt', 'remainingAmount'] },
 });
 
 /** Finance transfers the money: not the beneficiary, not a manager / HR / owner approver (BR-PAY-017). */

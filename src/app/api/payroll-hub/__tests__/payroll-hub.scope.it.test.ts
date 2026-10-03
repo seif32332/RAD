@@ -26,7 +26,7 @@ describe.skipIf(process.env.SCOPE_IT !== '1')('payroll-hub routes: company scope
   const empB = await h.employee('B');
   const dA = await moneyFixture((tx) => tx.deduction.create({ data: { employeeId: empA.id, date: new Date('2026-09-01'), amount: 50, reason: 'تأخير', status: 'PENDING_AMOUNT_APPROVAL' } }));
   const dB = await moneyFixture((tx) => tx.deduction.create({ data: { employeeId: empB.id, date: new Date('2026-09-01'), amount: 50, reason: 'تأخير', status: 'PENDING_AMOUNT_APPROVAL' } }));
-  const otA = await h.prisma.overtimeRequest.create({ data: { employeeId: empA.id, date: new Date('2026-09-02'), hours: 2, status: 'PENDING' } });
+  const otA = await h.prisma.overtimeRequest.create({ data: { employeeId: empA.id, date: new Date('2026-09-02'), hours: 2 } }); // PENDING (default)
   // A month no other test uses; generation of company A must never touch company B.
   const year = 2040 + (parseInt(h.tag.slice(0, 4), 16) % 50);
   const month = 1 + (parseInt(h.tag.slice(4, 6), 16) % 12);
@@ -57,10 +57,11 @@ describe.skipIf(process.env.SCOPE_IT !== '1')('payroll-hub routes: company scope
     const ot = { actionType: 'UPDATE_OVERTIME_STATUS', payload: { id: otA.id, status: 'APPROVED' } };
     expect((await hub.POST(h.req('POST', '/x', ot))).status).toBe(404);
     expect((await hub.POST(h.req('POST', '/x', { actionType: 'WAIVE_DEDUCTION', payload: { id: dA.id } }))).status).toBe(404);
+    const key = { 'idempotency-key': `k-${h.tag}-other` };
     expect(
-      (await hub.POST(h.req('POST', '/x', { actionType: 'CREATE_DEDUCTION', payload: { employeeId: empA.id, date: '2026-09-05', amount: 10, reason: 'x' } }))).status,
+      (await hub.POST(h.req('POST', '/x', { actionType: 'CREATE_DEDUCTION', payload: { employeeId: empA.id, date: '2026-09-05', amount: 10, reason: 'x' } }, key))).status,
     ).toBe(404);
-    expect((await hub.POST(h.req('POST', '/x', { actionType: 'CREATE_LOAN', payload: { employeeId: empA.id, amount: 1000, monthlyInstallment: 100 } }))).status).toBe(404);
+    expect((await hub.POST(h.req('POST', '/x', { actionType: 'CREATE_LOAN', payload: { employeeId: empA.id, amount: 1000, monthlyInstallment: 100 } }, key))).status).toBe(404);
     expect((await h.prisma.overtimeRequest.findUnique({ where: { id: otA.id } }))?.status).toBe('PENDING');
     expect(await h.prisma.loan.count({ where: { employeeId: empA.id } })).toBe(0);
     await h.as('branchMgrB');
@@ -74,6 +75,46 @@ describe.skipIf(process.env.SCOPE_IT !== '1')('payroll-hub routes: company scope
     expect((await hub.POST(h.req('POST', '/x', ot))).status).toBe(409);
   });
 
+  it('creations need a per-form Idempotency-Key (BL-PAY-027): none → 400 and nothing written; the same key twice → one row; another company 404', async () => {
+    const e = await h.employee('A');
+    const bodies = {
+      CREATE_OVERTIME_ASSIGNMENT: { employeeId: e.id, date: '2031-03-04', type: 'HOURS', hours: 2 },
+      CREATE_DEDUCTION: { employeeId: e.id, date: '2031-03-04', amount: 10, reason: 'تأخير' },
+      CREATE_LOAN: { employeeId: e.id, amount: 1000, monthlyInstallment: 100 },
+      CREATE_BONUS: { employeeId: e.id, name: 'مكافأة', amount: 250, payrollMonth: 3, payrollYear: 2031 },
+    } as const;
+    const counts = async () => [
+      await h.prisma.overtimeRequest.count({ where: { employeeId: e.id } }),
+      await h.prisma.deduction.count({ where: { employeeId: e.id } }),
+      await h.prisma.loan.count({ where: { employeeId: e.id } }),
+      await h.prisma.allowance.count({ where: { employeeId: e.id, isMonthly: false } }),
+    ];
+    await h.as('payrollA');
+    for (const [actionType, payload] of Object.entries(bodies)) {
+      const res = await hub.POST(h.req('POST', '/x', { actionType, payload }));
+      expect(res.status, actionType).toBe(400);
+      const body = await res.json();
+      expect(body.details, actionType).toMatchObject({ code: 'IDEMPOTENCY_KEY_REQUIRED' });
+      expect(body.error, actionType).toContain('مفتاح العملية');
+    }
+    expect(await counts()).toEqual([0, 0, 0, 0]);
+    for (const [actionType, payload] of Object.entries(bodies)) {
+      const key = { 'idempotency-key': `form-${actionType}-${h.tag}` };
+      const first = await hub.POST(h.req('POST', '/x', { actionType, payload }, key));
+      expect(first.status, actionType).toBe(200);
+      const again = await hub.POST(h.req('POST', '/x', { actionType, payload }, key)); // double click / retry
+      expect(again.status, actionType).toBe(200);
+      expect((await again.json()).data.id, actionType).toBe((await first.json()).data.id);
+    }
+    expect(await counts()).toEqual([1, 1, 1, 1]);
+    // A new form (new key) is a new row.
+    expect((await hub.POST(h.req('POST', '/x', { actionType: 'CREATE_LOAN', payload: bodies.CREATE_LOAN }, { 'idempotency-key': `form-2-${h.tag}` }))).status).toBe(200);
+    expect((await counts())[2]).toBe(2);
+    await h.as('payrollB');
+    expect((await hub.POST(h.req('POST', '/x', { actionType: 'CREATE_BONUS', payload: bodies.CREATE_BONUS }, { 'idempotency-key': `form-b-${h.tag}` }))).status).toBe(404);
+    expect((await counts())[3]).toBe(1);
+  });
+
   it('generate: 403 for a manager; payroll of A generates the drafts of A only (twice = still one draft each)', async () => {
     await h.as('branchMgrA');
     expect((await generate.POST(h.req('POST', '/x', { month, year }))).status).toBe(403);
@@ -81,7 +122,8 @@ describe.skipIf(process.env.SCOPE_IT !== '1')('payroll-hub routes: company scope
     expect((await generate.POST(h.req('POST', '/x', { month, year }))).status).toBe(200);
     expect((await generate.POST(h.req('POST', '/x', { month, year }))).status).toBe(200);
     const aIds = await employeesOf(h.co.A);
-    const drafts = await h.prisma.payroll.findMany({ where: { month, year }, select: { employeeId: true, id: true } });
+    // This harness's two companies only: other test files may hold lines of the same month (shared database).
+    const drafts = await h.prisma.payroll.findMany({ where: { month, year, companyId: { in: [h.co.A, h.co.B] } }, select: { employeeId: true, id: true } });
     const ofA = drafts.filter((d) => aIds.includes(d.employeeId));
     expect(ofA.length).toBe(aIds.length);
     expect(new Set(ofA.map((d) => d.employeeId)).size).toBe(ofA.length);

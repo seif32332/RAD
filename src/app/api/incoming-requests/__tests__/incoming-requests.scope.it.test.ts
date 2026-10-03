@@ -3,7 +3,7 @@
 // Opt-in: SCOPE_IT=1 with DATABASE_URL on a throwaway database.
 import { describe, expect, it, vi } from 'vitest';
 import { createRouteHarness } from '@/test/route-harness';
-import { moneyFixture } from '@/test/money-fixtures';
+import { moneyFixture, payrollLineFixture } from '@/test/money-fixtures';
 
 const state = vi.hoisted(() => ({ token: undefined as string | undefined, scheduled: [] as unknown[] }));
 vi.mock('next/headers', () => ({
@@ -79,5 +79,43 @@ describe.skipIf(process.env.SCOPE_IT !== '1')('incoming-requests routes: company
     expect((await hub.POST(h.req('POST', '/x', rejectLeave))).status).toBe(200);
     expect((await hub.POST(h.req('POST', '/x', rejectLeave))).status).toBe(409);
     expect((await h.prisma.leave.findUnique({ where: { id: lA.id } }))?.status).toBe('REJECTED');
+  });
+
+  it('OVERTIME through time.decideOvertime (BL-PAY-027, F9): own overtime 403, another company 404, the decider is recorded and cannot pay the month', async () => {
+    const payroll = await import('@/modules/payroll');
+    // payrollA is also an employee of A (his own overtime is a money act on himself, BR-PAY-001).
+    const self = await h.employee('A', { userId: h.users.payrollA.id });
+    const own = await h.prisma.overtimeRequest.create({ data: { employeeId: self.id, date: new Date('2045-03-02'), hours: 2 } });
+    const other = await h.prisma.overtimeRequest.create({ data: { employeeId: empA.id, date: new Date('2045-03-03'), hours: 3 } });
+    const decide = (id: string) => hub.POST(h.req('POST', '/x', { actionType: 'APPROVE', type: 'OVERTIME', dbId: id }));
+    await h.as('payrollA');
+    const refused = await decide(own.id);
+    expect(refused.status).toBe(403);
+    expect((await refused.json()).details).toMatchObject({ code: 'MONEY_GUARD_BLOCKED', reasons: ['SELF_BENEFICIARY'] });
+    expect((await h.prisma.overtimeRequest.findUniqueOrThrow({ where: { id: own.id } })).status).toBe('PENDING');
+    await h.as('payrollB');
+    expect((await decide(other.id)).status).toBe(404);
+    expect((await h.prisma.overtimeRequest.findUniqueOrThrow({ where: { id: other.id } })).status).toBe('PENDING');
+    await h.as('payrollA');
+    expect((await decide(other.id)).status).toBe(200);
+    expect((await decide(other.id)).status).toBe(200); // same user, derived key: replays
+    await h.as('hrA');
+    expect((await decide(other.id)).status).toBe(409); // decided already
+    const decided = await h.prisma.overtimeRequest.findUniqueOrThrow({ where: { id: other.id } });
+    expect([decided.status, decided.decidedById, decided.decidedAt instanceof Date]).toEqual(['APPROVED', h.users.payrollA.id, true]);
+
+    // The approved month that pays this overtime: its decider is one of the month's approvers (BR-PAY-002)
+    // and may not record the payment.
+    await moneyFixture(async (tx) => {
+      const line = await payrollLineFixture(tx, { employeeId: empA.id, year: 2045, month: 3, basicSalary: 6000, netSalary: 6000, status: 'APPROVED' });
+      await tx.payrollMonth.update({ where: { id: line.payrollMonthId! }, data: { status: 'APPROVED' } });
+      await tx.overtimeRequest.update({ where: { id: other.id }, data: { paidInPayrollId: line.id } });
+    });
+    const month = { companyId: h.co.A, year: 2045, month: 3 };
+    expect(await h.prisma.$transaction((t) => payroll.monthApprovers(t, month))).toContain(h.users.payrollA.id);
+    const payer = { id: h.users.payrollA.id, role: 'PAYROLL_ADMIN', employeeId: self.id };
+    await expect(
+      payroll.runPayrollTransaction(h.prisma, (t) => payroll.markPayrollMonthPaid(t, { actor: payer, ...month, operationKey: `it:pay:${h.next()}:${h.tag}`, mode: 'ENFORCED' })),
+    ).rejects.toMatchObject({ status: 403, details: { reasons: ['PAYER_IS_APPROVER'] } });
   });
 });

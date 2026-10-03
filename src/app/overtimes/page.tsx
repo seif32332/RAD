@@ -5,6 +5,7 @@ import { Briefcase, Clock, Award, CalendarClock, AlertTriangle, RefreshCw } from
 import DashboardLayout from '@/components/DashboardLayout';
 import SearchableSelect from '@/components/SearchableSelect';
 import { toast, confirmDialog, readApiError } from '@/components/ui/feedback';
+import { useFormKey } from '@/components/form-key';
 import { formatDate } from '@/lib/dates';
 import { formatMoney } from '@/lib/money';
 
@@ -76,9 +77,11 @@ export default function OvertimeAndBonusesPage() {
 
   // Overtime Form
   const [overtimeForm, setOvertimeForm] = useState(EMPTY_OVERTIME);
+  const [overtimeKey, renewOvertimeKey] = useFormKey();
 
   // Bonus Form
   const [bonusForm, setBonusForm] = useState(EMPTY_BONUS);
+  const [bonusKey, renewBonusKey] = useFormKey();
 
   const fetchHubData = useCallback(async (opts: { silent?: boolean } = {}) => {
     if (!opts.silent) setIsLoading(true);
@@ -124,10 +127,11 @@ export default function OvertimeAndBonusesPage() {
   }, [fetchEmployees, fetchHubData]);
 
   /** POST to the payroll hub; returns true on success (toasts the server message). */
-  const postHub = async (body: Record<string, unknown>, successFallback: string): Promise<boolean> => {
+  const postHub = async (body: Record<string, unknown>, successFallback: string, idempotencyKey?: string): Promise<boolean> => {
     const res = await fetch('/api/payroll-hub', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      // BL-PAY-027: a money creation carries its form's Idempotency-Key (a double click replays).
+      headers: { 'Content-Type': 'application/json', ...(idempotencyKey ? { 'Idempotency-Key': idempotencyKey } : {}) },
       body: JSON.stringify(body)
     });
     if (res.status === 401) {
@@ -150,8 +154,9 @@ export default function OvertimeAndBonusesPage() {
     if (overtimeForm.type === 'LUMP_SUM' && !overtimeForm.amount) { toast.warning("يرجى إدخال المبلغ المقطوع"); return; }
     setIsSubmitting(true);
     try {
-      if (await postHub({ actionType: 'CREATE_OVERTIME_ASSIGNMENT', payload: overtimeForm }, "تم تسجيل التكليف واعتماده وإضافته لمسير الرواتب!")) {
+      if (await postHub({ actionType: 'CREATE_OVERTIME_ASSIGNMENT', payload: overtimeForm }, "تم تسجيل التكليف واعتماده وإضافته لمسير الرواتب!", overtimeKey)) {
         setOvertimeForm(EMPTY_OVERTIME);
+        renewOvertimeKey();
         await fetchHubData({ silent: true });
       }
     } catch {
@@ -169,8 +174,9 @@ export default function OvertimeAndBonusesPage() {
       const { payrollPeriod, ...bonus } = bonusForm;
       const [py, pm] = payrollPeriod ? payrollPeriod.split('-').map(Number) : [];
       const payload = py && pm ? { ...bonus, payrollMonth: pm, payrollYear: py } : bonus;
-      if (await postHub({ actionType: 'CREATE_BONUS', payload }, "تم إدراج المكافأة بنجاح!")) {
+      if (await postHub({ actionType: 'CREATE_BONUS', payload }, "تم إدراج المكافأة بنجاح!", bonusKey)) {
         setBonusForm(EMPTY_BONUS);
+        renewBonusKey();
         await fetchHubData({ silent: true });
       }
     } catch {

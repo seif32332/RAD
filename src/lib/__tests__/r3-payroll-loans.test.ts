@@ -54,10 +54,11 @@ describe('loan approval rules (src/lib/finance.ts)', () => {
       expect(loanNeedsTeamScope(role)).toBe(false);
     }
   });
-  it('team managers may reject only before HR approval; payroll may reject any pending stage', () => {
-    expect(loanRejectableStatuses('BRANCH_MANAGER')).not.toContain(LOAN_STATUS.HR_APPROVED);
-    expect(loanRejectableStatuses('BRANCH_MANAGER')).toContain(LOAN_STATUS.PENDING);
-    expect(loanRejectableStatuses('HR_MANAGER')).toContain(LOAN_STATUS.HR_APPROVED);
-    expect(loanRejectableStatuses('HR_MANAGER')).not.toContain(LOAN_STATUS.FINANCE_TRANSFERRED);
+  it('every role rejects only a loan still in decision, never once HR approved it (BL-PAY-027, F4)', () => {
+    for (const role of ['BRANCH_MANAGER', 'HR_MANAGER', 'PAYROLL_ADMIN', 'SUPER_ADMIN']) {
+      expect(loanRejectableStatuses(role)).toEqual([LOAN_STATUS.PENDING, LOAN_STATUS.MANAGER_APPROVED]);
+      expect(loanRejectableStatuses(role)).not.toContain(LOAN_STATUS.HR_APPROVED);
+      expect(loanRejectableStatuses(role)).not.toContain(LOAN_STATUS.FINANCE_TRANSFERRED);
+    }
   });
 });

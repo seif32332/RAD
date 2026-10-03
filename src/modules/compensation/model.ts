@@ -12,6 +12,13 @@ import { maskedIban } from './bank';
  * compensation.periodOpened). Aggregate: the period's lineage; the employee is in the payload.
  */
 export const COMPENSATION_PERIOD_EVENT_TYPES: readonly string[] = Object.freeze(['compensation.periodOpened', 'compensation.periodSuperseded', 'compensation.periodClosed']);
+/**
+ * The one-off bonus status that pays (BL-PAY-027, RT-WFE-701): payroll generation, the bonus link and
+ * the paid step take APPROVED bonuses only (PENDING / REJECTED / CANCELLED never pay; defensive before
+ * BL-WFE-012b makes new bonuses PENDING).
+ */
+export const PAYABLE_BONUS_STATUS = 'APPROVED';
+
 /** compensation's own event when a bank identity is in force (DOMAIN_BOUNDARIES §5.5 compensation.bankIdentityOpened). */
 export const BANK_IDENTITY_OPENED_EVENT = 'compensation.bankIdentityOpened';
 

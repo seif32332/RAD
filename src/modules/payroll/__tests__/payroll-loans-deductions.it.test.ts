@@ -125,8 +125,28 @@ describe.skipIf(!RUN)('payroll loans and deductions on PostgreSQL (P1-PAY-A)', {
       const id = (await loan(e)).id;
       return { key, call: () => tx((t) => payroll.rejectLoan(t, { actor: a.hr, loanId: id, from: ['PENDING', 'MANAGER_APPROVED', 'HR_APPROVED'], operationKey: key })) };
     });
-    expect([r.status, r.rejectedById]).toEqual(['REJECTED', a.hr.id]);
+    // BL-PAY-027 (F4, DEC-PO-113): a rejected loan owes nothing.
+    expect([r.status, r.rejectedById, r.remainingAmount]).toEqual(['REJECTED', a.hr.id, 0]);
     await expect(tx((t) => payroll.rejectLoan(t, { actor: a.owner, loanId: r.id, from: ['PENDING'], operationKey: `it:${randomUUID()}` }))).rejects.toMatchObject({ status: 409 });
+  });
+
+  it('rejectLoan only from the in-decision statuses (BL-PAY-027, F4): HR_APPROVED and later, or a legacy HR-approved flag, are refused (409) and untouched', async () => {
+    const e = (await employee()).id;
+    const m = await loan(e, 'MANAGER_APPROVED');
+    const done = await tx((t) => payroll.rejectLoan(t, { actor: a.fin2, loanId: m.id, from: ['PENDING', 'MANAGER_APPROVED'], operationKey: `it:${randomUUID()}` }));
+    expect([done.status, done.remainingAmount]).toEqual(['REJECTED', 0]);
+    const legacy = await moneyFixture((t) => t.loan.create({ data: { employeeId: e, amount: 1200, monthlyInstallment: 100, remainingAmount: 1200, status: 'PENDING', isHrApproved: true } }));
+    for (const status of ['HR_APPROVED', 'FINANCE_TRANSFERRED', 'FINANCE_APPROVED', 'COMPLETED']) {
+      const l = await loan(e, status);
+      // Even a caller listing HR_APPROVED (the former payroll list) cannot reject a decided loan.
+      await expect(tx((t) => payroll.rejectLoan(t, { actor: a.fin2, loanId: l.id, from: ['PENDING', 'MANAGER_APPROVED', 'HR_APPROVED', status], operationKey: `it:${randomUUID()}` }))).rejects.toMatchObject({ status: 409 });
+      expect(await prisma.loan.findUniqueOrThrow({ where: { id: l.id }, select: { status: true, remainingAmount: true } })).toEqual({ status, remainingAmount: 1200 });
+    }
+    await expect(tx((t) => payroll.rejectLoan(t, { actor: a.fin2, loanId: legacy.id, from: ['PENDING'], operationKey: `it:${randomUUID()}` }))).rejects.toMatchObject({ status: 409 });
+    // The finance helper offers the in-decision statuses to every role (no more HR_APPROVED for payroll).
+    const finance = await import('@/lib/finance');
+    expect(finance.loanRejectableStatuses('PAYROLL_ADMIN')).toEqual(['PENDING', 'MANAGER_APPROVED']);
+    expect(finance.loanRejectableStatuses('BRANCH_MANAGER')).toEqual(['PENDING', 'MANAGER_APPROVED']);
   });
 
   it('forgiveLoan double call: forgivenById recorded, the balance goes to 0 once; never one\'s own loan', async () => {
@@ -215,6 +235,16 @@ describe.skipIf(!RUN)('payroll loans and deductions on PostgreSQL (P1-PAY-A)', {
     });
     expect([rf.status, rf.isReferredToInvestigation]).toEqual(['UNDER_INVESTIGATION', true]);
     void inv;
+    // BL-PAY-027 (RT-WFE-712): the referral keeps the penalty's decider; the referrer is in the audit only.
+    const decided = await deduction(e, 'DEDUCTED', { decidedById: a.fin2.id });
+    const rkey = `it:refer:${randomUUID()}`;
+    const kept = await tx((t) => payroll.referDeductionToInvestigation(t, { actor: a.hr, deductionId: decided.id, investigationId: inv.id, notIn: ['WAIVED', 'REJECTED'], operationKey: rkey }));
+    expect([kept.status, kept.decidedById]).toEqual(['UNDER_INVESTIGATION', a.fin2.id]);
+    const trail = await prisma.auditRecord.findFirstOrThrow({ where: { operationKey: rkey, action: 'payroll.deduction.suspend' } });
+    expect([trail.actorId, (trail.after as { referredById?: string }).referredById]).toEqual([a.hr.id, a.hr.id]);
+    const undecided = await deduction(e, 'PENDING_AMOUNT_APPROVAL');
+    const i3 = await prisma.investigation.create({ data: { employeeId: e, subject: 'z', category: 'ATTENDANCE', severity: 'HIGH' } });
+    expect((await tx((t) => payroll.referDeductionToInvestigation(t, { actor: a.hr, deductionId: undecided.id, investigationId: i3.id, notIn: ['WAIVED', 'REJECTED'], operationKey: `it:${randomUUID()}` }))).decidedById).toBeNull();
     const ob = await twice(async () => {
       const key = `it:object:${randomUUID()}`;
       const id = (await deduction(e, 'DEDUCTED')).id;

@@ -16,7 +16,7 @@
       "src/app/api/attendance-hub/route.ts": 2,
       "src/app/api/employees/[id]/muqeem/renewal-record.ts": 1,
       "src/app/api/employees/[id]/muqeem/route.ts": 1,
-      "src/app/api/incoming-requests/route.ts": 10,
+      "src/app/api/incoming-requests/route.ts": 9,
       "src/app/api/integrations/muqeem/residents/apply/route.ts": 1,
       "src/app/api/manager-portal/route.ts": 5,
       "src/app/api/owner-portal/circulars/route.ts": 1,

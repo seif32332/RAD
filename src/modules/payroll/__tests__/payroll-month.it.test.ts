@@ -253,6 +253,31 @@ describe.skipIf(!RUN)('payroll month on PostgreSQL (P1-PAY-A)', { timeout: 240_0
     expect(f).toMatchObject({ companyId: co.A, employeeId: emp.e1, period: `${year}-${String(approvedMonth).padStart(2, '0')}` });
   });
 
+  it('one-off bonuses pay only when APPROVED (BL-PAY-027, RT-WFE-701): generation skips the others; a line holding a bonus withdrawn since is refused (409, regenerate), then pays after the regeneration', async () => {
+    const m = nextMonth();
+    const bonus = (status: string, amount: number) =>
+      moneyFixture((t) => t.allowance.create({ data: { employeeId: emp.e1, name: `مكافأة ${status} ${amount}`, amount, isMonthly: false, payrollMonth: m, payrollYear: year, status } }));
+    const kept = await bonus('APPROVED', 50);
+    const withdrawn = await bonus('APPROVED', 100);
+    const pending = await bonus('PENDING', 200);
+    const rejected = await bonus('REJECTED', 300);
+    await generate(m);
+    const line = (await lines(co.A, m)).find((l) => l.employeeId === emp.e1)!;
+    const of = (id: string) => prisma.allowance.findUniqueOrThrow({ where: { id } });
+    expect([(await of(kept.id)).paidInPayrollId, (await of(withdrawn.id)).paidInPayrollId]).toEqual([line.id, line.id]);
+    expect([(await of(pending.id)).paidInPayrollId, (await of(rejected.id)).paidInPayrollId]).toEqual([null, null]);
+    // Withdrawn after the generation: approving the line that still holds it is refused, nothing moves.
+    await moneyFixture((t) => t.allowance.update({ where: { id: withdrawn.id }, data: { status: 'REJECTED' } }));
+    await expect(approve(m, 'hr', undefined, 'SINGLE_OPERATOR')).rejects.toMatchObject({ status: 409, details: { code: 'BONUS_NOT_APPROVED' } });
+    expect((await lines(co.A, m)).every((l) => l.status === 'DRAFT')).toBe(true);
+    expect((await of(kept.id)).isPaid).toBe(false);
+    // Regenerated: the withdrawn bonus is released; the approval pays the approved one only.
+    await generate(m);
+    expect((await of(withdrawn.id)).paidInPayrollId).toBeNull();
+    await approve(m, 'hr', undefined, 'SINGLE_OPERATOR');
+    expect([(await of(kept.id)).isPaid, (await of(withdrawn.id)).isPaid, (await of(pending.id)).isPaid, (await of(rejected.id)).isPaid]).toEqual([true, false, false, false]);
+  });
+
   it('setEmployeeGosiDeduction double call (sequential and concurrent): one audit, one event; never on one\'s own file', async () => {
     const key = `it:gosi:${randomUUID()}`;
     const input = { actor: actors.hr, employeeId: emp.e1, gosiDeduction: 123.456, operationKey: key };

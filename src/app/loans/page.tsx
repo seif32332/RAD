@@ -5,7 +5,8 @@ import { PiggyBank, CheckCircle, Gift, AlertTriangle, Upload, X, RefreshCw } fro
 import DashboardLayout from '@/components/DashboardLayout';
 import SearchableSelect from '@/components/SearchableSelect';
 import { toast, confirmDialog, promptDialog, readApiError } from '@/components/ui/feedback';
-import { LOAN_PENDING_STATUSES, LOAN_STATUS, ROLE_GROUPS, roleIn } from '@/lib/constants';
+import { useFormKey } from '@/components/form-key';
+import { LOAN_IN_DECISION_STATUSES, LOAN_PENDING_STATUSES, LOAN_STATUS, ROLE_GROUPS, roleIn } from '@/lib/constants';
 import { useRole } from '@/context/RoleContext';
 import { formatDate } from '@/lib/dates';
 import { formatMoney, roundMoney } from '@/lib/money';
@@ -77,6 +78,7 @@ export default function LoansPage() {
 
   // Form states
   const [loanForm, setLoanForm] = useState(EMPTY_LOAN_FORM);
+  const [loanKey, renewLoanKey] = useFormKey();
 
   const fetchHubData = useCallback(async (opts: { silent?: boolean } = {}) => {
     if (!opts.silent) setIsLoading(true);
@@ -135,10 +137,11 @@ export default function LoansPage() {
   const effectiveAmount = loanForm.policy === 'OPEN' ? loanForm.amount : policyAmount;
 
   /** POST to the payroll hub; returns true on success (toasts the server message). */
-  const postHub = async (body: Record<string, unknown>, successFallback: string): Promise<boolean> => {
+  const postHub = async (body: Record<string, unknown>, successFallback: string, idempotencyKey?: string): Promise<boolean> => {
     const res = await fetch('/api/payroll-hub', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      // BL-PAY-027: a money creation carries its form's Idempotency-Key (a double click replays).
+      headers: { 'Content-Type': 'application/json', ...(idempotencyKey ? { 'Idempotency-Key': idempotencyKey } : {}) },
       body: JSON.stringify(body)
     });
     if (res.status === 401) {
@@ -171,10 +174,12 @@ export default function LoansPage() {
     try {
       const ok = await postHub(
         { actionType: 'CREATE_LOAN', payload: { ...loanForm, amount: effectiveAmount } },
-        'تم تسجيل السلفة بنجاح وإضافتها لحساب الموظف!'
+        'تم تسجيل السلفة بنجاح وإضافتها لحساب الموظف!',
+        loanKey,
       );
       if (ok) {
         setLoanForm(EMPTY_LOAN_FORM);
+        renewLoanKey();
         await fetchHubData({ silent: true });
       }
     } catch {
@@ -430,9 +435,12 @@ export default function LoansPage() {
                     </div>
                  </div>
 
+                 {/* BL-PAY-027: only a loan still in decision can be rejected (not once HR approved it). */}
+                 {LOAN_IN_DECISION_STATUSES.includes(l.status) && !l.isHrApproved && (
                  <div className="flex justify-end border-t border-slate-100 pt-4">
                    <button type="button" disabled={busyId === l.id} onClick={() => handleRejectLoan(l.id)} className="text-[12px] font-black text-rose-500 bg-rose-50 hover:bg-rose-100 px-5 py-2 rounded-xl transition disabled:opacity-50">رفض وإلغاء الطلب</button>
                  </div>
+                 )}
                </div>
              ))}
            </div>

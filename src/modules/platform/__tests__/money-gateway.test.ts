@@ -129,7 +129,7 @@ describe('writesOf: every write shape, recursively over the relations (BR-PAY-01
 });
 
 describe('protectedPart and assertWriteAllowed (fail closed outside a gateway context)', () => {
-  it('money tables always; Employee money columns on create (P1-PAY-B) and update; OvertimeRequest links always; Employee delete', () => {
+  it('money tables always; Employee money columns on create (P1-PAY-B) and update; OvertimeRequest links and status always (BL-PAY-027); Employee delete', () => {
     expect(protectedPart({ model: 'Payroll', columns: ['status'], kind: 'update' })).not.toBeNull();
     expect(protectedPart({ model: 'Employee', columns: ['basicSalary', 'firstNameArabic'], kind: 'create' })?.columns).toEqual(['basicSalary']);
     expect(protectedPart({ model: 'Employee', columns: ['firstNameArabic'], kind: 'create' })).toBeNull();
@@ -137,7 +137,11 @@ describe('protectedPart and assertWriteAllowed (fail closed outside a gateway co
     expect(protectedPart({ model: 'Employee', columns: ['jobTitle'], kind: 'update' })).toBeNull();
     expect(protectedPart({ model: 'Employee', columns: '*', kind: 'delete' })).not.toBeNull();
     expect(protectedPart({ model: 'OvertimeRequest', columns: ['paidInPayrollId'], kind: 'create' })).not.toBeNull();
-    expect(protectedPart({ model: 'OvertimeRequest', columns: ['status'], kind: 'update' })).toBeNull();
+    // BL-PAY-027 (F9): the overtime decision is a money column, written by time.decideOvertime only.
+    expect(protectedPart({ model: 'OvertimeRequest', columns: ['status', 'reason'], kind: 'update' })?.columns).toEqual(['status']);
+    expect(protectedPart({ model: 'OvertimeRequest', columns: ['status'], kind: 'create' })).not.toBeNull();
+    expect(protectedPart({ model: 'OvertimeRequest', columns: ['employeeId', 'hours', 'createdById'], kind: 'create' })).toBeNull();
+    expect(() => assertWriteAllowed('OvertimeRequest', 'updateMany', { where: { status: 'PENDING' }, data: { status: 'APPROVED' } })).toThrow(MoneyGatewayViolationError);
     expect(protectedPart({ model: 'Leave', columns: '*', kind: 'delete' })).toBeNull();
   });
 

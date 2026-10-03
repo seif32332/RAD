@@ -1,4 +1,3 @@
-import { randomUUID } from 'crypto';
 import { after, NextResponse } from 'next/server';
 import { z, type ZodTypeAny } from 'zod';
 import type { Prisma } from '@prisma/client';
@@ -357,11 +356,23 @@ type Ctx = { user: AuthUser; ip: string; db: ScopedPrismaClient; scope: ScopeCon
 
 /**
  * The operation key of a money act (LIFECYCLE_MODEL §2.2): the client's Idempotency-Key (a retry
- * replays), else derived from (act, entity, user) so a double click replays, or a fresh key for a
- * creation without one.
+ * replays), else derived from (act, entity, user) so a double click replays.
  */
 function opKey(ctx: Pick<Ctx, 'user' | 'idempotencyKey'>, ...parts: string[]): string {
   return ctx.idempotencyKey ? `${parts[0]}:k:${ctx.user.id}:${ctx.idempotencyKey.slice(0, 100)}` : parts.join(':');
+}
+
+/** BL-PAY-027: the Arabic refusal of a money creation sent without its Idempotency-Key. */
+const CREATE_KEY_REQUIRED = 'تعذر الحفظ: الطلب لا يحمل مفتاح العملية (Idempotency-Key). حدّث الصفحة وأعد المحاولة؛ هذا المفتاح يمنع تسجيل العملية مرتين عند الضغط المزدوج أو إعادة الإرسال';
+
+/**
+ * The operation key of a money CREATION (overtime assignment, deduction, loan, bonus): a creation has no
+ * entity to derive a key from, so the client's Idempotency-Key (one per opened form) is required; no
+ * random server key (a double click or a retry would create the row twice). BL-PAY-027.
+ */
+function createKey(ctx: Pick<Ctx, 'user' | 'idempotencyKey'>, act: string): string {
+  if (!ctx.idempotencyKey) throw badRequest(CREATE_KEY_REQUIRED, { code: 'IDEMPOTENCY_KEY_REQUIRED' });
+  return opKey(ctx, act);
 }
 
 /**
@@ -451,6 +462,7 @@ const HANDLERS: Record<string, Handler> = {
   async CREATE_OVERTIME_ASSIGNMENT(payload, ctx) {
     const { user, ip, db } = ctx;
     requireGroup(user, ROLE_GROUPS.PAYROLL);
+    const operationKey = createKey(ctx, 'overtime.assign'); // BL-PAY-027: one key per opened form
     const p = parsePayload(CreateOvertimePayload, payload);
     const byHours = p.type === 'HOURS' || p.type === 'BIOMETRIC';
     if (byHours && !(p.hours && p.hours > 0)) throw badRequest('يرجى إدخال عدد الساعات');
@@ -478,7 +490,7 @@ const HANDLERS: Record<string, Handler> = {
         hours: byHours ? (p.hours ?? 0) : 0,
         amount: byHours ? 0 : (p.amount ?? 0),
         reason: p.reason ?? null,
-        operationKey: opKey(ctx, 'overtime.assign', randomUUID()),
+        operationKey,
         ipAddress: ip,
       }),
     );
@@ -545,6 +557,7 @@ const HANDLERS: Record<string, Handler> = {
   async CREATE_DEDUCTION(payload, ctx) {
     const { user, ip, db } = ctx;
     requireGroup(user, MANAGERS_OR_PAYROLL);
+    const operationKey = createKey(ctx, 'deduction.create'); // BL-PAY-027: one key per opened form
     const p = parsePayload(CreateDeductionPayload, payload);
     await assertManagerScope(user, p.employeeId);
     const category = p.category || 'ATTENDANCE';
@@ -590,7 +603,7 @@ const HANDLERS: Record<string, Handler> = {
     const created = await runPayrollTransaction(db, (tx) =>
       createDeduction(tx, {
         actor: { ...moneyActorOf(user), name: user.name },
-        operationKey: opKey(ctx, 'deduction.create', randomUUID()),
+        operationKey,
         ipAddress: ip,
         data: {
           employeeId: p.employeeId,
@@ -728,6 +741,7 @@ const HANDLERS: Record<string, Handler> = {
   // ---------------------------------------------------------------- loans
   async CREATE_LOAN(payload, ctx) {
     const { user, ip, db } = ctx;
+    const operationKey = createKey(ctx, 'loan.create'); // BL-PAY-027: one key per opened form
     const p = parsePayload(CreateLoanPayload, payload);
     let employeeId: string;
     if (roleIn(user.role, ROLE_GROUPS.PAYROLL) && p.employeeId) {
@@ -754,7 +768,7 @@ const HANDLERS: Record<string, Handler> = {
         amount: p.amount,
         monthlyInstallment: p.monthlyInstallment,
         reason: p.reason ?? '',
-        operationKey: opKey(ctx, 'loan.create', randomUUID()),
+        operationKey,
         ipAddress: ip,
       });
     });
@@ -794,6 +808,7 @@ const HANDLERS: Record<string, Handler> = {
   async CREATE_BONUS(payload, ctx) {
     const { user, ip, db } = ctx;
     requireGroup(user, ROLE_GROUPS.PAYROLL);
+    const operationKey = createKey(ctx, 'bonus.create'); // BL-PAY-027: one key per opened form
     const p = parsePayload(CreateBonusPayload, payload);
     if (!(p.amount > 0)) throw badRequest('يرجى إدخال مبلغ المكافأة');
 
@@ -829,7 +844,7 @@ const HANDLERS: Record<string, Handler> = {
         payrollMonth: month,
         payrollYear: year,
         companyId: employee.legalCompanyId,
-        operationKey: opKey(ctx, 'bonus.create', randomUUID()),
+        operationKey,
         ipAddress: ip,
       }),
     );
