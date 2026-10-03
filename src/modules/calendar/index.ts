@@ -29,6 +29,7 @@ export {
   resolveWorkPatternId,
   listHolidays,
   listRamadanPeriods,
+  addCompanyWorkingDays,
 } from './queries';
 export type { DayInfo, DayTypeOptions, DayTypeReader, CalendarReader, WorkPatternView } from './queries';
 

@@ -10,6 +10,11 @@ import { registerOffboardingConsumers } from '@/modules/offboarding';
 import { INV_PAY_04_ID, employmentChangeCheck, registerPayrollConsumers } from '@/modules/payroll';
 import { consumerRegistry, registerConsumer, registerInvariantCheck } from '@/modules/platform';
 import { INV_RULE_02_ID, RULES_CONSUMERS, belowLegalOverrideCheck } from '@/modules/rules';
+import { ensureWorkflowWiring } from '@/lib/workflow-wiring';
+
+// WFE-002: the approval engine's ports (people lock, lifecycle state, org manager, calendar, leave availability),
+// registered before any consumer can call the engine.
+ensureWorkflowWiring();
 
 // BL-PAY-005: iam queues the one-time credential link emails (reset, first attestation).
 registerIamConsumers();

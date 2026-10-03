@@ -38,7 +38,7 @@ export interface IdempotentOptions<T> {
 
 export class OperationKeyConflictError extends Error {
   constructor(key: string) {
-    super(`Operation key "${key}" was already used for a different request (operation or fingerprint differs)`);
+    super(`Operation key "${key}" was already used for a different request (operation, fingerprint or actor differs)`);
     this.name = 'OperationKeyConflictError';
   }
 }
@@ -47,6 +47,7 @@ type OperationRow = {
   id: string;
   operation: string;
   fingerprint: string | null;
+  actorId: string | null;
   result: Prisma.JsonValue;
   completedAt: Date | null;
 };
@@ -60,6 +61,8 @@ function replayOf<T>(spec: OperationSpec, row: OperationRow): OperationOutcome<T
   if (row.operation !== spec.operation || (spec.fingerprint != null && row.fingerprint != null && row.fingerprint !== spec.fingerprint)) {
     throw new OperationKeyConflictError(spec.key);
   }
+  // Another person's operation is never replayed to the caller as his own (WFE-002 review L-3): both actors known and different.
+  if (spec.actorId != null && row.actorId != null && row.actorId !== spec.actorId) throw new OperationKeyConflictError(spec.key);
   if (!row.completedAt) throw new Error(`Operation "${spec.key}" is recorded but not completed`);
   return { result: row.result as T, replayed: true, operationId: row.id };
 }
@@ -69,7 +72,7 @@ function defaultRef(result: unknown): string | null {
   return null;
 }
 
-const ROW_SELECT = { id: true, operation: true, fingerprint: true, result: true, completedAt: true } as const;
+const ROW_SELECT = { id: true, operation: true, fingerprint: true, actorId: true, result: true, completedAt: true } as const;
 
 /**
  * Runs `fn` once per operation key inside the caller's transaction. A repeated key returns the recorded

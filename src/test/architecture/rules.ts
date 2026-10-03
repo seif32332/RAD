@@ -841,6 +841,116 @@ const ARCH_019: Rule = {
   },
 };
 
+/** The models of the approval engine that are keyed by beneficiaries (their writes follow the employee lock). */
+const WORKFLOW_LOCKED_MODELS = ['WorkflowInstance', 'WorkflowTask'];
+
+/** Top-level functions (declarations and const arrows) of a file, by name. */
+function topLevelBodies(sf: ts.SourceFile): Map<string, { node: ts.Node; exported: boolean }> {
+  const out = new Map<string, { node: ts.Node; exported: boolean }>();
+  for (const st of sf.statements) {
+    const exported = !!(ts.canHaveModifiers(st) && ts.getModifiers(st)?.some((x) => x.kind === ts.SyntaxKind.ExportKeyword));
+    if (ts.isFunctionDeclaration(st) && st.name && st.body) out.set(st.name.text, { node: st, exported });
+    if (ts.isVariableStatement(st)) {
+      for (const d of st.declarationList.declarations) {
+        if (ts.isIdentifier(d.name) && d.initializer && (ts.isArrowFunction(d.initializer) || ts.isFunctionExpression(d.initializer))) out.set(d.name.text, { node: d.initializer, exported });
+      }
+    }
+  }
+  return out;
+}
+
+const ARCH_019_PORT: Rule = {
+  id: 'ARCH-019.port',
+  title: 'every engine transition takes the employee lock (EmployeeLockPort.lockEmployees) before its first write',
+  check:
+    `Every export of src/modules/workflow/transitions/*.ts that writes ${WORKFLOW_LOCKED_MODELS.join(' / ')} (directly or through a function of src/modules/workflow, resolved by name) ` +
+    'must call lockEmployees (the port method) before: in source order, the first call that reaches a lock comes before the first call that reaches a write; a call that reaches both is ' +
+    'checked the same way inside its callee. Definitions (WorkflowDefinition) have no employee and are not checked. Limit: names are resolved inside the workflow module only, and a call ' +
+    'passed as a callback counts where it is written.',
+  fix: 'Start the transition with openFrame / lockParties (requirePort("EmployeeLock").lockEmployees(tx, beneficiaries ascending, ctx.companies)), then adapter.lockKeys, then read and write (AUDIT/16 §3.2).',
+  run: (p) => {
+    const out: Violation[] = [];
+    const files = code(p).filter((f) => f.path.startsWith('src/modules/workflow/'));
+    const decls = new Map<string, { node: ts.Node; file: SourceInfo; exported: boolean }>();
+    for (const f of files) for (const [name, d] of topLevelBodies(f.sf)) decls.set(name, { ...d, file: f });
+    const writeCalls = new Set<ts.CallExpression>();
+    for (const f of files) for (const c of callsOf(p, f)) if (c.write && WORKFLOW_LOCKED_MODELS.includes(c.model)) writeCalls.add(c.call);
+    const callsIn = (node: ts.Node): ts.CallExpression[] => {
+      const calls: ts.CallExpression[] = [];
+      forEachDescendant(node, (n) => {
+        if (ts.isCallExpression(n)) calls.push(n);
+      });
+      return calls.sort((a, b) => a.pos - b.pos);
+    };
+    const memo = new Map<string, { lock: boolean; write: boolean }>();
+    const reach = (name: string, seen = new Set<string>()): { lock: boolean; write: boolean } => {
+      const hit = memo.get(name);
+      if (hit) return hit;
+      const d = decls.get(name);
+      if (!d || seen.has(name)) return { lock: false, write: false };
+      seen.add(name);
+      const r = { lock: false, write: false };
+      for (const c of callsIn(d.node)) {
+        const n = calleeName(c);
+        if (n === 'lockEmployees') r.lock = true;
+        if (writeCalls.has(c)) r.write = true;
+        if (n && decls.has(n) && n !== name) {
+          const s = reach(n, seen);
+          r.lock ||= s.lock;
+          r.write ||= s.write;
+        }
+      }
+      memo.set(name, r);
+      return r;
+    };
+    /** In source order, is the first lock-reaching call before the first write-reaching one? */
+    const ordered = (name: string, seen = new Set<string>()): boolean => {
+      const d = decls.get(name);
+      if (!d || seen.has(name)) return true;
+      seen.add(name);
+      for (const c of callsIn(d.node)) {
+        const n = calleeName(c);
+        if (n === 'lockEmployees') return true;
+        if (writeCalls.has(c)) return false;
+        if (n && decls.has(n) && n !== name) {
+          const s = reach(n);
+          if (s.lock && s.write) return ordered(n, seen);
+          if (s.lock) return true;
+          if (s.write) return false;
+        }
+      }
+      return true;
+    };
+    for (const [name, d] of decls) {
+      if (!d.exported || !/^src\/modules\/workflow\/transitions\/[^/]+\.ts$/.test(d.file.path)) continue;
+      const r = reach(name);
+      if (!r.write) continue;
+      if (!r.lock) out.push(v('ARCH-019.port', d.file, lineOf(d.file.sf, d.node), `transition ${name} writes ${WORKFLOW_LOCKED_MODELS.join('/')} without calling lockEmployees`));
+      else if (!ordered(name)) out.push(v('ARCH-019.port', d.file, lineOf(d.file.sf, d.node), `transition ${name} writes before lockEmployees`));
+    }
+    return out;
+  },
+};
+
+const ARCH_017_ADAPTER: Rule = {
+  id: 'ARCH-017.adapter',
+  title: 'no side effect anywhere in the approval engine or in a workflow adapter',
+  check:
+    `No call in src/modules/workflow/** or src/modules/*/workflow-adapter.ts reaches ${SIDE_EFFECT_CALLS.join(', ')} (directly or through a repo function, resolved by import). ` +
+    'Hooks run inside the engine transaction (ARC-WFE-A2), so the whole file is the transaction scope. Limit: as ARCH-017.',
+  fix: 'Emit a DomainEvent from the hook (or let the engine emit workflow.*) and do the side effect in a consumer after commit.',
+  run: (p) => {
+    const out: Violation[] = [];
+    const taint = computeTaint(p, SIDE_EFFECT_CALLS);
+    for (const f of code(p)) {
+      if (!f.path.startsWith('src/modules/workflow/') && !/^src\/modules\/[^/]+\/workflow-adapter\.ts$/.test(f.path)) continue;
+      const hits = taint.hits(f.path, f.sf);
+      if (hits.length) out.push(v('ARCH-017.adapter', f, 1, `side effect in the engine / an adapter via ${hits.join(', ')}`));
+    }
+    return out;
+  },
+};
+
 const ARCH_020: Rule = {
   id: 'ARCH-020',
   title: 'every adapter declaring an exitPolicy consumes employment.terminated',
@@ -945,8 +1055,10 @@ export const RULES: Rule[] = [
   ARCH_016,
   ARCH_016_TEST,
   ARCH_017,
+  ARCH_017_ADAPTER,
   ARCH_018,
   ARCH_019,
+  ARCH_019_PORT,
   ARCH_020,
   ARCH_021,
 ];

@@ -29,3 +29,10 @@ export async function companyNames(db: Pick<PrismaClient, 'company'>, companyIds
 export function assignmentAt(db: PeriodReader, employeeId: string, date: DateOnly, opts?: ReadOptions): Promise<PeriodView<'ASSIGNMENT'> | null> {
   return activeAt(db, 'ASSIGNMENT', employeeId, date, opts);
 }
+
+/** The direct manager (employee id) of the assignment in force on `date`, or null (the approval engine's ManagerChainPort). */
+export async function managerAt(db: PeriodReader, employeeId: string, date: DateOnly): Promise<string | null> {
+  const a = await assignmentAt(db, employeeId, date);
+  const m = a?.attrs?.managerId;
+  return typeof m === 'string' && m ? m : null;
+}

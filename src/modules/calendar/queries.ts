@@ -274,3 +274,29 @@ export async function effectiveDay(db: DayTypeReader, employeeId: string, date: 
   const info = await dayFromContext(new CalendarCache(db, day, day), ctx, opts.defaultWeekdays ?? DEFAULT_WORK_WEEKDAYS);
   return { ...ctx, dayType: info };
 }
+
+/**
+ * The date `days` working days after `from` (exclusive of `from`) in the company's calendar: the default working
+ * weekdays (a company has no pattern of its own; employees' patterns are per employee) and the company's
+ * non-cancelled holidays. For deadlines that belong to a company, not to one employee (the approval engine's
+ * WorkingDaysPort, WFE-002). At most 366 calendar days are scanned.
+ */
+export async function addCompanyWorkingDays(db: CalendarReader, companyId: string, from: DateOnly, days: number, opts: { defaultWeekdays?: readonly number[] } = {}): Promise<Date> {
+  if (!Number.isInteger(days) || days < 0) throw new RangeError('addCompanyWorkingDays: days must be a non-negative integer');
+  const start = toDateOnly(from, 'from');
+  if (days === 0) return start;
+  const weekdays = opts.defaultWeekdays ?? DEFAULT_WORK_WEEKDAYS;
+  const horizon = new Date(start.getTime() + 366 * DAY_MS);
+  const holidays = await db.holidayCalendar.findMany({
+    where: { companyId, cancelledAt: null, startDate: { lte: horizon }, endDate: { gt: start } },
+    select: { startDate: true, endDate: true },
+  });
+  let left = days;
+  for (let d = new Date(start.getTime() + DAY_MS); d.getTime() <= horizon.getTime(); d = new Date(d.getTime() + DAY_MS)) {
+    if (!weekdays.includes(d.getUTCDay())) continue;
+    if (holidays.some((h) => covers(h, d))) continue;
+    left -= 1;
+    if (left === 0) return d;
+  }
+  throw new RangeError('addCompanyWorkingDays: no such working day within a year');
+}

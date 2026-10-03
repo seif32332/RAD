@@ -79,6 +79,17 @@ describe.skipIf(!RUN)('platform outbox, operation keys and audit on PostgreSQL',
     expect(await countAudits(opKey)).toBe(1);
   });
 
+  it('a key recorded for one actor is never replayed to another actor (OperationKeyConflictError); the same actor replays', async () => {
+    const opKey = `itest:${newTag()}:actor`;
+    const run = (actorId: string | null) => runTransition(prisma, { key: opKey, operation: 'itest.actor.op', actorId }, async () => ({ id: 'r', by: actorId }));
+    const first = await run('user-a');
+    expect(first.replayed).toBe(false);
+    expect((await run('user-a')).replayed).toBe(true);
+    await expect(run('user-b')).rejects.toBeInstanceOf(platform.OperationKeyConflictError);
+    // A caller without an actor (a job) keeps the previous behaviour: replay.
+    expect((await run(null)).result).toEqual(first.result);
+  });
+
   it('state, audit, event and operation key commit together or not at all', async () => {
     const tag = newTag();
     const opKey = `itest:${tag}:1`;

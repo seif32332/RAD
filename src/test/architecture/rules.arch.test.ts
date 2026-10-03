@@ -312,6 +312,52 @@ describe('routes, transactions, adapters', () => {
     expect(run('ARCH-020', { ...adapter, 'src/modules/assets/consumers.ts': `export const c = { 'employment.terminated': handle };` })).toEqual([]);
   });
 
+  it('ARCH-019.port: every engine transition calls lockEmployees before its first instance/task write', () => {
+    const schema = SCHEMA + '\nmodel WorkflowInstance { id String @id\n  companyId String }\nmodel WorkflowTask { id String @id\n  companyId String }\nmodel WorkflowDefinition { id String @id }';
+    const doc = DOC.replace('| **documents** | IssuedDocument | — |', '| **documents** | IssuedDocument | — |\n| **workflow** | — | WorkflowDefinition، WorkflowInstance، WorkflowTask |');
+    const rule = RULES.find((r) => r.id === 'ARCH-019.port')!;
+    const v = rule.run(
+      fixtureProject(
+        {
+          'src/modules/workflow/transitions/internal/core.ts':
+            `export async function openFrame(tx) { await port.lockEmployees(tx, ids, cs); return tx.workflowInstance.findUnique({ where: { id } }); }\n` +
+            `export async function cas(tx) { return tx.workflowInstance.updateMany({ where: { id }, data: {} }); }\n` +
+            `export async function lockedWrite(tx) { await openFrame(tx); await cas(tx); }\n` +
+            `export async function writeThenLock(tx) { await cas(tx); await openFrame(tx); }`,
+          'src/modules/workflow/transitions/instance.ts':
+            `export async function good(tx) { return idempotent(tx, spec, async (t) => { await openFrame(t); await cas(t); }); }\n` +
+            `export async function viaHelper(tx) { await lockedWrite(tx); }\n` +
+            `export async function noLock(tx) { await tx.workflowTask.create({ data: {} }); }\n` +
+            `export async function late(tx) { await cas(tx); await openFrame(tx); }\n` +
+            `export async function badHelper(tx) { await writeThenLock(tx); }\n` +
+            `export async function definitionOnly(tx) { await tx.workflowDefinition.create({ data: {} }); }\n` +
+            `export async function readOnly(tx) { return tx.workflowInstance.findMany({}); }`,
+        },
+        schema,
+        { boundariesDoc: doc },
+      ),
+    );
+    expect(v.map((x) => `${x.line}:${x.message}`)).toEqual([
+      '3:transition noLock writes WorkflowInstance/WorkflowTask without calling lockEmployees',
+      '4:transition late writes before lockEmployees',
+      '5:transition badHelper writes before lockEmployees',
+    ]);
+  });
+
+  it('ARCH-017.adapter: no side effect in the engine or in a workflow adapter, even outside $transaction', () => {
+    const v = run('ARCH-017.adapter', {
+      'src/lib/mail.ts': `export async function notify() { await sendMail({}); }`,
+      'src/modules/assets/workflow-adapter.ts': `import { notify } from '@/lib/mail';\nexport const adapter = { async onApproved(tx) { await notify(); } };`,
+      'src/modules/workflow/engine.ts': `export function pure() { return 1; }`,
+      'src/modules/workflow/transitions/task.ts': `export async function act() { await fetch('https://x'); }`,
+      'src/modules/assets/transitions.ts': `import { notify } from '@/lib/mail';\nexport async function later() { await notify(); }`,
+    });
+    expect(v.map((x) => `${x.key}:${x.message}`)).toEqual([
+      'src/modules/assets/workflow-adapter.ts:side effect in the engine / an adapter via notify',
+      'src/modules/workflow/transitions/task.ts:side effect in the engine / an adapter via fetch',
+    ]);
+  });
+
   it('ARCH-021: only the owning module calls the period writers for its kind (ADR-0005)', () => {
     const v = run('ARCH-021', {
       'src/modules/payroll/a.ts':

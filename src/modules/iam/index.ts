@@ -63,7 +63,7 @@ export type { ScopeRule } from './scope-models';
 export { authz, POLICIES } from './authz';
 export type { AuthzResource, AuthzDecision } from './authz';
 
-export { activeUsersWithRoles } from './users';
+export { activeUsersWithRoles, activeUsersWithRolesInCompany } from './users';
 export type { ActiveUser } from './users';
 
 // BL-PAY-005 identity controls (pay-to-be.md BR-PAY-005): the rules, the writers (behind money.gateway's iam

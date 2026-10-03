@@ -5,6 +5,7 @@
 import type { Prisma, PrismaClient } from '@prisma/client';
 import { forbidden, notFound } from '@/lib/http';
 import { assertTransactionClient, type TxClient } from '@/modules/platform';
+import { hasWorkflowPort, registerWorkflowPort } from '@/modules/workflow';
 import { lockEmployeeRows, type LockedEmployeeRow } from './sql/lock';
 
 type Db = PrismaClient | Prisma.TransactionClient;
@@ -112,4 +113,28 @@ export async function employeeForCompensation(db: Db, employeeId: string): Promi
 /** Every employee in service (not terminated), with the compensation columns (INV-SAL-01 compares them with the facts). */
 export async function employeesInServiceForCompensation(db: Db): Promise<EmployeeCompensationRow[]> {
   return db.employee.findMany({ where: { isTerminated: false }, select: EMPLOYEE_COMPENSATION_SELECT, orderBy: { id: 'asc' } });
+}
+
+/** employeeForLifecycle for several employees (ascending id); unknown ids are absent. */
+export async function employeesForLifecycle(db: Db, employeeIds: readonly string[]): Promise<EmployeeLifecycleRow[]> {
+  const ids = [...new Set(employeeIds.filter((x) => typeof x === 'string' && x))];
+  if (!ids.length) return [];
+  return db.employee.findMany({ where: { id: { in: ids } }, select: EMPLOYEE_LIFECYCLE_SELECT, orderBy: { id: 'asc' } });
+}
+
+/** The employees linked to these logins, with the lifecycle columns (WFE BeneficiaryStatePort, through lifecycle). */
+export async function employeesOfUsersForLifecycle(db: Db, userIds: readonly string[]): Promise<EmployeeLifecycleRow[]> {
+  const ids = [...new Set(userIds.filter((x) => typeof x === 'string' && x))];
+  if (!ids.length) return [];
+  return db.employee.findMany({ where: { userId: { in: ids } }, select: EMPLOYEE_LIFECYCLE_SELECT, orderBy: { id: 'asc' } });
+}
+
+/**
+ * WFE-002 (AUDIT/16 §3.2, ARC-WFE-A1): the engine's EmployeeLockPort is lockEmployees above, so every engine
+ * transaction takes the employee lock first, in ascending id order, inside the caller's company scope (ADR-0002 #2).
+ * Idempotent: a second call does nothing (a port is registered once).
+ */
+export function registerPeopleWorkflowPorts(): void {
+  if (hasWorkflowPort('EmployeeLock')) return;
+  registerWorkflowPort('EmployeeLock', { lockEmployees: (tx, employeeIds, companyIds) => lockEmployees(tx, employeeIds, companyIds) });
 }

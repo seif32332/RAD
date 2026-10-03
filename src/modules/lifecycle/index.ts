@@ -56,3 +56,6 @@ export { lifecycleCompanies } from './scope';
 export { LIFECYCLE_CONSUMERS } from './consumers';
 
 export { noticeEndJob, stateOpeningJob, completeDueNotices, openMissingStates, EMPLOYMENT_NOTICE_END_JOB, EMPLOYMENT_STATE_OPENING_JOB } from './jobs';
+
+// WFE-002 (AUDIT/16 §3.2): the engine's BeneficiaryStatePort, read with the lifecycle readers.
+export { registerLifecycleWorkflowPorts, employmentStateRows } from './workflow-ports';
