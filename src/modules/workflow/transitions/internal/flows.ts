@@ -92,7 +92,8 @@ export async function reResolveOpen(f: Frame): Promise<{ changes: { task: TaskRo
 
 export async function unblockTarget(f: Frame, inst: InstanceRow) {
   if (inst.pauseReasons.length) {
-    return { status: 'PAUSED' as const, previousStatus: inst.previousStatus ?? 'RUNNING', pausedAt: f.at, blockedAt: null, blockedReason: null };
+    // pauseReasons is written too: the BLOCKED resume passes the stack with the resumed reason already popped.
+    return { status: 'PAUSED' as const, pauseReasons: inst.pauseReasons, previousStatus: inst.previousStatus ?? 'RUNNING', pausedAt: f.at, blockedAt: null, blockedReason: null };
   }
   return leaveData(inst, inst.previousStatus ?? 'RUNNING', f.at, await awaitingStash(f.tx, inst));
 }
