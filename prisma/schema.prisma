@@ -1281,6 +1281,9 @@ model Deduction {
   dailySalary        Float? // الراتب اليومي المحتسب
   isLinkedToPayroll  Boolean @default(false) // هل تم ربطه بمسير الراتب
   payrollMonth       String? // شهر المسير المرتبط (مثلاً: 2026-04)
+  /// BL-PAY-030 (9zi): the latest payroll month whose generation offered this deduction but could not fit it
+  /// whole (it was not reserved, nor linked on approval); it stays due for the next generated month. null = never deferred.
+  deferredPayrollMonth String?
 
   // --- مسار الاعتماد ---
   issuedBy   String? // من أصدر المخالفة (اسم أو ID)

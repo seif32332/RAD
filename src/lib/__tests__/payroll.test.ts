@@ -319,9 +319,12 @@ describe('computePayrollLine', () => {
     expect(r.netSalary).toBe(8962.2);
   });
 
-  it('never returns a negative net salary', () => {
+  it('never returns a negative net salary; a deduction larger than the pay is deferred, not taken (BL-PAY-030)', () => {
     const r = line({ employee: { basicSalary: 1000 }, deductions: [{ id: 'D1', amount: 5000 }] });
-    expect(r.netSalary).toBe(0);
+    expect(r.netSalary).toBe(1000);
+    expect(r.breakdown.penalties).toBe(0);
+    expect(r.deductionsTaken).toEqual([]);
+    expect(r.deductionsDeferred).toEqual([{ id: 'D1', amount: 5000 }]);
   });
 });
 

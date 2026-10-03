@@ -36,6 +36,11 @@
 // - Overtime is linked to the payroll / settlement that pays it (OvertimeRequest.paidInPayrollId
 //   / paidInSettlementId), see "Overtime payment tracking" below. Overtime approved after its
 //   month's payroll was generated is paid by the next generated month.
+// - Deductions (penalties, Deduction rows) are taken WHOLE, oldest first (date, then id), each only
+//   when it fits in what the month leaves after unpaid leave and GOSI (BL-PAY-030, RT-WFE-744): a
+//   deduction that does not fit is not taken, not reserved and stays payable for the employee's next
+//   payroll month (flagged DEDUCTION_DEFERRED; one larger than a whole month's pay DEDUCTION_OVER_MONTH).
+//   Loan installments come after the deductions, from what is left. See takeDeductions.
 import { roundMoney, sumMoney } from '@/lib/money';
 import { addDays, dateKey, monthRange, today, todayKey } from '@/lib/dates';
 import { isSettlementVoid } from '@/lib/constants';
@@ -591,7 +596,11 @@ export interface PayrollLineInput {
   compensationSegments?: ReadonlyArray<{ from: string; to: string; basicSalary: number; allowances: ReadonlyArray<AllowanceLike> }>;
   bonuses: ReadonlyArray<{ id: string; amount: number }>;
   overtimes: ReadonlyArray<OvertimeLike>;
-  deductions: ReadonlyArray<{ id: string; amount: number }>;
+  /**
+   * Payable deductions offered to this month (taken whole, oldest first, while they fit; see
+   * takeDeductions). `date` orders them (date, then id); absent = first.
+   */
+  deductions: ReadonlyArray<{ id: string; amount: number; date?: Date | string | null }>;
   /** All approved leaves of the employee (needed for the sick-leave year look-back). */
   leaves: ReadonlyArray<LeaveLike>;
   /** Deductible loans; `remaining` must already exclude installments reserved by other drafts. */
@@ -642,6 +651,10 @@ export interface PayrollLineResult {
   /** GOSI computed from a provisional rate row. */
   gosiProvisional: boolean;
   loanInstallments: Array<{ loanId: string; amount: number }>;
+  /** Ids of the deductions this line takes (whole): the draft reserves exactly these (BL-PAY-030). */
+  deductionsTaken: string[];
+  /** Deductions offered but not taken (they did not fit): they stay payable for the next month. */
+  deductionsDeferred: Array<{ id: string; amount: number }>;
 }
 
 /** Stored Payroll breakdown columns (DEC-002 / DEC-003). */
@@ -703,6 +716,8 @@ export const PAYROLL_REVIEW_CODES = [
   'IBAN_INVALID',
   'CASH',
   'BASIC_ZERO',
+  'DEDUCTION_DEFERRED',
+  'DEDUCTION_OVER_MONTH',
 ] as const;
 export type PayrollReviewCode = (typeof PAYROLL_REVIEW_CODES)[number];
 /** Filter keys: the coded flags plus GOSI notes (uncoded, from src/lib/gosi.ts) and anything else. */
@@ -719,6 +734,8 @@ export const PAYROLL_REVIEW_LABELS: Record<PayrollReviewFilterKey, string> = {
   IBAN_INVALID: 'آيبان غير صالح',
   CASH: 'صرف نقدي',
   BASIC_ZERO: 'الراتب الأساسي صفر',
+  DEDUCTION_DEFERRED: 'خصومات مؤجلة للشهر التالي',
+  DEDUCTION_OVER_MONTH: 'خصم يتجاوز أجر شهر كامل',
   GOSI: 'ملاحظات التأمينات والجنسية',
   OTHER: 'أسباب أخرى',
 };
@@ -880,10 +897,44 @@ function prorateSegments(input: PayrollLineInput, days: EmploymentDays) {
   };
 }
 
+const timeOf = (d: Date | string | null | undefined) => {
+  const t = d == null ? NaN : new Date(d).getTime();
+  return Number.isFinite(t) ? t : -Infinity;
+};
+
 /**
- * Computes one employee's payroll for a month. Loan installments are only taken from what is
- * left after the other deductions, so an installment is never recorded as collected when the
- * salary could not cover it (the rest stays on the loan for next month).
+ * Which of the offered deductions a month takes (BL-PAY-030, RT-WFE-744): WHOLE deductions only, oldest
+ * first (date, then id), each taken when it fits in what is still free; one that does not fit is
+ * deferred and the next ones are still tried (first fit, so one large deduction never blocks the
+ * smaller ones). Deterministic. A deduction is never split: one deduction, one payroll line (INV-PAY-02).
+ */
+export function takeDeductions(
+  offered: ReadonlyArray<{ id: string; amount: number; date?: Date | string | null }>,
+  room: number,
+): { ids: string[]; total: number; deferred: Array<{ id: string; amount: number }> } {
+  const ordered = [...offered].sort((a, b) => timeOf(a.date) - timeOf(b.date) || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+  let free = Math.max(0, roundMoney(room));
+  const ids: string[] = [];
+  const amounts: number[] = [];
+  const deferred: Array<{ id: string; amount: number }> = [];
+  for (const d of ordered) {
+    const amount = roundMoney(d.amount);
+    if (amount <= free + EPS) {
+      ids.push(d.id);
+      amounts.push(amount);
+      free = Math.max(0, roundMoney(free - amount));
+    } else {
+      deferred.push({ id: d.id, amount });
+    }
+  }
+  return { ids, total: sumMoney(amounts), deferred };
+}
+
+/**
+ * Computes one employee's payroll for a month. Deductions are taken whole while they fit after unpaid
+ * leave and GOSI (takeDeductions; the others are deferred to the next month, BL-PAY-030), and loan
+ * installments only from what is left after them, so neither is ever recorded as collected when the
+ * salary could not cover it (the rest stays on the loan / the deduction for next month).
  */
 export function computePayrollLine(input: PayrollLineInput): PayrollLineResult {
   const { employee: emp, settings, year, month } = input;
@@ -910,7 +961,6 @@ export function computePayrollLine(input: PayrollLineInput): PayrollLineResult {
   const leaveDeductions = sumMoney(
     input.leaves.map((lv) => leaveDeductionForMonth(lv, input.leaves, rate, year, month, input.sickLeaveLaw).amount),
   );
-  const penalties = sumMoney(input.deductions.map((d) => d.amount));
   const notes: string[] = [];
   let needsReview = false;
   let gosi: number;
@@ -952,6 +1002,27 @@ export function computePayrollLine(input: PayrollLineInput): PayrollLineResult {
   const other = 0;
 
   const gross = roundMoney(basicSalary + totalAllowances + overtimeCost);
+  // BL-PAY-030: deductions are taken whole while they fit in what the month leaves after unpaid leave
+  // and GOSI; the rest is deferred (never recorded as collected), then loans take what is left.
+  const roomForDeductions = Math.max(0, roundMoney(gross - sumMoney([leaveDeductions, gosi, other])));
+  const taken = takeDeductions(input.deductions, roomForDeductions);
+  const penalties = taken.total;
+  if (taken.deferred.length) {
+    needsReview = true;
+    const deferredTotal = sumMoney(taken.deferred.map((d) => d.amount));
+    notes.push(
+      `[DEDUCTION_DEFERRED] ${taken.deferred.length} خصم بمجموع ${fmt(deferredTotal)} لم يتسع له المتاح هذا الشهر (${fmt(roomForDeductions)}): يبقى مستحقاً ويُعرض في المسير التالي`,
+    );
+    // A deduction larger than what a whole month leaves (full wage less this month's GOSI rate) never
+    // fits a monthly line: it stays payable and flagged until HR decides it (BL-PAY-030).
+    const fullMonth = Math.max(0, roundMoney(basicFull + monthlyAllowancesTotal(emp.allowances) - (factor > 0 ? gosi / factor : gosi)));
+    const over = taken.deferred.filter((d) => d.amount > fullMonth + EPS);
+    if (over.length) {
+      notes.push(
+        `[DEDUCTION_OVER_MONTH] ${over.length} خصم يتجاوز ما يتسع له أجر شهر كامل (${fmt(fullMonth)}): لن يُحصَّل في مسير شهري ويحتاج قرار الموارد البشرية`,
+      );
+    }
+  }
   const otherDeductions = sumMoney([leaveDeductions, penalties, gosi, other]);
   let available = Math.max(0, roundMoney(gross - otherDeductions));
 
@@ -1017,6 +1088,8 @@ export function computePayrollLine(input: PayrollLineInput): PayrollLineResult {
     reviewNote: joinReviewNotes(notes),
     gosiProvisional,
     loanInstallments,
+    deductionsTaken: taken.ids,
+    deductionsDeferred: taken.deferred,
   };
 }
 

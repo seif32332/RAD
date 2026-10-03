@@ -14,7 +14,9 @@
 // - One-off bonuses (Allowance.isMonthly=false) are reserved by a draft (paidInPayrollId)
 //   and marked isPaid when that payroll is approved.
 // - Deductions are reserved by a draft (Deduction.payrollMonth='YYYY-MM') and linked
-//   (isLinkedToPayroll=true) when the payroll is approved, so they are never deducted twice.
+//   (isLinkedToPayroll=true) when the payroll is approved, so they are never deducted twice. A draft
+//   reserves only the deductions its line takes whole (takeDeductions, BL-PAY-030); one that does not
+//   fit is marked Deduction.deferredPayrollMonth and offered again by the next generated month.
 // - Approved overtime is reserved by the draft that pays it (OvertimeRequest.paidInPayrollId);
 //   the link becomes final when that payroll is approved and is released when the draft is
 //   regenerated / dropped. Overtime approved after its month's payroll was generated is paid
@@ -391,7 +393,7 @@ export async function computeGenerationPlan(db: Tx, input: PlanInput): Promise<P
           date: { lt: nextMonthStart },
           OR: [{ payrollMonth: null }, { payrollMonth: key }],
         },
-        select: { id: true, amount: true, date: true, approvedAt: true },
+        select: { id: true, amount: true, date: true, approvedAt: true, deferredPayrollMonth: true },
       },
       loans: {
         where: { status: { in: [...LOAN_DEDUCTIBLE_STATUSES] }, isForgiven: false, remainingAmount: { gt: 0 } },
@@ -459,6 +461,7 @@ export async function computeGenerationPlan(db: Tx, input: PlanInput): Promise<P
   const bonusReservations: Array<{ payrollId: string; allowanceIds: string[] }> = [];
   const overtimeReservations: Array<{ payrollId: string; overtimeIds: string[] }> = [];
   const reservedDeductionIds: string[] = [];
+  const deferredDeductionIds: string[] = [];
   let provisionalGosi = 0;
   // Regulatory values per legal company (P1-RULE): read once per generation, overrides included.
   const rules = createRulesReader(db);
@@ -495,9 +498,12 @@ export async function computeGenerationPlan(db: Tx, input: PlanInput): Promise<P
     // finalized payroll, or they became payable after that payroll was generated - a deduction
     // that was payable at generation time was reserved by it and linked on approval).
     // Payroll.createdAt (generation time) is used, not updatedAt (which moves when it is paid).
+    // A deduction a generation offered but could not fit (deferredPayrollMonth, BL-PAY-030) is never
+    // a stale one: it stays due until a payroll line takes it.
     const generatedByMonth = new Map(emp.payrolls.map((p) => [payrollMonthKey(p.year, p.month), p.createdAt]));
     const deductions = emp.deductions.filter((d) => {
       if (d.date >= monthStart) return true;
+      if (d.deferredPayrollMonth) return true;
       const k = (dateKey(d.date) ?? '').slice(0, 7);
       const generatedAt = generatedByMonth.get(k);
       if (!generatedAt) return true;
@@ -534,7 +540,7 @@ export async function computeGenerationPlan(db: Tx, input: PlanInput): Promise<P
       compensationSegments: segments.map((s) => ({ from: s.from, to: s.to, basicSalary: s.basicSalary, allowances: salaryOf(s).allowances as AllowanceLike[] })),
       bonuses: bonuses.map((b) => ({ id: b.id, amount: b.amount })),
       overtimes,
-      deductions: deductions.map((d) => ({ id: d.id, amount: d.amount })),
+      deductions: deductions.map((d) => ({ id: d.id, amount: d.amount, date: d.date })),
       leaves: emp.leaves,
       loans,
       settings,
@@ -565,7 +571,10 @@ export async function computeGenerationPlan(db: Tx, input: PlanInput): Promise<P
     }
     if (bonuses.length) bonusReservations.push({ payrollId: id, allowanceIds: bonuses.map((b) => b.id) });
     if (overtimes.length) overtimeReservations.push({ payrollId: id, overtimeIds: overtimes.map((o) => o.id) });
-    reservedDeductionIds.push(...deductions.map((d) => d.id));
+    // Only the deductions the line takes are reserved (and linked on approval); the others are marked
+    // deferred and offered again next month (BL-PAY-030).
+    reservedDeductionIds.push(...line.deductionsTaken);
+    deferredDeductionIds.push(...line.deductionsDeferred.map((d) => d.id));
   }
 
   return {
@@ -584,6 +593,7 @@ export async function computeGenerationPlan(db: Tx, input: PlanInput): Promise<P
       bonusReservations,
       overtimeReservations,
       reservedDeductionIds,
+      deferredDeductionIds,
     },
     skippedFinalized: skip.size,
     skippedOtherCompany: [...elsewhere].filter((id) => !skip.has(id)).length,

@@ -86,7 +86,10 @@ export interface GenerationPlan {
   installments: readonly { id: string; loanId: string; payrollId: string; month: number; year: number; amount: number }[];
   bonusReservations: readonly { payrollId: string; allowanceIds: readonly string[] }[];
   overtimeReservations: readonly { payrollId: string; overtimeIds: readonly string[] }[];
+  /** Deductions the lines take whole: reserved for the month (linked on approval). */
   reservedDeductionIds: readonly string[];
+  /** Deductions offered but not taken (they did not fit, BL-PAY-030): marked deferred, never reserved. */
+  deferredDeductionIds: readonly string[];
 }
 
 export interface GenerationResult {
@@ -145,6 +148,15 @@ export async function commitPayrollGeneration(
       if (plan.reservedDeductionIds.length) {
         await w.deduction.updateMany({ where: { id: { in: [...plan.reservedDeductionIds] }, isLinkedToPayroll: false }, data: { payrollMonth: period(plan.year, plan.month) } });
       }
+      if (plan.deferredDeductionIds.length) {
+        // BL-PAY-030: a deduction the line could not fit is not this month's (no reservation, so the
+        // approval never links it) and stays due for the next generated month (deferredPayrollMonth).
+        const key = period(plan.year, plan.month);
+        await w.deduction.updateMany({
+          where: { id: { in: [...plan.deferredDeductionIds] }, isLinkedToPayroll: false, OR: [{ payrollMonth: null }, { payrollMonth: key }] },
+          data: { payrollMonth: null, deferredPayrollMonth: key },
+        });
+      }
       const drafts = await w.payroll.count({ where: { payrollMonthId: monthRow.id, status: PAYROLL_STATUS.DRAFT } });
       const total = await w.payroll.count({ where: { payrollMonthId: monthRow.id } });
       const status = drafts > 0 || total === 0 ? PAYROLL_MONTH_STATUS.CALCULATED : monthRow.status === PAYROLL_MONTH_STATUS.PAID ? PAYROLL_MONTH_STATUS.PAID : PAYROLL_MONTH_STATUS.APPROVED;
@@ -200,6 +212,30 @@ export interface ApproveMonthResult {
 type DraftLine = { id: string; employeeId: string; createdAt: Date };
 
 /**
+ * BL-PAY-030: the approval links a line's reserved deductions as collected, so it refuses (409) a line
+ * that reserves deductions but records more deductions than it pays (a draft generated before
+ * takeDeductions, whose net was clamped at 0): regenerating the month defers what does not fit. A line
+ * of the current computation never trips it: it reserves a positive deduction only when it fits.
+ */
+async function assertDeductionsTaken(tx: TxClient, payrollIds: readonly string[], key: string): Promise<void> {
+  if (!payrollIds.length) return;
+  const rows = await tx.payroll.findMany({
+    where: { id: { in: [...payrollIds] } },
+    select: { employeeId: true, basicSalary: true, totalAllowances: true, overtimeCost: true, totalDeductions: true },
+  });
+  const short = rows.filter((r) => roundMoney(r.basicSalary + r.totalAllowances + r.overtimeCost - r.totalDeductions) < -0.005);
+  if (!short.length) return;
+  const reservedFor = await tx.deduction.findMany({
+    where: { employeeId: { in: short.map((r) => r.employeeId) }, payrollMonth: key, isLinkedToPayroll: false, amount: { gt: 0 }, status: { in: [...DEDUCTION_PAYABLE_STATUSES] } },
+    select: { employeeId: true },
+    distinct: ['employeeId'],
+  });
+  if (reservedFor.length) {
+    throw conflict(`${reservedFor.length} سطر في مسير ${key} يسجل خصومات أكثر مما يتسع له أجر الشهر (مسودة قديمة): يرجى إعادة توليد المسير قبل الاعتماد`);
+  }
+}
+
+/**
  * Approves the DRAFT lines of a company's month (the approver's own line excepted), applying their
  * effects once: bonuses paid, the month's deductions linked, loan balances decremented (loan COMPLETED
  * at 0). `precheck` runs in the transaction before any write (the legacy settlement-coverage check).
@@ -230,6 +266,7 @@ export async function approvePayrollMonth(
     const others = mode === 'SINGLE_OPERATOR' || !own ? drafts : drafts.filter((d) => d.employeeId !== own);
     const toApprove = others.length ? others : drafts;
     const reserved = drafts.filter((d) => !toApprove.includes(d)).map((d) => d.employeeId);
+    await assertDeductionsTaken(t, toApprove.map((d) => d.id), period(input.year, input.month));
 
     return runMoneyOperation(
       t,

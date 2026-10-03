@@ -1,7 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
   computePayrollLine,
-  DEDUCTIONS_EXCEED_NOTE,
   DEFAULT_PAYROLL_SETTINGS,
   employeeDeductionsTotal,
   hasStoredBreakdown,
@@ -11,7 +10,7 @@ import {
   type StoredPayrollRow,
 } from '@/lib/payroll';
 import { DEFAULT_GOSI_RATES, type GosiRateLike } from '@/lib/gosi';
-import { sumMoney } from '@/lib/money';
+import { roundMoney, sumMoney } from '@/lib/money';
 import {
   computeSettlement,
   COUNSEL_PENDING_NOTE,
@@ -143,11 +142,15 @@ describe('computePayrollLine with the GOSI rate table (stored breakdown)', () =>
     expectConsistent(r);
   });
 
-  it('deductions above the month pay: net 0, flagged, columns still add up', () => {
+  it('a deduction above the month pay is deferred whole (BL-PAY-030): not taken, flagged, columns still add up', () => {
     const r = line({ deductions: [{ id: 'x', amount: 20000 }] });
-    expect(r.netSalary).toBe(0);
+    expect(r.breakdown.penalties).toBe(0);
+    expect(r.deductionsDeferred).toEqual([{ id: 'x', amount: 20000 }]);
+    expect(r.netSalary).toBe(roundMoney(r.basicSalary + r.totalAllowances + r.overtimeCost - r.totalDeductions));
+    expect(r.netSalary).toBeGreaterThan(0);
     expect(r.needsReview).toBe(true);
-    expect(r.reviewNote).toContain(DEDUCTIONS_EXCEED_NOTE);
+    expect(r.reviewNote).toContain('[DEDUCTION_DEFERRED]');
+    expect(r.reviewNote).toContain('[DEDUCTION_OVER_MONTH]');
     expect(employeeDeductionsTotal(payrollBreakdownColumns(r))).toBe(r.totalDeductions);
   });
 

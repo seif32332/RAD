@@ -8,7 +8,7 @@ import { defineMoneyOperation, type TxClient } from '@/modules/platform';
 import { overtimeApproversOfLines } from '@/modules/time';
 import { payrollMonthKey } from '@/lib/payroll-core';
 
-const DRAFT_EFFECTS = { Payroll: '*', LoanInstallment: '*', Deduction: ['payrollMonth'] } as const;
+const DRAFT_EFFECTS = { Payroll: '*', LoanInstallment: '*', Deduction: ['payrollMonth', 'deferredPayrollMonth'] } as const;
 
 // ---------------------------------------------------------------------------------------------------
 // The month of one company (ARC-PAY-A7)
