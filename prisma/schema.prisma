@@ -110,6 +110,18 @@ model User {
   financialChangesRequested  EmployeeFinancialChange[] @relation("FinancialChangeRequestedBy")
   financialChangesDecided    EmployeeFinancialChange[] @relation("FinancialChangeDecidedBy")
   financialChangesCancelled  EmployeeFinancialChange[] @relation("FinancialChangeCancelledBy")
+  // 9zj_workflow_engine (WFE-001, ADR-0006)
+  workflowDefinitionsCreated   WorkflowDefinition[] @relation("WorkflowDefinitionCreatedBy")
+  workflowDefinitionsActivated WorkflowDefinition[] @relation("WorkflowDefinitionActivatedBy")
+  workflowDefinitionsRetired   WorkflowDefinition[] @relation("WorkflowDefinitionRetiredBy")
+  workflowInstancesRequested   WorkflowInstance[]   @relation("WorkflowInstanceRequester")
+  workflowInstancesClosed      WorkflowInstance[]   @relation("WorkflowInstanceClosedBy")
+  workflowTasksActed           WorkflowTask[]       @relation("WorkflowTaskActedBy")
+  workflowTasksOnBehalfOf      WorkflowTask[]       @relation("WorkflowTaskOnBehalfOf")
+  delegationsFrom              ApprovalDelegation[] @relation("ApprovalDelegationFrom")
+  delegationsTo                ApprovalDelegation[] @relation("ApprovalDelegationTo")
+  delegationsCreated           ApprovalDelegation[] @relation("ApprovalDelegationCreatedBy")
+  delegationsRevoked           ApprovalDelegation[] @relation("ApprovalDelegationRevokedBy")
 }
 
 // --- وحدة التدقيق (Audit Logs) ---
@@ -207,6 +219,9 @@ model Company {
   payrollMonths      PayrollMonth[]        @relation("PayrollMonthCompany")
   payrolls           Payroll[]             @relation("PayrollCompany")
   financialChanges   EmployeeFinancialChange[] // 9zg_financial_change (P1-PAY-B)
+  workflowDefinitions WorkflowDefinition[] // 9zj_workflow_engine (WFE-001)
+  workflowInstances   WorkflowInstance[]
+  workflowTasks       WorkflowTask[]
 
   // محرك إصدار المستندات (docs/document-engine): الشركة هنا هي الجهة النظامية المُصدِرة
   brandProfile         BrandProfile?
@@ -3606,4 +3621,210 @@ model AssignmentPeriod {
   @@index([departmentId])
   @@index([managerId])
   @@index([workPatternId])
+}
+
+// ---------------------------------------------------------------------------
+// Workflow engine (WFE-001, 9zj_workflow_engine, ADR-0006). Owner: workflow.
+// ---------------------------------------------------------------------------
+
+enum WorkflowDefinitionStatus {
+  DRAFT
+  ACTIVE
+  RETIRED
+}
+
+enum WorkflowInstanceStatus {
+  RUNNING
+  AWAITING_REQUIREMENT
+  RETURNED
+  PAUSED
+  BLOCKED
+  APPROVED
+  REJECTED
+  CANCELLED
+}
+
+enum WorkflowCloseKind {
+  DECIDED
+  AUTO_APPROVED
+  CANCELLED_BY_ACTOR
+  RETURN_EXPIRED
+  EXTERNAL
+  MIGRATION
+}
+
+enum WorkflowTaskKind {
+  APPROVE
+  REJECT_PAIR
+  CANCEL_CONFIRM
+  REQUIREMENT_CHECK
+  DEFERRAL_DECISION
+}
+
+enum WorkflowTaskStatus {
+  OPEN
+  APPROVED
+  REJECTED
+  RETURNED
+  NOT_REQUIRED
+  CANCELLED
+}
+
+/// kind: FACT
+/// A versioned approval path. Owner: workflow (G6). An ACTIVE or RETIRED version is immutable (trigger);
+/// companyId null = the tenant default (ARC-WFE-A7). Partial uniques and CHECKs live in the migration SQL.
+model WorkflowDefinition {
+  id             String                   @id @default(uuid())
+  /// e.g. requests.general (format CHECK)
+  requestType    String
+  companyId      String?
+  version        Int
+  status         WorkflowDefinitionStatus @default(DRAFT)
+  definitionJson Json
+  /// sha256 hex of the canonical JSON
+  checksum       String
+  basedOnId      String?
+  changeNote     String?
+  createdById    String
+  createdAt      DateTime                 @default(now())
+  activatedById  String?
+  activatedAt    DateTime?
+  retiredById    String?
+  retiredAt      DateTime?
+  updatedAt      DateTime                 @updatedAt
+
+  company     Company?             @relation(fields: [companyId], references: [id], onDelete: Restrict)
+  basedOn     WorkflowDefinition?  @relation("WorkflowDefinitionBasedOn", fields: [basedOnId], references: [id], onDelete: Restrict)
+  derived     WorkflowDefinition[] @relation("WorkflowDefinitionBasedOn")
+  createdBy   User                 @relation("WorkflowDefinitionCreatedBy", fields: [createdById], references: [id], onDelete: Restrict)
+  activatedBy User?                @relation("WorkflowDefinitionActivatedBy", fields: [activatedById], references: [id], onDelete: Restrict)
+  retiredBy   User?                @relation("WorkflowDefinitionRetiredBy", fields: [retiredById], references: [id], onDelete: Restrict)
+  instances   WorkflowInstance[]
+
+  @@index([requestType, companyId, status])
+}
+
+/// kind: REQUEST
+/// The approval decision for one request (polymorphic requestType + requestId, no FK). Owner: workflow.
+/// companyId is the scope key (the beneficiaries company at start). version is the CAS counter.
+/// hasPayEffect is CHECK = false in phase 2 (DEC-PO-139).
+model WorkflowInstance {
+  id                     String                  @id @default(uuid())
+  companyId              String
+  requestType            String
+  requestId              String
+  /// the pinned definition version (G6)
+  definitionId           String
+  status                 WorkflowInstanceStatus  @default(RUNNING)
+  previousStatus         WorkflowInstanceStatus?
+  version                Int                     @default(0)
+  round                  Int                     @default(1)
+  returns                Int                     @default(0)
+  beneficiaryEmployeeIds String[]                @default([])
+  /// null only for migrated rows (wfe-to-be section 17.3)
+  requesterUserId        String?
+  hasPayEffect           Boolean                 @default(false)
+  contextSnapshotJson    Json                    @default("{}")
+  managerChainSnapshot   Json                    @default("[]")
+  pathTaken              Json                    @default("[]")
+  /// a stack with set semantics; adapter codes
+  pauseReasons           String[]                @default([])
+  pausedAt               DateTime?
+  blockedAt              DateTime?
+  blockedReason          String?
+  awaitingRequirement    String?
+  awaitingSince          DateTime?
+  effectFailedAt         DateTime?
+  lastEffectError        String?
+  startedAt              DateTime                @default(now())
+  closedAt               DateTime?
+  closeKind              WorkflowCloseKind?
+  /// adapter code
+  closeSource            String?
+  closedByUserId         String?
+  createdAt              DateTime                @default(now())
+  updatedAt              DateTime                @updatedAt
+
+  company       Company            @relation(fields: [companyId], references: [id], onDelete: Restrict)
+  definition    WorkflowDefinition @relation(fields: [definitionId], references: [id], onDelete: Restrict)
+  requesterUser User?              @relation("WorkflowInstanceRequester", fields: [requesterUserId], references: [id], onDelete: Restrict)
+  closedByUser  User?              @relation("WorkflowInstanceClosedBy", fields: [closedByUserId], references: [id], onDelete: Restrict)
+  tasks         WorkflowTask[]
+
+  @@unique([requestType, requestId])
+  @@unique([id, companyId])
+  @@index([companyId, status])
+  @@index([requesterUserId])
+  @@index([definitionId])
+  @@index([beneficiaryEmployeeIds], type: Gin)
+}
+
+/// kind: REQUEST
+/// One approver step of a WorkflowInstance. Owner: workflow. companyId equals the instance company,
+/// enforced by the composite FK (instanceId, companyId).
+model WorkflowTask {
+  id                     String             @id @default(uuid())
+  instanceId             String
+  companyId              String
+  round                  Int
+  /// APPROVE tasks use the definition node id; other kinds use <kind>#<n>
+  nodeId                 String
+  kind                   WorkflowTaskKind   @default(APPROVE)
+  status                 WorkflowTaskStatus @default(OPEN)
+  candidateUserIds       String[]           @default([])
+  /// [{userId, via: STAGE|COVER|OWNER_COVER|DELEGATE, reason?, onBehalfOf?}]
+  candidatesSnapshotJson Json               @default("[]")
+  dueAt                  DateTime?
+  /// APPROVER_UNAVAILABLE / NO_MANAGER / MANAGER_ON_LEAVE / DEADLINE
+  coverReason            String?
+  overdueAt              DateTime?
+  escalatedAt            DateTime?
+  actedByUserId          String?
+  onBehalfOfUserId       String?
+  decisionFieldsJson     Json?
+  /// the time the task was closed (any non-OPEN status)
+  decidedAt              DateTime?
+  note                   String?
+  createdAt              DateTime           @default(now())
+  updatedAt              DateTime           @updatedAt
+
+  instance       WorkflowInstance @relation(fields: [instanceId, companyId], references: [id, companyId], onDelete: Restrict)
+  company        Company          @relation(fields: [companyId], references: [id], onDelete: Restrict)
+  actedBy        User?            @relation("WorkflowTaskActedBy", fields: [actedByUserId], references: [id], onDelete: Restrict)
+  onBehalfOfUser User?            @relation("WorkflowTaskOnBehalfOf", fields: [onBehalfOfUserId], references: [id], onDelete: Restrict)
+
+  @@unique([instanceId, round, nodeId, kind])
+  @@index([companyId, status])
+  @@index([candidateUserIds], type: Gin)
+  @@index([actedByUserId])
+}
+
+/// kind: FACT
+/// A grant of approval authority whose only state is revocation. Owner: workflow. One active delegate per
+/// delegator at any moment (EXCLUDE constraint in the migration SQL, DEC-PO-103). companyIds[] means it is
+/// not auto-scoped; workflow/scope.ts filters it. requestTypes empty = every type.
+model ApprovalDelegation {
+  id           String    @id @default(uuid())
+  fromUserId   String
+  toUserId     String
+  companyIds   String[]
+  requestTypes String[]  @default([])
+  startsAt     DateTime
+  endsAt       DateTime
+  /// required when the creator is not the delegator
+  reason       String?
+  createdById  String
+  createdAt    DateTime  @default(now())
+  revokedAt    DateTime?
+  revokedById  String?
+  revokeReason String?
+
+  fromUser  User  @relation("ApprovalDelegationFrom", fields: [fromUserId], references: [id], onDelete: Restrict)
+  toUser    User  @relation("ApprovalDelegationTo", fields: [toUserId], references: [id], onDelete: Restrict)
+  createdBy User  @relation("ApprovalDelegationCreatedBy", fields: [createdById], references: [id], onDelete: Restrict)
+  revokedBy User? @relation("ApprovalDelegationRevokedBy", fields: [revokedById], references: [id], onDelete: Restrict)
+
+  @@index([toUserId, startsAt])
+  @@index([fromUserId, startsAt])
+  @@index([companyIds], type: Gin)
 }
