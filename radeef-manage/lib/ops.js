@@ -900,4 +900,5 @@ module.exports = {
   employeeCounts,
   backupPanel,
   backupAll,
+  appDirFor,
 };

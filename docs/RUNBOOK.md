@@ -318,6 +318,25 @@ sudo -u radeef node --env-file=/etc/radeef/acme.env /opt/radeef/src/scripts/crea
 ```
 يجب أن يشير DNS النطاق إلى السيرفر قبل التشغيل (لشهادة Let's Encrypt)، أو استخدم `--skip-certbot` ثم أعد تشغيله بـ `--nginx-only` لاحقًا. في مسار Docker أضف خدمة للمستأجر في `docker-compose.yml` أولًا.
 
+### 3.5.1 جذر الثقة والأشخاص المسمَّون وبريد المالك (BL-PAY-017 / BL-PAY-022)
+لا تُكتب هذه من داخل التطبيق ولا بـ `UPDATE` مباشر: تكتبها أوامر رديف (عمليات iam عبر البوابة، مسجّلة في `AuditRecord` باسم المشغّل ومرجع طلب المالك الرسمي). من اللوحة (`POST /api/tenants/identity`) أو من أداة اللوحة:
+```bash
+node cli.js identity acme status                                   # الجذر، القائمة، بريد المالك، الرموز المنتظرة
+echo '{"requestRef":"REQ-2026-041","confirm":"acme","email":"root@acme.sa"}' | node cli.js identity acme set-root
+echo '{"requestRef":"REQ-2026-041","email":"cfo@acme.sa","nationalId":"1012345678","personName":"..."}' | node cli.js identity acme register-person
+echo '{"requestRef":"REQ-2026-041","email":"cfo@acme.sa"}' | node cli.js identity acme link-person        # حساب قائم بنفس البريد
+echo '{"requestRef":"REQ-2026-041","email":"cfo@acme.sa","role":"FINANCE_MANAGER"}' | node cli.js identity acme invite-person
+echo '{"requestRef":"REQ-2026-041","email":"owner@acme.sa","mobile":"+9665..."}' | node cli.js identity acme set-owner-contact
+echo '{"requestRef":"REQ-2026-041","email":"cfo@acme.sa"}' | node cli.js identity acme release-code       # بعد أن يبدأ الجذر الإقرار
+```
+أو مباشرة على السيرفر: `node --env-file=/etc/radeef/acme.env scripts/vendor.mjs < request.json` (الحقول نفسها مع `command` و`operator` و`requestId` من 32 حرفاً سداسياً).
+- **set-root** مرة واحدة بطلب المالك. الاستبدال بجذر آخر يحتاج `"replaceCurrent": true` وطلباً جديداً؛ إعادة تأكيد جذر معلَّق (بعد إعادة ضبطه) هي `set-root` لنفس البريد. **suspend-root** (`reason`) يجمّد الإقرارات الجديدة.
+- الطلب يأتي على stdin لا على سطر الأوامر (قد يحمل رقم هوية). رقم الهوية لا يُخزَّن: بصمة HMAC بمفتاح `DATA_ENCRYPTION_KEY` للمستأجر.
+- **ROOT_ATTEST_OWN:** حين يبدأ الجذر إقرار شخص مسمّى لا يظهر له رمز. **release-code** يعرض الرمز للمشغّل مرة واحدة؛ يسلّمه لصاحب الحساب على وسيلة التواصل في طلب المالك، ولا يُكتب في أي سجل أو تذكرة. ضياع الرد يعني أن يبدأ الجذر الإقرار من جديد.
+- **تسليم الرمز (DEC-PO-143، RT-PAY-1405):** يُكشف الرمز لمشغّل رديف مرة واحدة، فيسلّمه **هاتفياً** للشخص المذكور في طلب المالك الرسمي، على الرقم الوارد فيه. ينتقل إلى رسالة SMS عند اعتماد مزود الرسائل (G8).
+- **سحب شخص مسمّى (revoke-person):** إن كان حسابه مُقرّاً به سقط إقراره فوراً (UNATTESTED، سبب NAMED_PERSON_REVOKED)، ولا يعيد إقراره إلا جذر الثقة.
+- أي تغيير لبريد حساب مسمّى بعد ربطه يفك الربط؛ يعيده **link-person** بطلب المالك.
+
 ### 3.6 إيقاف مستأجر أو حذفه
 1. نسخة أخيرة: `ops/backup.sh <tenant>` وانقلها خارج السيرفر.
 2. `pm2 delete <tenant> && pm2 save` (أو احذف خدمته من compose ثم `docker compose up -d --remove-orphans`).

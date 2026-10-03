@@ -15,6 +15,12 @@
  *   node cli.js commercial <name> [--price N] [--currency SAR] [--cycle annual] [--paid-until YYYY-MM-DD]
  *                                 [--vat-rate N] [--includes-vat true|false]   (omitted = cleared)
  *   node cli.js notices                       (last license e-mails and their outcome)
+ *   node cli.js identity <name> status        (TENANT_ROOT, named people, owner contact, codes waiting; read only)
+ *   node cli.js identity <name> <command> < request.json
+ *                                 set-root | suspend-root | register-person | revoke-person | link-person |
+ *                                 invite-person | set-owner-contact | release-code (BL-PAY-017 / BL-PAY-022).
+ *                                 The JSON (requestRef, confirm, fields) comes on stdin, never on the command
+ *                                 line (it can carry a national id). Same validation as the panel.
  *
  * Connection settings come from the environment / radeef-manage/.env (see .env.example):
  * SSH_HOST, SSH_USER, SSH_KEY_PATH (or SSH_PASSWORD), SSH_HOST_FINGERPRINT, PGHOST/PGUSER/PGPASSWORD…
@@ -26,6 +32,25 @@ const ssh = require('./lib/ssh');
 const ops = require('./lib/ops');
 const V = require('./lib/validate');
 const { openStore } = require('./lib/store');
+const identity = require('./lib/identity');
+
+/** All of stdin (the identity request), at most 64 KB. */
+async function readStdin() {
+  const chunks = [];
+  let size = 0;
+  for await (const chunk of process.stdin) {
+    size += chunk.length;
+    if (size > 64 * 1024) throw new Error('request too large');
+    chunks.push(chunk);
+  }
+  return Buffer.concat(chunks).toString('utf8');
+}
+
+/** The CLI operator recorded on the tenant's audit rows: cli:<local user>. */
+function cliOperator() {
+  const u = String(require('os').userInfo().username || 'unknown').replace(/[^A-Za-z0-9._-]/g, '_').slice(0, 60);
+  return `cli:${u}`.replace(/:/g, '.');
+}
 
 const c = {
   reset: '\x1b[0m',
@@ -69,6 +94,10 @@ ${c.bright}رديف — Radeef Tenant Manager CLI${c.reset}
   ${c.green}node cli.js commercial <name> [--price N] [--currency SAR] [--cycle annual] [--paid-until YYYY-MM-DD] [--vat-rate N] [--includes-vat true|false]${c.reset}
       الحقول التجارية الاختيارية (ما لم يُمرَّر يُفرَّغ)
   ${c.green}node cli.js notices${c.reset}                           آخر رسائل الترخيص ونتيجتها
+  ${c.green}node cli.js identity <name> status${c.reset}             جذر الثقة والأشخاص المسمَّون وبريد المالك (قراءة فقط)
+  ${c.green}node cli.js identity <name> <command> < request.json${c.reset}
+      set-root | suspend-root | register-person | revoke-person | link-person | invite-person | set-owner-contact | release-code
+      الطلب JSON على stdin (requestRef، confirm، الحقول؛ اسم الشخص personName)، لا على سطر الأوامر
 `);
 }
 
@@ -199,6 +228,31 @@ async function main() {
         for (const n of await store.lastNotices(50)) {
           console.log(`${n.day}  ${String(n.name).padEnd(18)} ${String(n.kind).padEnd(8)} ${String(n.days_remaining ?? '').padStart(3)}  ${n.outcome}`);
         }
+        break;
+      }
+      case 'identity': {
+        const name = V.validateExistingName(args[1]);
+        const sub = String(args[2] || '');
+        const row = await store.get(name);
+        if (!row) throw new ops.OpError('النسخة غير مسجلة في لوحة الإدارة', 404);
+        const operator = cliOperator();
+        let request;
+        if (sub === 'status') request = identity.statusRequest(operator);
+        else {
+          let body;
+          try {
+            body = JSON.parse(await readStdin());
+          } catch {
+            throw new ops.OpError('أرسل الطلب JSON على stdin');
+          }
+          request = identity.buildVendorRequest({ ...body, name, command: sub }, operator).request;
+        }
+        const result = await ssh.withConnection(sshOptions, (conn) =>
+          identity.runVendorCommand({ exec: ssh.exec, conn, appDir: ops.appDirFor(row, cfg), request }),
+        );
+        if (request.command !== 'status') console.error(`[audit] ${operator} identity ${request.command} on ${name} (owner request ${request.requestRef}; id ${request.requestId})`);
+        // The result goes to stdout only (release-code: the code, once; nothing is written to a log).
+        console.log(JSON.stringify(result, null, 2));
         break;
       }
       default:

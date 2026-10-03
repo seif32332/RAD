@@ -78,6 +78,12 @@ export {
   protectedByTwoPerson,
   attestationChain,
   attestProblems,
+  attestPlan,
+  namedPersonOf,
+  namedLinkIntact,
+  ROOT_ATTEST_OWN_WAIVES,
+  ROOT_ATTEST_OWN_STARTED_EVENT,
+  NAMED_PERSON_SELECT,
   linkConfirmReasons,
   canApproveChange,
   needsTwoChannel,
@@ -99,7 +105,7 @@ export {
   isResetMarker,
   inspectCredentialToken,
 } from './identity';
-export type { IdentityUser, IdentityView, AttestProblem, ChainResult } from './identity';
+export type { IdentityUser, IdentityView, AttestProblem, ChainResult, AttestPlan, NamedPersonLink } from './identity';
 export {
   AttestRefusedError,
   createUser,

@@ -15,6 +15,8 @@ import {
   credentialCodeFor,
   identityOf,
   identityView,
+  namedLinkIntact,
+  namedPersonOf,
   rejectLink,
   requestCredentialReset,
   resolveActor,
@@ -36,7 +38,9 @@ export const dynamic = 'force-dynamic';
 //         { action: 'attest', attestedEmail, emailConfirmed: true, historyReviewed: true, verificationNote }
 //               a re-attestation completes at once; a first attestation answers with the 8-digit CODE, shown
 //               ONCE, that the attester hands over in person (it is never stored or emailed); the holder
-//               completes it with the emailed link + the code.
+//               completes it with the emailed link + the code. ROOT_ATTEST_OWN (BL-PAY-022, DEC-PO-018: the root
+//               and an account Radeef linked to a person the owner named): 202 WITHOUT a code; Radeef releases
+//               the code from the vendor panel (RT-PAY-1301: the root never holds both channels).
 //         { action: 'resetCredentials', reason? }               identity.resetCredentials (202 when a second
 //               person must approve it, DEC-PO-024)
 // The operation key: the Idempotency-Key header, else a fresh one (a double click with the header replays).
@@ -105,15 +109,19 @@ export async function GET(_req: Request, { params }: Ctx) {
     const id = zId.parse((await params).id);
     const identity = await identityOf(prisma, id);
     if (!identity) throw notFound('المستخدم غير موجود');
-    const [link, pending, history] = await Promise.all([
+    const [link, pending, history, named] = await Promise.all([
       prisma.userEmployeeLink.findFirst({
         where: { userId: id, status: { in: [...OPEN_LINK_STATUSES] } },
         select: { id: true, employeeId: true, status: true, proposedById: true, proposedAt: true, employee: { select: { firstNameArabic: true, lastNameArabic: true, employeeId: true } } },
       }),
       prisma.identityChangeRequest.findFirst({ where: { userId: id, status: 'PENDING' }, select: { id: true, kind: true, nextRole: true, requestedById: true, requestedAt: true, reason: true } }),
       credentialHistory(id),
+      namedPersonOf(prisma, id),
     ]);
-    return NextResponse.json({ userId: id, email: identity.email, identity: identityView(identity), employeeLink: link, pendingChange: pending, credentialHistory: history });
+    // The owner's named-person list entry (read only; written by Radeef's vendor panel, BL-PAY-022): shown to the
+    // root, who may attest the account under ROOT_ATTEST_OWN while the link is intact. No national id, no hash.
+    const namedPerson = named ? { email: named.email, requestRef: named.requestRef, linkedAt: named.linkedAt, intact: namedLinkIntact(named, identity) } : null;
+    return NextResponse.json({ userId: id, email: identity.email, identity: identityView(identity), namedPerson, employeeLink: link, pendingChange: pending, credentialHistory: history });
   } catch (err) {
     return handleApiError(err, 'users:[id]:identity:GET');
   }
@@ -160,6 +168,19 @@ export async function POST(req: Request, { params }: Ctx) {
           ipAddress: ip,
         }),
       );
+      if (r.status === 'PENDING_SETUP' && r.tokenId && r.codeDelivery === 'VENDOR') {
+        return NextResponse.json(
+          {
+            message:
+              'بدأ إقرار الجذر لشخص سمّاه المالك (ROOT_ATTEST_OWN): أُرسل رابط لمرة واحدة إلى البريد الذي سجّلته رديف، وتسلّم رديف الرمز لصاحب الحساب مباشرة. لا يُعد الحساب مُقرّاً به قبل أن يستخدم الرابط والرمز معاً.',
+            status: r.status,
+            rootAttestOwn: true,
+            expiresAt: r.expiresAt,
+            replayed: r.replayed,
+          },
+          { status: 202, headers: { 'Cache-Control': 'no-store' } },
+        );
+      }
       if (r.status === 'PENDING_SETUP' && r.tokenId) {
         return NextResponse.json(
           {

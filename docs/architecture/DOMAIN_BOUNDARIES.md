@@ -16,6 +16,8 @@ src/modules/<domain>/
 
 الكود الحالي في `src/lib/*` و`src/app/api/*` **يُنقل تدريجياً** مع كل حزمة من الخطة، ولا يُنقل دفعة واحدة. ويحرس الانتقالَ الخطُّ الأساسي في اختبارات ARCH.
 
+**استثناء iam (ADR-0008):** `src/modules/iam/vendor-cli.ts` نقطة دخول iam الخاصة بسطر الأوامر، تشغّلها لوحة المورّد وحدها عبر SSH؛ و`transitions/vendor.ts` (كتّاب TENANT_ROOT و`TenantNamedPerson`) لا يصدّره `index.ts`، فلا يصل إليه مسار ولا صفحة ولا مهمة.
+
 المسارات (`src/app/api/**/route.ts`) رقيقة: تتحقق من المدخلات، وتبني السياق، وتستدعي الوحدة، وتعيد الاستجابة. **لا منطق عمل في المسار.**
 
 ## 5.2 ملكية الجداول
@@ -25,7 +27,7 @@ src/modules/<domain>/
 | الوحدة | تملك (الحالي) | تملك (جديد في الخطة) |
 |---|---|---|
 | **platform** | AuditLog (قديم، يُكتب بالإضافة فقط، ADR-0003)، SystemSetting، JobRun، NotificationOutbox، UploadedFile | DomainEvent، EventConsumption، OperationLog، AuditRecord (سجل التدقيق غير القابل للتعديل، ADR-0003)، Discrepancy، InvariantRun |
-| **iam** | User، RolePermission، UserCompanyScope | Permission، RoleGrant (P6-AUTHZ)، MfaFactor، UserEmployeeLink، CredentialToken، IdentityChangeRequest (BL-PAY-005، ADR-0007) |
+| **iam** | User، RolePermission، UserCompanyScope | Permission، RoleGrant (P6-AUTHZ)، MfaFactor، UserEmployeeLink، CredentialToken، IdentityChangeRequest (BL-PAY-005، ADR-0007)، TenantNamedPerson (BL-PAY-022، ADR-0008) |
 | **rules** | RuleParameter، GosiRate | CompanyRuleOverride |
 | **calendar** | WorkSchedule (يصبح WorkPattern) | HolidayCalendar، RamadanPeriod |
 | **org** | Company، Administration، Branch، Department، TransferRequest (يُدمج في قرار النقل الموحد، P3-ORG) | AssignmentPeriod، Position، JobGrade، CostCenter |

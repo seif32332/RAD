@@ -63,6 +63,8 @@ COPY --from=builder --chown=nextjs:nodejs /app/scripts ./scripts
 # TypeScript bundled by `npm run build` (scripts/build-jobs.mjs). Its only packages besides Prisma are
 # the ones below (ALLOWED_PACKAGES there; both have no dependencies of their own).
 COPY --from=builder --chown=nextjs:nodejs /app/dist/jobs ./dist/jobs
+# Radeef's vendor CLI (BL-PAY-017 / BL-PAY-022): `node scripts/vendor.mjs` runs dist/vendor/vendor.cjs, same packages.
+COPY --from=builder --chown=nextjs:nodejs /app/dist/vendor ./dist/vendor
 COPY --from=builder --chown=nextjs:nodejs /app/node_modules/nodemailer ./node_modules/nodemailer
 COPY --from=builder --chown=nextjs:nodejs /app/node_modules/zod ./node_modules/zod
 # Fails the image build if the job bundle cannot load in this runtime (a package missing above).

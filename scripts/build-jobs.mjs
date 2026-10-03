@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 // Builds the background-job runner (P1-FND-JOBS, DEC-PO-121) from the modules' own TypeScript code
-// into ONE CommonJS file, dist/jobs/jobs.cjs, that plain `node` runs (scripts/jobs.mjs loads it).
+// into ONE CommonJS file, dist/jobs/jobs.cjs, that plain `node` runs (scripts/jobs.mjs loads it), and the
+// same way Radeef's vendor CLI (BL-PAY-017 / BL-PAY-022: src/modules/iam/vendor-cli.ts -> dist/vendor/vendor.cjs, loaded by
+// scripts/vendor.mjs, run by radeef-manage over SSH).
 // Tooling only: no business rule and no database access here (ARCH-008).
 //
 //   node scripts/build-jobs.mjs [--out <dir>]      (npm run build:jobs; part of npm run build)
@@ -21,6 +23,7 @@ import ts from 'typescript';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 export const ENTRY = 'src/jobs/cli.ts';
+export const VENDOR_ENTRY = 'src/modules/iam/vendor-cli.ts';
 /** Packages the bundle may require at run time (Dockerfile runner stage: keep in sync). */
 /** zod and nodemailer have no dependencies of their own; @prisma/client needs the generated .prisma/client. */
 export const ALLOWED_PACKAGES = ['@prisma/client', 'nodemailer', 'zod'];
@@ -161,24 +164,29 @@ module.exports = __load(${JSON.stringify(entry)});
   return { bundle, modules: ids, externals: [...externals.keys()].sort() };
 }
 
+function writeBundle(entry, outDir, file) {
+  const started = Date.now();
+  const { bundle, modules, externals } = buildJobsBundle({ entry });
+  mkdirSync(outDir, { recursive: true });
+  writeFileSync(path.join(outDir, file), bundle);
+  writeFileSync(
+    path.join(outDir, 'manifest.json'),
+    JSON.stringify({ entry, builtAt: new Date().toISOString(), externals, modules }, null, 1) + '\n',
+  );
+  console.log(`[build-jobs] ${modules.length} modules -> ${path.relative(ROOT, outDir)}/${file} (${Math.round(bundle.length / 1024)} KB, packages: ${externals.join(', ') || 'none'}) in ${Date.now() - started} ms`);
+}
+
 function main(argv) {
   const outIdx = argv.indexOf('--out');
   const outDir = path.resolve(ROOT, outIdx >= 0 ? argv[outIdx + 1] : 'dist/jobs');
-  const started = Date.now();
-  const { bundle, modules, externals } = buildJobsBundle();
-  mkdirSync(outDir, { recursive: true });
-  writeFileSync(path.join(outDir, 'jobs.cjs'), bundle);
-  writeFileSync(
-    path.join(outDir, 'manifest.json'),
-    JSON.stringify({ entry: ENTRY, builtAt: new Date().toISOString(), externals, modules }, null, 1) + '\n',
-  );
-  console.log(`[build-jobs] ${modules.length} modules -> ${path.relative(ROOT, outDir)}/jobs.cjs (${Math.round(bundle.length / 1024)} KB, packages: ${externals.join(', ') || 'none'}) in ${Date.now() - started} ms`);
+  writeBundle(ENTRY, outDir, 'jobs.cjs');
+  writeBundle(VENDOR_ENTRY, path.resolve(outDir, '..', 'vendor'), 'vendor.cjs');
 }
 
 const invokedDirectly = process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url);
 if (invokedDirectly) {
   try {
-    if (!existsSync(path.join(ROOT, ENTRY))) throw new Error(`${ENTRY} not found`);
+    for (const e of [ENTRY, VENDOR_ENTRY]) if (!existsSync(path.join(ROOT, e))) throw new Error(`${e} not found`);
     main(process.argv.slice(2));
   } catch (err) {
     console.error(`[build-jobs] FAILED: ${err instanceof Error ? err.message : err}`);

@@ -116,7 +116,18 @@ node cli.js check-licenses
 node cli.js employees        # عدد الموظفين النشطين لكل نسخة (قراءة فقط)
 node cli.js commercial <name> [--price N] [--currency SAR] [--cycle annual] [--paid-until YYYY-MM-DD] [--vat-rate N] [--includes-vat true|false]
 node cli.js notices          # آخر رسائل الترخيص ونتيجتها
+node cli.js identity <name> status                     # جذر الثقة والأشخاص المسمَّون (قراءة فقط)
+node cli.js identity <name> <command> < request.json   # set-root | suspend-root | register-person | revoke-person |
+                                                       # link-person | invite-person | set-owner-contact | release-code
 ```
+
+## جذر الثقة والأشخاص المسمَّون (BL-PAY-017 / BL-PAY-022)
+
+`GET /api/tenants/:name/identity` و`POST /api/tenants/identity` (`{ name, command, requestRef, confirm?, requestId?, … }`،
+واسم الشخص `personName`). اللوحة لا تلمس قاعدة المستأجر: تشغّل `scripts/vendor.mjs` داخل مجلد النسخة عبر SSH، والطلب
+JSON على stdin. كل كتابة تحتاج مرجع طلب المالك الرسمي، وتغيير الجذر وتعليقه وسحب شخص تحتاج كتابة اسم النسخة (`confirm`).
+`ADMIN_USERNAME` يُسجَّل اسماً للمشغّل على النسخة، فيجب أن يطابق `[A-Za-z0-9._@-]{1,64}`. الاختبارات: `npm test`
+(بلا تثبيت حزم).
 
 الأداة واللوحة تشتركان في `database.sqlite`. لا تشغّل عمليتي إنشاء/حذف متزامنتين من الأداة واللوحة معاً.
 

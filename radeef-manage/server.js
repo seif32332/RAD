@@ -22,6 +22,9 @@ const ssh = require('./lib/ssh');
 const ops = require('./lib/ops');
 const { openStore } = require('./lib/store');
 const { sendAlertEmail } = require('./lib/mailer');
+const { createAuth } = require('./lib/auth');
+const identity = require('./lib/identity');
+const { registerIdentityRoutes } = require('./lib/identity-routes');
 
 /* ------------------------------------------------------------------ startup (fail closed) */
 
@@ -45,7 +48,6 @@ try {
 const store = openStore();
 const getConn = () => ssh.connect(sshOptions);
 
-const SESSION_COOKIE = 'rm_sid';
 const SESSION_TTL_MS = 8 * 60 * 60 * 1000;
 const SESSION_IDLE_MS = 2 * 60 * 60 * 1000;
 const COOKIE_SECURE = env('COOKIE_SECURE', 'true') !== 'false';
@@ -85,109 +87,13 @@ app.use((req, res, next) => {
 app.use(express.json({ limit: '32kb' }));
 app.use(express.static(path.join(__dirname, 'public'), { index: 'index.html' }));
 
-/* ------------------------------------------------------------------ sessions */
+/* ------------------------------------------------------------------ sessions (lib/auth.js) */
 
-const sessions = new Map(); // token -> { username, createdAt, lastSeen }
-
-function parseCookies(header) {
-  const out = {};
-  for (const part of String(header || '').split(';')) {
-    const idx = part.indexOf('=');
-    if (idx === -1) continue;
-    const key = part.slice(0, idx).trim();
-    const value = part.slice(idx + 1).trim();
-    if (key) {
-      try {
-        out[key] = decodeURIComponent(value);
-      } catch {
-        out[key] = value;
-      }
-    }
-  }
-  return out;
-}
-
-function cookieString(value, maxAgeSec) {
-  return [
-    `${SESSION_COOKIE}=${value}`,
-    'Path=/',
-    'HttpOnly',
-    'SameSite=Strict',
-    COOKIE_SECURE ? 'Secure' : '',
-    `Max-Age=${maxAgeSec}`,
-  ]
-    .filter(Boolean)
-    .join('; ');
-}
-
-function getSession(req) {
-  const token = parseCookies(req.headers.cookie)[SESSION_COOKIE];
-  if (!token || !/^[a-f0-9]{64}$/.test(token)) return null;
-  const s = sessions.get(token);
-  if (!s) return null;
-  const now = Date.now();
-  if (now - s.createdAt > SESSION_TTL_MS || now - s.lastSeen > SESSION_IDLE_MS) {
-    sessions.delete(token);
-    return null;
-  }
-  s.lastSeen = now;
-  return { token, ...s };
-}
-
-setInterval(() => {
-  const now = Date.now();
-  for (const [token, s] of sessions) {
-    if (now - s.createdAt > SESSION_TTL_MS || now - s.lastSeen > SESSION_IDLE_MS) sessions.delete(token);
-  }
-}, 10 * 60 * 1000).unref();
-
-function authenticate(req, res, next) {
-  const session = getSession(req);
-  if (!session) return res.status(401).json({ success: false, error: 'غير مصرح — سجّل الدخول' });
-  req.session = session;
-  next();
-}
-
-/** CSRF defence in depth (the cookie is already SameSite=Strict). */
-function sameOriginWrite(req, res, next) {
-  if (req.method === 'GET' || req.method === 'HEAD') return next();
-  if (!req.is('application/json')) return res.status(415).json({ success: false, error: 'Content-Type must be application/json' });
-  const origin = req.headers.origin;
-  if (origin) {
-    let host = '';
-    try {
-      host = new URL(origin).host;
-    } catch {
-      host = '';
-    }
-    if (host !== req.get('host')) return res.status(403).json({ success: false, error: 'Cross-origin request rejected' });
-  }
-  next();
-}
+// The panel's own authentication: sessions, the login rate limit and the same-origin check on writes.
+const auth = createAuth({ username: ADMIN_USER, password: ADMIN_PASS, cookieSecure: COOKIE_SECURE, ttlMs: SESSION_TTL_MS, idleMs: SESSION_IDLE_MS });
+const { authenticate, sameOriginWrite } = auth;
+setInterval(() => auth.sweep(), 10 * 60 * 1000).unref();
 app.use('/api', sameOriginWrite);
-
-/* ------------------------------------------------------------------ login rate limit */
-
-const LOGIN_WINDOW_MS = 15 * 60 * 1000;
-const LOGIN_MAX_PER_IP = 5;
-const LOGIN_MAX_GLOBAL = 50;
-const loginFailures = new Map(); // key -> { count, first }
-
-function limited(key, max) {
-  const e = loginFailures.get(key);
-  if (!e) return false;
-  if (Date.now() - e.first > LOGIN_WINDOW_MS) {
-    loginFailures.delete(key);
-    return false;
-  }
-  return e.count >= max;
-}
-
-function recordFailure(key) {
-  const e = loginFailures.get(key);
-  if (!e || Date.now() - e.first > LOGIN_WINDOW_MS) loginFailures.set(key, { count: 1, first: Date.now() });
-  else e.count++;
-}
 
 /* ------------------------------------------------------------------ errors */
 
@@ -216,39 +122,9 @@ async function withSsh(fn) {
 
 /* ------------------------------------------------------------------ auth routes */
 
-app.post('/api/login', (req, res) => {
-  const ip = req.ip || 'unknown';
-  if (limited(`ip:${ip}`, LOGIN_MAX_PER_IP) || limited('global', LOGIN_MAX_GLOBAL)) {
-    return res.status(429).json({ success: false, error: 'محاولات كثيرة — حاول لاحقاً' });
-  }
-  const body = req.body || {};
-  const username = typeof body.username === 'string' ? body.username : '';
-  const password = typeof body.password === 'string' ? body.password : '';
-  const okUser = V.safeEqual(username, ADMIN_USER);
-  const okPass = V.safeEqual(password, ADMIN_PASS);
-  if (!(okUser && okPass)) {
-    recordFailure(`ip:${ip}`);
-    recordFailure('global');
-    console.warn(`[auth] failed login from ${ip}`);
-    return res.status(401).json({ success: false, error: 'اسم المستخدم أو كلمة المرور غير صحيحة' });
-  }
-  loginFailures.delete(`ip:${ip}`);
-  // Rotate: drop any session presented with this request.
-  const old = parseCookies(req.headers.cookie)[SESSION_COOKIE];
-  if (old) sessions.delete(old);
-  const token = crypto.randomBytes(32).toString('hex');
-  sessions.set(token, { username: ADMIN_USER, createdAt: Date.now(), lastSeen: Date.now() });
-  res.setHeader('Set-Cookie', cookieString(token, Math.floor(SESSION_TTL_MS / 1000)));
-  console.log(`[auth] login from ${ip}`);
-  res.json({ success: true, username: ADMIN_USER });
-});
+app.post('/api/login', (req, res) => auth.login(req, res));
 
-app.post('/api/logout', (req, res) => {
-  const token = parseCookies(req.headers.cookie)[SESSION_COOKIE];
-  if (token) sessions.delete(token);
-  res.setHeader('Set-Cookie', cookieString('', 0));
-  res.json({ success: true });
-});
+app.post('/api/logout', (req, res) => auth.logout(req, res));
 
 app.get('/api/session', authenticate, (req, res) => {
   res.json({ success: true, username: req.session.username });
@@ -496,6 +372,16 @@ app.get('/api/tenants/create-stream', authenticate, (req, res) => {
     clearInterval(ping);
     job.listeners.delete(res);
   });
+});
+
+/* ------------------------------------------------------------------ TENANT_ROOT and named people (BL-PAY-017 / 022) */
+
+registerIdentityRoutes(app, {
+  authenticate,
+  getTenant: (name) => store.get(name),
+  runVendor: (row, request) =>
+    withSsh((conn) => identity.runVendorCommand({ exec: ssh.exec, conn, appDir: ops.appDirFor(row, cfg), request })),
+  log: console,
 });
 
 /* ------------------------------------------------------------------ API 404 + errors */

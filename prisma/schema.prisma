@@ -107,6 +107,8 @@ model User {
   identityChangeRequests       IdentityChangeRequest[] @relation("IdentityChangeTarget")
   identityChangesRequested     IdentityChangeRequest[] @relation("IdentityChangeRequestedBy")
   identityChangesDecided       IdentityChangeRequest[] @relation("IdentityChangeDecidedBy")
+  // 9zl_tenant_named_person (BL-PAY-017 / BL-PAY-022)
+  namedPersons                 TenantNamedPerson[]     @relation("TenantNamedPersonUser")
   uploadedFiles   UploadedFile[]
   companyScopes                UserCompanyScope[]     @relation("ScopedUser") // back-relations of the foreign keys added by 9x_db_constraints (P1-FND-DB)
   paymentsRequested            PaymentRequest[]       @relation("PaymentRequestedBy")
@@ -184,6 +186,8 @@ enum IdentityDropReason {
   CREDENTIAL_RESET
   PROMOTION
   EMAIL_CHANGE
+  /// 9zl (DEC-PO-143): Radeef revoked the named person the account was attested as (ROOT_ONLY re-attests).
+  NAMED_PERSON_REVOKED
 }
 
 /// PROPOSED (one admin) -> CONFIRMED (a second person, BR-PAY-005) | REJECTED | CANCELLED; CONFIRMED or
@@ -232,9 +236,63 @@ model UserEmployeeLink {
 
 /// RESET: identity.resetCredentials (the holder chooses his password, DEC-PO-027). FIRST_ATTESTATION: the
 /// two-channel setup of a first attestation (link + a code the attester hands over, RT-PAY-1102 / 1201).
+/// INVITE: Radeef's invitation of a person the owner named (BL-PAY-022, pay-to-be "الشخص المسمّى"): the holder
+/// chooses his first password; the account stays UNATTESTED.
 enum CredentialTokenPurpose {
   RESET
   FIRST_ATTESTATION
+  INVITE
+}
+
+/// Who hands over the second-channel code of a first attestation: the attester in person (RT-PAY-1201), or
+/// Radeef from the vendor panel (ROOT_ATTEST_OWN, DEC-PO-018 / RT-PAY-1301: the root never holds the code).
+enum CredentialCodeDelivery {
+  ATTESTER
+  VENDOR
+}
+
+/// NAMED_PERSON: a person the business owner named in his formal request to Radeef (DEC-PO-018, ROOT_ATTEST_OWN).
+/// OWNER_CONTACT: the owner's own contact for the DEC-PO-022 channel (digest, confirmations). Both written by
+/// Radeef's vendor panel only (BL-PAY-017 / BL-PAY-022).
+enum TenantNamedPersonKind {
+  NAMED_PERSON
+  OWNER_CONTACT
+}
+
+/// The owner's formal request to Radeef, as a protected list (pay-to-be BR-PAY-005 "الأشخاص المسمَّون", §17;
+/// DEC-PO-016 / 018 / 022; RT-PAY-702 / 1301 / 1403). iam table, sole writer the vendor operations
+/// (src/modules/iam/vendor, run by radeef-manage over SSH); no in-app code writes it (money.gateway refuses).
+/// The national id is kept only as a keyed hash. A revoked row stays (history); a new request adds a new row.
+model TenantNamedPerson {
+  id               String                @id @default(uuid())
+  kind             TenantNamedPersonKind
+  /// Lower case. NAMED_PERSON: the address the ROOT_ATTEST_OWN link goes to (attestedEmail = this, RT-PAY-1301).
+  email            String?
+  /// OWNER_CONTACT: the owner's mobile (DEC-PO-022).
+  mobile           String?
+  name             String?
+  /// HMAC-SHA256 of the national id / iqama number with the tenant's data key (never the number itself).
+  nationalIdHash   String?
+  /// The reference of the owner's formal request (ticket / letter number).
+  requestRef       String
+  /// The vendor operator who registered it (radeef-manage user).
+  addedBy          String
+  addedAt          DateTime              @default(now())
+  /// The account of the named person (BL-PAY-023 / RT-PAY-1403: written by Radeef only). An email change of
+  /// that account after linkedAt breaks the link for ROOT_ATTEST_OWN (pay-to-be "يفك ربطه بالقائمة").
+  /// One open (not revoked) row per account: partial unique index of 9zl.
+  userId           String?
+  linkedAt         DateTime?
+  linkedBy         String?
+  revokedAt        DateTime?
+  revokedBy        String?
+  revokeRequestRef String?
+
+  user User? @relation("TenantNamedPersonUser", fields: [userId], references: [id], onDelete: Restrict)
+  credentialTokens CredentialToken[]
+
+  @@index([kind, revokedAt])
+  @@index([userId])
 }
 
 /// A one-time credential link. The secret is never stored: it is derived from the row id with the server
@@ -261,12 +319,18 @@ model CredentialToken {
   usedAt           DateTime?
   revokedAt        DateTime?
   revokeReason     String?
+  /// 9zl (BL-PAY-022): who delivers the code. VENDOR = ROOT_ATTEST_OWN; the code is released once to the
+  /// vendor operator (codeReleasedAt) and never shown in-app. namedPersonId: the list entry it relies on.
+  codeDelivery     CredentialCodeDelivery @default(ATTESTER)
+  codeReleasedAt   DateTime?
+  namedPersonId    String?
   createdAt        DateTime               @default(now())
 
   user          User                   @relation("CredentialTokenUser", fields: [userId], references: [id], onDelete: Cascade)
   issuedBy      User?                  @relation("CredentialTokenIssuedBy", fields: [issuedById], references: [id], onDelete: Restrict)
   attester      User?                  @relation("CredentialTokenAttester", fields: [attesterId], references: [id], onDelete: Restrict)
   changeRequest IdentityChangeRequest? @relation(fields: [changeRequestId], references: [id], onDelete: Cascade)
+  namedPerson   TenantNamedPerson?     @relation(fields: [namedPersonId], references: [id], onDelete: Restrict)
 
   @@index([userId])
 }

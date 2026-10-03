@@ -83,8 +83,11 @@ export function isMoneyTable(model: string): boolean {
  *     operations, promoteApprover, deactivateApprover, the exit of an employee's login);
  *   - Employee.userId (the access link, projection of UserEmployeeLink): every write.
  * The vendor scripts write isVendorStaff / identityStatus with their own client (BR-PAY-018 "السكربتات").
+ * BL-PAY-017 / BL-PAY-022: TenantNamedPerson (the owner's named people and contact) is an identity table too;
+ * it and User.tenantRoot are written only by the iam VENDOR operations (VENDOR_ONLY_* below), which no in-app
+ * operation's write list may name (iam's operations.ts, checked by x-security-root.test.ts).
  */
-export const IDENTITY_TABLES = ['UserEmployeeLink', 'CredentialToken', 'IdentityChangeRequest'] as const;
+export const IDENTITY_TABLES = ['UserEmployeeLink', 'CredentialToken', 'IdentityChangeRequest', 'TenantNamedPerson'] as const;
 
 export const USER_CONTROL_COLUMNS = [
   'createdById',
@@ -103,6 +106,10 @@ export const USER_CONTROL_COLUMNS = [
 ] as const;
 
 export const USER_CREDENTIAL_COLUMNS = ['passwordHash', 'email', 'role', 'isActive'] as const;
+
+/** Written only by the vendor operations (DEC-PO-016 / 018 / 022, ADR-0007 "لوحة المورّد فقط"). */
+export const VENDOR_ONLY_USER_COLUMNS = ['tenantRoot'] as const;
+export const VENDOR_ONLY_TABLES = ['TenantNamedPerson'] as const;
 
 export const IDENTITY_COLUMNS: Readonly<Record<string, readonly ProtectedColumns[]>> = Object.freeze({
   User: [

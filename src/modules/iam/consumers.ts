@@ -13,9 +13,42 @@ import { CREDENTIAL_LINK_ISSUED_EVENT, EMAIL_CHANGED_BY_ADMIN_EVENT, RESET_NOTIC
 
 export const CREDENTIAL_LINK_MAIL_CONSUMER = 'iam.credentialLinkMail';
 
-/** The email of one issued link (pure; Arabic). */
-export function credentialLinkMail(purpose: string, tokenId: string, expiresAt: Date): { subject: string; body: string } {
+/**
+ * The email of one issued link (pure; Arabic). codeDelivery VENDOR (ROOT_ATTEST_OWN, BL-PAY-022): the code comes
+ * from Radeef, not from an admin of the company. INVITE: Radeef's invitation of a person the owner named.
+ */
+export function credentialLinkMail(purpose: string, tokenId: string, expiresAt: Date, codeDelivery: string = 'ATTESTER'): { subject: string; body: string } {
   const until = expiresAt.toISOString().replace('T', ' ').slice(0, 16);
+  if (purpose === 'FIRST_ATTESTATION' && codeDelivery === 'VENDOR') {
+    return {
+      subject: 'رديف: تفعيل حسابك واختيار كلمة المرور',
+      body: [
+        'السلام عليكم،',
+        '',
+        'سمّاك صاحب شركتك في طلبه الرسمي لرديف، وبدأ جذر الثقة في شركتك إقرار هويتك في نظام رديف. لإتمام الإقرار اختر كلمة مرور جديدة من الرابط التالي:',
+        credentialLinkPlaceholder(tokenId),
+        '',
+        'سيطلب منك الرابط رمزاً من 8 أرقام يسلّمك إياه فريق رديف مباشرة عبر وسيلة التواصل المسجلة في طلب المالك. لا يُرسل الرمز بالبريد، ولا يملكه أحد من شركتك.',
+        `الرابط صالح لمرة واحدة حتى ${until} (UTC).`,
+        'إن لم تكن تنتظر هذه الرسالة فتجاهلها وأبلغ صاحب الشركة ورديف.',
+      ].join('\n'),
+    };
+  }
+  if (purpose === 'INVITE') {
+    return {
+      subject: 'رديف: دعوة لإنشاء حسابك',
+      body: [
+        'السلام عليكم،',
+        '',
+        'سمّاك صاحب شركتك في طلبه الرسمي لرديف، فأنشأت رديف حسابك في نظام رديف. اختر كلمة المرور من الرابط التالي:',
+        credentialLinkPlaceholder(tokenId),
+        '',
+        'لا يُعد حسابك مُقرّاً به بعد: يكمل جذر الثقة في شركتك إقرارك، ويصلك لذلك رابط آخر ورمز من رديف.',
+        `الرابط صالح لمرة واحدة حتى ${until} (UTC).`,
+        'إن لم تكن تنتظر هذه الرسالة فتجاهلها وأبلغ صاحب الشركة ورديف.',
+      ].join('\n'),
+    };
+  }
   if (purpose === 'FIRST_ATTESTATION') {
     return {
       subject: 'رديف: تفعيل حسابك واختيار كلمة المرور',
@@ -52,11 +85,14 @@ export const credentialLinkMailConsumer: EventConsumer = {
   async handle(event: DomainEventRecord, ctx) {
     const p = (event.payload ?? {}) as { tokenId?: unknown };
     if (typeof p.tokenId !== 'string') return { outcome: 'NOT_APPLICABLE' };
-    const row = await ctx.tx.credentialToken.findUnique({ where: { id: p.tokenId }, select: { id: true, purpose: true, sentTo: true, expiresAt: true, usedAt: true, revokedAt: true } });
+    const row = await ctx.tx.credentialToken.findUnique({
+      where: { id: p.tokenId },
+      select: { id: true, purpose: true, sentTo: true, expiresAt: true, usedAt: true, revokedAt: true, codeDelivery: true },
+    });
     if (!row || row.usedAt || row.revokedAt || row.expiresAt.getTime() <= Date.now()) return { outcome: 'LINK_NOT_USABLE' };
     const { enqueueEmails, isOutboxEmailAddress } = await import('@/modules/platform');
     if (!isOutboxEmailAddress(row.sentTo)) return { outcome: 'NO_ADDRESS' };
-    const msg = credentialLinkMail(row.purpose, row.id, row.expiresAt);
+    const msg = credentialLinkMail(row.purpose, row.id, row.expiresAt, row.codeDelivery);
     const added = await enqueueEmails(ctx.tx, [{ idempotencyKey: `${CREDENTIAL_LINK_MAIL_CONSUMER}:${row.id}`, recipient: row.sentTo, ...msg }]);
     return { outcome: added ? 'QUEUED' : 'ALREADY_QUEUED' };
   },

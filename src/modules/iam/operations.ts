@@ -4,11 +4,19 @@
 // columns outside one of these operations (platform money/tables.ts IDENTITY_*); iam's transitions
 // (transitions/identity.ts) are the only callers. None of them moves money: they carry no beneficiary, and
 // the act only names the kind of step for the records.
-import { USER_CONTROL_COLUMNS, defineMoneyOperation } from '@/modules/platform';
+//
+// BL-PAY-017 / BL-PAY-022: the in-app operations never name User.tenantRoot or TenantNamedPerson (the gateway
+// refuses those writes inside them); rootSuspendedAt only where a credential reset suspends a root (RT-PAY-1004).
+// The VENDOR operations at the end are SYSTEM operations run by Radeef's vendor CLI (vendor-cli.ts →
+// transitions/vendor.ts), never by a route.
+import { USER_CONTROL_COLUMNS, VENDOR_ONLY_USER_COLUMNS, defineMoneyOperation } from '@/modules/platform';
 
 const USER_STANDING = ['role', 'isActive', 'sessionVersion', 'documentsOnlyUntil'] as const;
 const USER_CREDENTIALS = ['passwordHash', 'email', 'sessionVersion'] as const;
-const IDENTITY = [...USER_CONTROL_COLUMNS] as const;
+/** The User control columns an in-app operation may write: never the root mark, never the root suspension. */
+const IDENTITY = USER_CONTROL_COLUMNS.filter((c) => !(VENDOR_ONLY_USER_COLUMNS as readonly string[]).includes(c) && c !== 'rootSuspendedAt');
+/** A credential reset of the root suspends his powers (RT-PAY-1004, DEC-PO-027): the reset operations only. */
+const IDENTITY_RESET = [...IDENTITY, 'rootSuspendedAt'] as const;
 
 export type IdentitySubject = { userId: string };
 
@@ -18,7 +26,8 @@ export const USER_CREATE = defineMoneyOperation<IdentitySubject>({
   owner: 'iam',
   act: 'REQUEST',
   source: 'USER',
-  writes: { User: '*' },
+  // An explicit list (BL-PAY-017): a new account never starts as root, vendor staff or attested.
+  writes: { User: ['email', 'passwordHash', 'role', 'isActive', 'name', 'createdById', 'emailSetById', 'emailSetAt'] },
 });
 
 /** An admin edits an account that does not count toward ENFORCED: email (unattested only), role, active. */
@@ -59,7 +68,7 @@ export const CHANGE_DECIDE = defineMoneyOperation<IdentitySubject>({
   act: 'APPROVE',
   source: 'USER',
   notBeneficiary: false,
-  writes: { IdentityChangeRequest: '*', User: [...USER_STANDING, ...USER_CREDENTIALS, ...IDENTITY], CredentialToken: '*' },
+  writes: { IdentityChangeRequest: '*', User: [...USER_STANDING, ...USER_CREDENTIALS, ...IDENTITY_RESET], CredentialToken: '*' },
 });
 
 /** identity.resetCredentials: the account becomes UNATTESTED, every session ends, a one-time link is issued. */
@@ -69,7 +78,7 @@ export const CREDENTIAL_RESET = defineMoneyOperation<IdentitySubject>({
   act: 'APPLY_CHANGE',
   source: 'USER',
   notBeneficiary: false,
-  writes: { IdentityChangeRequest: '*', User: [...USER_CREDENTIALS, ...IDENTITY], CredentialToken: '*' },
+  writes: { IdentityChangeRequest: '*', User: [...USER_CREDENTIALS, ...IDENTITY_RESET], CredentialToken: '*' },
 });
 
 /** The two-step link (BR-PAY-005): proposal, confirmation (writes the Employee.userId projection), end. */
@@ -168,4 +177,59 @@ export const ACCESS_END_ON_EXIT = defineMoneyOperation<IdentitySubject>({
   act: 'APPLY_CHANGE',
   source: 'SYSTEM',
   writes: { User: ['isActive', 'documentsOnlyUntil', 'sessionVersion'] },
+});
+
+// ---------------------------------------------------------------------------------------------------
+// VENDOR operations (BL-PAY-017 / BL-PAY-022; DEC-PO-016 / 018 / 022): Radeef acting on the owner's formal
+// request, from the vendor panel (radeef-manage) through the vendor CLI on the tenant's host. SYSTEM: there is
+// no tenant session; the vendor operator and the request reference are recorded on every audit row. Their only
+// caller is src/modules/iam/transitions/vendor.ts (static test x-security-root.test.ts).
+// ---------------------------------------------------------------------------------------------------
+
+/** Mark TENANT_ROOT, re-root on a new formal request, or restore a suspended root (DEC-PO-016, RT-PAY-603). */
+export const VENDOR_SET_ROOT = defineMoneyOperation<IdentitySubject>({
+  name: 'iam.vendor.setRoot',
+  owner: 'iam',
+  act: 'APPLY_CHANGE',
+  source: 'SYSTEM',
+  writes: { User: ['tenantRoot', 'rootSuspendedAt'] },
+});
+
+/** Suspend the root's powers (the owner's request; a reset outside the app). New attestations freeze. */
+export const VENDOR_SUSPEND_ROOT = defineMoneyOperation<IdentitySubject>({
+  name: 'iam.vendor.suspendRoot',
+  owner: 'iam',
+  act: 'APPLY_CHANGE',
+  source: 'SYSTEM',
+  writes: { User: ['rootSuspendedAt'] },
+});
+
+/**
+ * The owner's named people and contact (TenantNamedPerson): register, link to an account, revoke. A revocation
+ * drops the linked account's attestation (DEC-PO-143): the three drop columns of User, nothing else.
+ */
+export const VENDOR_NAMED_PERSON = defineMoneyOperation<IdentitySubject>({
+  name: 'iam.vendor.namedPerson',
+  owner: 'iam',
+  act: 'APPLY_CHANGE',
+  source: 'SYSTEM',
+  writes: { TenantNamedPerson: '*', CredentialToken: ['revokedAt', 'revokeReason'], User: ['identityStatus', 'identityDroppedReason', 'identityDroppedAt'] },
+});
+
+/** Radeef's invitation of a named person: the account (UNATTESTED, no creator), its list link, a one-time link. */
+export const VENDOR_INVITE = defineMoneyOperation<IdentitySubject>({
+  name: 'iam.vendor.invite',
+  owner: 'iam',
+  act: 'APPLY_CHANGE',
+  source: 'SYSTEM',
+  writes: { User: '*', TenantNamedPerson: '*', CredentialToken: '*' },
+});
+
+/** ROOT_ATTEST_OWN: Radeef releases the second-channel code once to its operator (RT-PAY-1301). */
+export const VENDOR_RELEASE_CODE = defineMoneyOperation<IdentitySubject>({
+  name: 'iam.vendor.releaseCode',
+  owner: 'iam',
+  act: 'APPLY_CHANGE',
+  source: 'SYSTEM',
+  writes: { CredentialToken: ['codeReleasedAt'] },
 });

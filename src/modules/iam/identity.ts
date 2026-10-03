@@ -97,16 +97,17 @@ export type AttestProblem =
   | 'TOUCHED_BY_ATTESTER'
   | 'EMAIL_SET_BY_ATTESTER'
   | 'EMAIL_NOT_SELF_CONFIRMED'
-  | 'UNKNOWN_CREATOR_ROOT_ONLY';
+  | 'UNKNOWN_CREATOR_ROOT_ONLY'
+  | 'NAMED_LINK_BROKEN';
 
 export const ATTEST_MESSAGES: Readonly<Record<AttestProblem, string>> = Object.freeze({
   NOT_ATTESTED: 'المُقرّ يجب أن يكون هو نفسه مُقرّاً بهويته من سلسلة الجذر (أو الجذر نفسه)',
   NOT_APPROVER: 'المُقرّ يجب أن يحمل دور معتمد مالي',
   VENDOR: 'حسابات رديف لا تُقرّ هويات المستخدمين',
   SELF: 'لا يجوز لك إقرار هويتك بنفسك',
-  CREATOR: 'لا يُقرّ الحساب من أنشأه، ولا من أنشأ منشئه، ولا من في سلسلة إقراره (إقرار الجذر لما سمّاه المالك يأتي مع قائمة الأشخاص المسمَّين، BL-PAY-022)',
+  CREATOR: 'لا يُقرّ الحساب من أنشأه، ولا من أنشأ منشئه، ولا من في سلسلة إقراره. إن سمّى المالك صاحبه في طلبه الرسمي لرديف فيقرّه الجذر بعد أن تسجّله رديف في قائمة الأشخاص المسمَّين وتربطه بالحساب (ROOT_ATTEST_OWN)',
   CHAIN: 'سلسلة إقرار المُقرّ لا تعود إلى جذر ثقة فعّال، أو تمر بهذا الحساب نفسه (لا يقرّ حسابان كلٌّ منهما بالآخر)',
-  ROOT_ONLY: 'بعد إعادة ضبط بيانات الدخول أو الترقية إلى دور معتمد مالي لا يعيد الإقرار إلا جذر الثقة (TENANT_ROOT)',
+  ROOT_ONLY: 'بعد إعادة ضبط بيانات الدخول أو الترقية إلى دور معتمد مالي أو سحب رديف للشخص المسمّى لا يعيد الإقرار إلا جذر الثقة (TENANT_ROOT)',
   RESET_PARTY: 'لا يعيد الإقرار من طلب إعادة الضبط أو وافق عليها',
   TARGET_INACTIVE: 'الحساب معطّل',
   TARGET_VENDOR: 'حسابات رديف لا يُقرّ بها (هوية المورّد فقط)',
@@ -119,6 +120,8 @@ export const ATTEST_MESSAGES: Readonly<Record<AttestProblem, string>> = Object.f
     'بريد الحساب عيّنه مسؤول: يؤكد صاحب الحساب بريده بنفسه من صفحة حسابه (تأكيد البريد) قبل الإقرار الأول، فلا يُرسل الرابط إلى بريد اختاره غيره',
   EMAIL_SET_BY_ATTESTER:
     'بريد الحساب عيّنه المُقرّ نفسه أو شخص أقرّه هو: لا يُرسل رابط الإقرار إلى بريد اختاره المُقرّ. يغيّر صاحب الحساب بريده بنفسه أو يقرّه مسؤول آخر مُقرّ به',
+  NAMED_LINK_BROKEN:
+    'الحساب مسجّل لدى رديف لشخص سمّاه المالك، لكن ربطه انفكّ (تغيّر بريد الحساب بعد الربط أو لم يعد يطابق البريد المسمّى): اطلب من رديف إعادة الربط بطلب المالك',
 });
 
 export interface ChainResult {
@@ -182,8 +185,9 @@ export async function attestProblems(db: Db, attester: IdentityUser, target: Ide
   // the attester's SIDE (attesterSide): himself, every account he created or attested (transitively, so a
   // second login he created counts), and his own attestation chain up to the root.
   const side = await attesterSide(db, attester);
-  // ROOT_ATTEST_OWN (DEC-PO-018) needs TenantNamedPerson (BL-PAY-022): until then nobody attests an account that
-  // someone of his side created, directly or through accounts it created (creator ancestry).
+  // Nobody attests an account that someone of his side created, directly or through accounts it created
+  // (creator ancestry). The exception is ROOT_ATTEST_OWN (DEC-PO-018, attestPlan below): the acting root and an
+  // account Radeef linked to a person the owner named, with the link and the code coming from Radeef.
   const createdBySide = (await creatorAncestry(db, target)).some((id) => side.has(id));
   if (createdBySide) out.push('CREATOR');
   // Nobody attests an account whose email, role or (legacy) password someone of his side changed.
@@ -202,8 +206,9 @@ export async function attestProblems(db: Db, attester: IdentityUser, target: Ide
   }
   const chain = await attestationChain(db, attester);
   if (!chain.ok || chain.path.includes(target.id)) out.push('CHAIN');
-  // DEC-PO-027: after a reset or a promotion only the root re-attests, never a party to the reset.
-  if (target.identityDroppedReason === 'CREDENTIAL_RESET' || target.identityDroppedReason === 'PROMOTION') {
+  // DEC-PO-027: after a reset or a promotion only the root re-attests, never a party to the reset; DEC-PO-143: the
+  // same after Radeef revoked the named person the account was attested as.
+  if (reattestRootOnly(target)) {
     if (!isActingRoot(attester)) out.push('ROOT_ONLY');
   }
   const reset = await lastResetSince(db, target.id, null);
@@ -212,6 +217,75 @@ export async function attestProblems(db: Db, attester: IdentityUser, target: Ide
     if (!attestedAfter) out.push('RESET_PARTY');
   }
   return [...new Set(out)];
+}
+
+// ---------------------------------------------------------------------------------------------------
+// ROOT_ATTEST_OWN (DEC-PO-018; pay-to-be BR-PAY-005 "إقرار الجذر لما سمّاه المالك"; RT-PAY-702 / 1301 / 1305)
+// ---------------------------------------------------------------------------------------------------
+
+/** The columns of a TenantNamedPerson entry the rules read (never the national id hash). */
+export const NAMED_PERSON_SELECT = { id: true, kind: true, email: true, userId: true, linkedAt: true, revokedAt: true, requestRef: true } as const;
+
+export interface NamedPersonLink {
+  id: string;
+  kind: 'NAMED_PERSON' | 'OWNER_CONTACT';
+  email: string | null;
+  userId: string | null;
+  linkedAt: Date | null;
+  revokedAt: Date | null;
+  requestRef: string;
+}
+
+/** The open (not revoked) named-person entry linked to the account, if any (written by Radeef only). */
+export async function namedPersonOf(db: Db, userId: string): Promise<NamedPersonLink | null> {
+  return db.tenantNamedPerson.findFirst({ where: { userId, kind: 'NAMED_PERSON', revokedAt: null }, select: NAMED_PERSON_SELECT });
+}
+
+/**
+ * The link still holds (pay-to-be: "attestedEmail = TenantNamedPerson.email" and "any change of a named
+ * person's account email, before or after the attestation, unlinks it"): open, this account, the account's
+ * email IS the named email, and no in-app email write since Radeef linked it (emailSetAt after linkedAt).
+ */
+export function namedLinkIntact(named: NamedPersonLink | null, target: Pick<IdentityUser, 'id' | 'email' | 'emailSetAt'>): boolean {
+  if (!named || named.kind !== 'NAMED_PERSON' || named.revokedAt || named.userId !== target.id || !named.linkedAt || !named.email) return false;
+  if (named.email !== target.email.trim().toLowerCase()) return false;
+  return !target.emailSetAt || target.emailSetAt.getTime() <= named.linkedAt.getTime();
+}
+
+/**
+ * What ROOT_ATTEST_OWN lifts for the root and an intact named account: the creation / touch / email-setter
+ * rules exist so that one person never holds both channels; in ROOT_ATTEST_OWN neither channel is the root's
+ * (the link goes to the email only Radeef writes, the code comes from Radeef, RT-PAY-1301). Every other rule
+ * (self, vendor, chain, an attested target, a party to a reset, ...) still applies.
+ */
+export const ROOT_ATTEST_OWN_WAIVES: readonly AttestProblem[] = Object.freeze([
+  'CREATOR',
+  'TOUCHED_BY_ATTESTER',
+  'EMAIL_SET_BY_ATTESTER',
+  'EMAIL_NOT_SELF_CONFIRMED',
+  'UNKNOWN_CREATOR_ROOT_ONLY',
+] as AttestProblem[]);
+
+export interface AttestPlan {
+  problems: AttestProblem[];
+  /** Set when the attestation is ROOT_ATTEST_OWN: two channels, the code delivered by Radeef only. */
+  rootAttestOwn: { namedPersonId: string; email: string } | null;
+}
+
+/**
+ * The attestation `attester` may make of `target` now: the problems of attestProblems, unless every one of them
+ * is lifted by ROOT_ATTEST_OWN (acting root + intact named link). `ignore`: problems not relevant to the caller
+ * (ALREADY_ATTESTED when a started attestation completes).
+ */
+export async function attestPlan(db: Db, attester: IdentityUser, target: IdentityUser, ignore: readonly AttestProblem[] = []): Promise<AttestPlan> {
+  const problems = (await attestProblems(db, attester, target)).filter((p) => !ignore.includes(p));
+  if (!problems.length || !isActingRoot(attester)) return { problems, rootAttestOwn: null };
+  const named = await namedPersonOf(db, target.id);
+  if (!named) return { problems, rootAttestOwn: null };
+  const rest = problems.filter((p) => !ROOT_ATTEST_OWN_WAIVES.includes(p));
+  if (rest.length) return { problems, rootAttestOwn: null };
+  if (!namedLinkIntact(named, target)) return { problems: [...problems, 'NAMED_LINK_BROKEN'], rootAttestOwn: null };
+  return { problems: [], rootAttestOwn: { namedPersonId: named.id, email: named.email as string } };
 }
 
 /** iam actions that change an account's email or role (AuditRecord actions of the identity operations). */
@@ -307,6 +381,11 @@ export function emailOwnedByHolder(target: Pick<IdentityUser, 'id' | 'emailSetBy
   return !target.createdById && target.identityStatus === 'VENDOR_BOOTSTRAP';
 }
 
+/** Only TENANT_ROOT re-attests after these drops (DEC-PO-027; DEC-PO-143 for a revoked named person). */
+export function reattestRootOnly(u: Pick<IdentityUser, 'identityDroppedReason'>): boolean {
+  return u.identityDroppedReason === 'CREDENTIAL_RESET' || u.identityDroppedReason === 'PROMOTION' || u.identityDroppedReason === 'NAMED_PERSON_REVOKED';
+}
+
 /**
  * The two-person decision of a link confirmation (BR-PAY-005): the confirmer is not the proposer, not the
  * account's creator, and is an attested person. Returned as guard reasons so the gateway refuses them in
@@ -361,10 +440,13 @@ export function identityView(u: IdentityUser): IdentityView {
     identityAttestedAt: u.identityAttestedAt,
     identityDroppedReason: u.identityDroppedReason,
     createdById: u.createdById,
-    reattestRootOnly: u.identityDroppedReason === 'CREDENTIAL_RESET' || u.identityDroppedReason === 'PROMOTION',
+    reattestRootOnly: reattestRootOnly(u),
     twoChannelRequired: needsTwoChannel(u),
   };
 }
+
+/** ROOT_ATTEST_OWN started: Radeef's operator releases the code from the vendor panel (BL-PAY-022). */
+export const ROOT_ATTEST_OWN_STARTED_EVENT = 'iam.identity.rootAttestOwnStarted';
 
 /** The event that sends a one-time credential link (consumer iam.credentialLinkMail). */
 export const CREDENTIAL_LINK_ISSUED_EVENT = 'iam.credentialLink.issued';
@@ -400,13 +482,16 @@ export const TOKEN_SELECT = {
   attempts: true,
   usedAt: true,
   revokedAt: true,
+  codeDelivery: true,
+  codeReleasedAt: true,
+  namedPersonId: true,
 } as const;
 
 /** What a presented link is (no secret, no account detail): for the set-password page. */
 export async function inspectCredentialToken(
   db: TxClient | RootClient,
   token: string,
-): Promise<{ valid: false } | { valid: true; purpose: 'RESET' | 'FIRST_ATTESTATION'; codeRequired: boolean; expiresAt: Date }> {
+): Promise<{ valid: false } | { valid: true; purpose: 'RESET' | 'FIRST_ATTESTATION' | 'INVITE'; codeRequired: boolean; expiresAt: Date }> {
   const id = credentialTokenId(token);
   if (!id) return { valid: false };
   const row = await db.credentialToken.findUnique({ where: { id }, select: TOKEN_SELECT });

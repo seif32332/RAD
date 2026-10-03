@@ -46,27 +46,17 @@ import {
   type MoneyRunInfo,
   type TxClient,
 } from '@/modules/platform';
-import {
-  CODE_MAX_ATTEMPTS,
-  credentialCodeFor,
-  credentialCodeHash,
-  credentialCodeMatches,
-  credentialFingerprintMatches,
-  credentialFingerprintOf,
-  credentialTokenFor,
-  credentialTokenHash,
-  credentialTokenId,
-  credentialTokenMatches,
-} from '../credentials';
+import { CODE_MAX_ATTEMPTS, credentialCodeMatches, credentialFingerprintMatches, credentialTokenId, credentialTokenMatches } from '../credentials';
 import {
   ATTEST_MESSAGES,
-  CREDENTIAL_LINK_ISSUED_EVENT,
   OPEN_LINK_STATUSES,
   RESET_MARKER,
   EMAIL_CHANGED_BY_ADMIN_EVENT,
   RESET_NOTICE_PREVIOUS_EMAIL_EVENT,
   RESET_NOTICE_WINDOW_HOURS,
   TOKEN_SELECT,
+  ROOT_ATTEST_OWN_STARTED_EVENT,
+  attestPlan,
   attestProblems,
   attesterSide,
   canApproveChange,
@@ -99,6 +89,7 @@ import {
   USER_PROMOTE,
   type IdentitySubject,
 } from '../operations';
+import { issueToken, revokeOpenTokens } from '../tokens';
 
 
 const MIN_NOTE = 10;
@@ -121,12 +112,6 @@ async function loadIdentity(tx: TxClient, userId: string, what = 'المستخد
   return u;
 }
 
-function clampHours(hours: number | null | undefined): number {
-  const n = Number(hours);
-  if (!Number.isFinite(n)) return 24;
-  return Math.min(72, Math.max(1, Math.floor(n)));
-}
-
 function selfActDecision(reasons: GuardDecision['reasons'], mode: 'ENFORCED' | 'SINGLE_OPERATOR'): GuardDecision {
   if (!reasons.length) return { ok: true, reasons, selfAct: false };
   return mode === 'SINGLE_OPERATOR' ? { ok: true, reasons, selfAct: true } : { ok: false, reasons, selfAct: false };
@@ -140,58 +125,6 @@ function guarded<T>(
   fn: (w: TxClient, info: MoneyRunInfo) => Promise<T>,
 ): Promise<T> {
   return runMoneyOperation(tx, op, { actor: spec.actor, input: { userId: spec.userId }, operationKey: spec.operationKey, decision: spec.decision, mode: spec.mode }, fn);
-}
-
-/** Revokes the account's usable links (a new link, a reset or an email change supersedes them). */
-async function revokeOpenTokens(w: TxClient, userId: string, reason: string): Promise<number> {
-  const r = await w.credentialToken.updateMany({ where: { userId, usedAt: null, revokedAt: null }, data: { revokedAt: new Date(), revokeReason: reason } });
-  return r.count;
-}
-
-/** Creates a one-time link row (the secret is derived from its id, only the keyed hashes are stored). */
-async function issueToken(
-  w: TxClient,
-  input: {
-    userId: string;
-    purpose: 'RESET' | 'FIRST_ATTESTATION';
-    sentTo: string;
-    issuedById: string | null;
-    attesterId?: string | null;
-    verificationNote?: string | null;
-    changeRequestId?: string | null;
-    hours: number;
-    operationKey: string;
-  },
-): Promise<{ id: string; expiresAt: Date }> {
-  await revokeOpenTokens(w, input.userId, input.purpose === 'RESET' ? 'SUPERSEDED_BY_RESET' : 'SUPERSEDED_BY_ATTESTATION');
-  const id = randomUUID();
-  const expiresAt = new Date(Date.now() + clampHours(input.hours) * 3600_000);
-  const { passwordHash } = await w.user.findUniqueOrThrow({ where: { id: input.userId }, select: { passwordHash: true } });
-  await w.credentialToken.create({
-    data: {
-      id,
-      userId: input.userId,
-      purpose: input.purpose,
-      tokenHash: credentialTokenHash(credentialTokenFor(id)),
-      codeHash: input.purpose === 'FIRST_ATTESTATION' ? credentialCodeHash(id, credentialCodeFor(id)) : null,
-      sentTo: input.sentTo,
-      credentialFingerprint: credentialFingerprintOf(passwordHash),
-      issuedById: input.issuedById,
-      attesterId: input.attesterId ?? null,
-      verificationNote: input.verificationNote ?? null,
-      changeRequestId: input.changeRequestId ?? null,
-      expiresAt,
-    },
-  });
-  await emitEvent(w, {
-    type: CREDENTIAL_LINK_ISSUED_EVENT,
-    aggregateType: 'User',
-    aggregateId: input.userId,
-    idempotencyKey: `${input.operationKey}:${CREDENTIAL_LINK_ISSUED_EVENT}`,
-    payload: { tokenId: id, userId: input.userId, purpose: input.purpose },
-    actorId: input.issuedById,
-  });
-  return { id, expiresAt };
 }
 
 /**
@@ -509,8 +442,12 @@ export interface AttestInput {
 export interface AttestResult {
   /** ATTESTED: done (a re-attestation). PENDING_SETUP: the holder must use the link and the code. */
   status: 'ATTESTED' | 'PENDING_SETUP';
-  /** The link row of a first attestation: the caller shows its code (credentialCodeFor) to the attester ONCE. */
+  /**
+   * The link row of a first attestation. ATTESTER: the caller shows its code (credentialCodeFor) to the attester
+   * ONCE. VENDOR (ROOT_ATTEST_OWN, DEC-PO-018 / RT-PAY-1301): the code is never shown in-app; Radeef releases it.
+   */
   tokenId: string | null;
+  codeDelivery: 'ATTESTER' | 'VENDOR' | null;
   expiresAt: string | null;
   replayed: boolean;
 }
@@ -531,11 +468,57 @@ export async function attestIdentity(tx: TxClient, input: AttestInput): Promise<
   const note = needText(input.verificationNote, 'طريقة التحقق من الشخص خارج النظام');
   const out = await idempotent(tx, { key, operation: ATTEST.name, actorId: input.actor.id }, async (t) => {
     const [attester, target] = await Promise.all([loadIdentity(t, input.actor.id), loadIdentity(t, input.userId)]);
-    const problems = await attestProblems(t, attester, target);
-    if (problems.length) throw new AttestRefusedError(problems);
+    const plan = await attestPlan(t, attester, target);
+    if (plan.problems.length) throw new AttestRefusedError(plan.problems);
     const email = input.attestedEmail.trim().toLowerCase();
     if (email !== target.email.toLowerCase()) throw badRequest('البريد المُقرّ يجب أن يكون بريد الحساب نفسه');
+    const own = plan.rootAttestOwn;
+    if (own && email !== own.email) throw badRequest('البريد المُقرّ يجب أن يكون البريد الذي سجّلته رديف للشخص المسمّى');
     return guarded(t, ATTEST, { actor: input.actor, userId: target.id, operationKey: key }, async (w) => {
+      if (own) {
+        // ROOT_ATTEST_OWN (DEC-PO-018; RT-PAY-702 / 1301): always the two-channel setup; the link goes to the
+        // email Radeef registered for the named person, and the code is released by Radeef (vendor panel), never
+        // shown to the root. The completion re-checks the named link (completeCredentialSetup).
+        const token = await issueToken(w, {
+          userId: target.id,
+          purpose: 'FIRST_ATTESTATION',
+          codeDelivery: 'VENDOR',
+          namedPersonId: own.namedPersonId,
+          sentTo: own.email,
+          issuedById: input.actor.id,
+          attesterId: input.actor.id,
+          verificationNote: note,
+          hours: input.linkHours,
+          operationKey: key,
+        });
+        await audit(w, {
+          actor: { type: 'USER', id: input.actor.id },
+          action: 'iam.identity.attest.started',
+          entity: { type: 'User', id: target.id },
+          after: {
+            attestedEmail: own.email,
+            emailConfirmed: true,
+            historyReviewed: true,
+            twoChannel: true,
+            rootAttestOwn: true,
+            namedPersonId: own.namedPersonId,
+            codeDelivery: 'VENDOR',
+            expiresAt: token.expiresAt,
+          },
+          reason: `ROOT_ATTEST_OWN: ${note}`,
+          operationKey: key,
+          ipAddress: input.ipAddress ?? null,
+        });
+        await emitEvent(w, {
+          type: ROOT_ATTEST_OWN_STARTED_EVENT,
+          aggregateType: 'User',
+          aggregateId: target.id,
+          idempotencyKey: `${key}:${ROOT_ATTEST_OWN_STARTED_EVENT}`,
+          payload: { userId: target.id, attesterId: input.actor.id, namedPersonId: own.namedPersonId, tokenId: token.id },
+          actorId: input.actor.id,
+        });
+        return { status: 'PENDING_SETUP' as const, tokenId: token.id, codeDelivery: 'VENDOR' as const, expiresAt: token.expiresAt.toISOString() };
+      }
       if (needsTwoChannel(target)) {
         // Review rounds 1 and 2 (b): the link of a first attestation goes only to an address the holder confirmed
         // himself (or a vendor script set), never one set by anyone of the attester's side, and never to an
@@ -565,7 +548,7 @@ export async function attestIdentity(tx: TxClient, input: AttestInput): Promise<
           operationKey: key,
           ipAddress: input.ipAddress ?? null,
         });
-        return { status: 'PENDING_SETUP' as const, tokenId: token.id, expiresAt: token.expiresAt.toISOString() };
+        return { status: 'PENDING_SETUP' as const, tokenId: token.id, codeDelivery: 'ATTESTER' as const, expiresAt: token.expiresAt.toISOString() };
       }
       await revokeOpenTokens(w, target.id, 'SUPERSEDED_BY_ATTESTATION');
       await markAttested(w, target, input.actor.id, email);
@@ -587,7 +570,7 @@ export async function attestIdentity(tx: TxClient, input: AttestInput): Promise<
         payload: { userId: target.id, attestedById: input.actor.id, reattestation: true },
         actorId: input.actor.id,
       });
-      return { status: 'ATTESTED' as const, tokenId: null, expiresAt: null };
+      return { status: 'ATTESTED' as const, tokenId: null, codeDelivery: null, expiresAt: null };
     });
   });
   return { ...out.result, replayed: out.replayed };
@@ -598,7 +581,7 @@ export async function attestIdentity(tx: TxClient, input: AttestInput): Promise<
 // ---------------------------------------------------------------------------------------------------
 
 export type CredentialSetupOutcome =
-  | { ok: true; userId: string; purpose: 'RESET' | 'FIRST_ATTESTATION'; attested: boolean }
+  | { ok: true; userId: string; purpose: 'RESET' | 'FIRST_ATTESTATION' | 'INVITE'; attested: boolean }
   | { ok: false; reason: 'INVALID' | 'USED_OR_EXPIRED' | 'BAD_CODE' | 'ATTESTER_INELIGIBLE'; attemptsLeft?: number };
 
 
@@ -639,7 +622,17 @@ export async function completeCredentialSetup(
         return { ok: false as const, reason: 'BAD_CODE' as const, attemptsLeft: Math.max(0, CODE_MAX_ATTEMPTS - attempts) };
       }
       const attester = row.attesterId ? await identityOf(w, row.attesterId) : null;
-      const problems = attester ? (await attestProblems(w, attester, user)).filter((p) => p !== 'ALREADY_ATTESTED') : ['NOT_ATTESTED'];
+      let problems: string[];
+      if (!attester) problems = ['NOT_ATTESTED'];
+      else if (row.codeDelivery === 'VENDOR') {
+        // ROOT_ATTEST_OWN: still an acting root, still the same intact named link (revoked, re-linked elsewhere
+        // or an email changed since: refused, fail closed).
+        const plan = await attestPlan(w, attester, user, ['ALREADY_ATTESTED']);
+        problems = plan.problems.length ? plan.problems : plan.rootAttestOwn?.namedPersonId === row.namedPersonId ? [] : ['NAMED_LINK_BROKEN'];
+      } else {
+        // The attester's own code: never the ROOT_ATTEST_OWN waivers.
+        problems = (await attestProblems(w, attester, user)).filter((p) => p !== 'ALREADY_ATTESTED');
+      }
       if (problems.length) {
         await revoke('ATTESTER_INELIGIBLE');
         return { ok: false as const, reason: 'ATTESTER_INELIGIBLE' as const };
@@ -657,16 +650,27 @@ export async function completeCredentialSetup(
       actor: { type: 'SYSTEM', id: CREDENTIAL_COMPLETE.name },
       action: CREDENTIAL_COMPLETE.name,
       entity: { type: 'User', id: user.id },
-      after: { purpose: row.purpose, passwordChosenByHolder: true, sessionsRevoked: true, ...(row.purpose === 'FIRST_ATTESTATION' ? { identityStatus: 'ATTESTED', identityAttestedById: row.attesterId } : {}) },
+      after: {
+        purpose: row.purpose,
+        passwordChosenByHolder: true,
+        sessionsRevoked: true,
+        ...(row.purpose === 'FIRST_ATTESTATION'
+          ? { identityStatus: 'ATTESTED', identityAttestedById: row.attesterId, rootAttestOwn: row.codeDelivery === 'VENDOR', namedPersonId: row.namedPersonId }
+          : {}),
+      },
       operationKey: key,
       ipAddress: input.ipAddress ?? null,
     });
     await emitEvent(w, {
-      type: row.purpose === 'FIRST_ATTESTATION' ? 'iam.identity.attested' : 'iam.credential.reset',
+      type: row.purpose === 'FIRST_ATTESTATION' ? 'iam.identity.attested' : row.purpose === 'INVITE' ? 'iam.invite.accepted' : 'iam.credential.reset',
       aggregateType: 'User',
       aggregateId: user.id,
       idempotencyKey: `${key}:${row.purpose}`,
-      payload: { userId: user.id, tokenId: row.id, ...(row.purpose === 'FIRST_ATTESTATION' ? { attestedById: row.attesterId, reattestation: false } : {}) },
+      payload: {
+        userId: user.id,
+        tokenId: row.id,
+        ...(row.purpose === 'FIRST_ATTESTATION' ? { attestedById: row.attesterId, reattestation: false, rootAttestOwn: row.codeDelivery === 'VENDOR' } : {}),
+      },
       actorId: null,
     });
     return { ok: true as const, userId: user.id, purpose: row.purpose, attested: row.purpose === 'FIRST_ATTESTATION' };

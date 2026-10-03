@@ -17,7 +17,7 @@
 //   - Rotation: a v2 value whose kid is not the current DATA_ENCRYPTION_KEY_ID is decrypted with
 //     DATA_ENCRYPTION_KEY_<KID> (kid upper-cased, '-' -> '_'), e.g. DATA_ENCRYPTION_KEY_K0.
 import 'server-only';
-import { createCipheriv, createDecipheriv, createHash, randomBytes } from 'crypto';
+import { createCipheriv, createDecipheriv, createHash, createHmac, randomBytes } from 'crypto';
 
 const PREFIX_V1 = 'enc:v1:';
 const PREFIX_V2 = 'enc:v2:';
@@ -109,4 +109,14 @@ export function decryptField(value: string | null | undefined): string | null {
   if (value === null || value === undefined) return null;
   if (!isEncrypted(value)) return value; // legacy plaintext
   return decryptWithKeys(value, (kid) => (kid === null ? getCurrentKey() : getKeyById(kid)));
+}
+
+/**
+ * A keyed one-way digest (HMAC-SHA256, hex) of a personal identifier with the current data key, for matching
+ * without storing the value (BL-PAY-022: TenantNamedPerson.nationalIdHash). `purpose` separates the uses.
+ * Fails closed in production without DATA_ENCRYPTION_KEY, like the encryption.
+ */
+export function dataKeyDigest(purpose: string, value: string): string {
+  if (!/^[a-z][a-z0-9.-]{2,63}$/.test(purpose)) throw new Error('dataKeyDigest: invalid purpose');
+  return createHmac('sha256', getCurrentKey()).update(`${purpose}:${value}`).digest('hex');
 }

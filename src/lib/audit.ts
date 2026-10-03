@@ -1,7 +1,9 @@
-// Audit logging. Never throws: an audit failure must not break the business action.
+// Audit logging. Never throws, except inside the caller's transaction when the database refused the row: then the
+// transaction is already aborted (PostgreSQL 25P02 on every later statement), and swallowing would turn a
+// retryable failure (a serialization conflict, P2034, retried by runIdentityTransaction) into a 500 later on.
 import 'server-only';
 import { prisma } from '@/lib/prisma';
-import type { Prisma } from '@prisma/client';
+import { Prisma } from '@prisma/client';
 import { redact } from '@/modules/platform';
 
 export type AuditAction =
@@ -40,6 +42,7 @@ export async function logAudit(entry: AuditEntry, tx?: Prisma.TransactionClient)
       },
     });
   } catch (err) {
+    if (tx && (err instanceof Prisma.PrismaClientKnownRequestError || err instanceof Prisma.PrismaClientUnknownRequestError)) throw err;
     console.error('[audit] failed to write audit log:', err);
   }
 }
