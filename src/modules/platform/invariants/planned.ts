@@ -31,6 +31,8 @@ export const PLANNED_INVARIANTS: readonly InvariantDefinition[] = [
   { id: 'INV-WF-01', titleAr: 'كل طلب غير نهائي له مهمة مفتوحة بمكلف نشط', owner: 'workflow', severity: 'WARNING', integrity: false, blocks: [] },
   // Blocks the merge (CI), not a runtime operation.
   { id: 'INV-SCOPE-01', titleAr: 'لا صف من شركة خارج نطاق المستخدم في أي استجابة', owner: 'iam', severity: 'BLOCKING', integrity: true, blocks: [], note: 'Guarded by the per-route allow/deny/other-company tests (ARCH-016).' },
+  // Blocks the merge (CI), not a runtime operation (ADR-0010).
+  { id: 'INV-IAM-01', titleAr: 'لا يرفع فرد واحد صلاحيته المالية بنفسه بتغيير عضوية الشركات أو صفة المعتمد أو الدور أو حالة الحساب', owner: 'iam', severity: 'BLOCKING', integrity: false, blocks: [], note: 'Guarded by the permanent regression tests named in ADR-0010 and the gateway identity tables.' },
   { id: 'INV-RPT-01', titleAr: 'كل رقم في تقرير = الاستعلام القانوني لنطاقه', owner: 'reporting', severity: 'WARNING', integrity: false, blocks: [] },
   { id: 'INV-EVT-01', titleAr: 'لا حدث بلا استهلاك أكثر من ساعة ولا إشعار معلق أكثر من يوم', owner: 'platform', severity: 'WARNING', integrity: false, blocks: [] },
   { id: 'INV-RULE-01', titleAr: 'كل قيمة قانونية في حساب معتمد مسجلة في اللقطة بمفتاحها ونسختها', owner: 'rules', severity: 'HIGH', integrity: false, blocks: ['payroll.approve'] },
