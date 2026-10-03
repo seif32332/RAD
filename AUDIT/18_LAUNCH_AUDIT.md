@@ -3,7 +3,7 @@
 Subject: AUDIT/17_LAUNCH_PLAN_v1.md (Plan v1, evidence baseline, frozen).
 Process: owner audit (this file, §1) → red team (§2) → owner decisions (§3) → Plan v2. No package (including General Request) starts before Plan v2 is approved.
 
-## 1. Owner audit findings (2026-10-04)
+## 1. Owner audit findings (2026-10-03)
 
 Verdict: strong as a programme map; not yet an approved execution plan. The backbone is right: R1 → Phase 2 → Money/Lifecycles → Pilot → Parallel payroll → GA. Separating "100% HRMS" from the GA launch line is correct. One red-team revision is needed, not a rewrite.
 

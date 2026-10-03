@@ -1,4 +1,4 @@
-> **Status: PROPOSED — owner decisions DEC-PO-149 applied; pending owner approval; supersedes nothing until approved.**
+> **Status: APPROVED by the owner (DEC-PO-150, 2026-10-03). Owner decisions DEC-PO-149 applied. Plan v1 stays the frozen evidence baseline.**
 > Plan v1 (AUDIT/17_LAUNCH_PLAN_v1.md) stays frozen as the evidence baseline. v2 changes it only where the change log (§0) cites a finding (OA-n from AUDIT/18 §1, LR-n from AUDIT/18 §2) and the source behind that finding. General Request and every other package stay on hold until v2 is approved (DEC-PO-148; AUDIT/18:4).
 
 # Radeef: launch plan v2 (milestones P0 to P3)

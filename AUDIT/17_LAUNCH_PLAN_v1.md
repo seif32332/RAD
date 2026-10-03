@@ -1,4 +1,4 @@
-> **Plan v1 — Evidence Baseline.** Frozen 2026-10-04 by owner instruction: not edited. Changes go through red team → findings → owner decisions → Plan v2 (AUDIT/18_LAUNCH_AUDIT.md).
+> **Plan v1 — Evidence Baseline.** Frozen 2026-10-03 by owner instruction: not edited. Changes go through red team → findings → owner decisions → Plan v2 (AUDIT/18_LAUNCH_AUDIT.md).
 
 # Radeef: plan from today to a full production launch ("إطلاق كامل")
 
