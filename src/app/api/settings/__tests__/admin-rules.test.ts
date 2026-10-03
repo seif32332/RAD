@@ -74,14 +74,15 @@ describe('settings definitions', () => {
   });
 
   it('parses the security policy with fallbacks', () => {
-    expect(parseSecurityPolicy([])).toEqual({ sessionTimeoutMinutes: 720, maxLoginAttempts: 5, passwordMinLength: 8 });
+    expect(parseSecurityPolicy([])).toEqual({ sessionTimeoutMinutes: 720, maxLoginAttempts: 5, passwordMinLength: 8, credentialLinkHours: 24 });
     expect(
       parseSecurityPolicy([
         { key: 'session_timeout_minutes', value: '60' },
         { key: 'max_login_attempts', value: '1' },
         { key: 'password_min_length', value: '12' },
+        { key: 'credential_link_hours', value: '500' }, // BL-PAY-005: out of 1..72 -> default
       ]),
-    ).toEqual({ sessionTimeoutMinutes: 60, maxLoginAttempts: 5, passwordMinLength: 12 });
+    ).toEqual({ sessionTimeoutMinutes: 60, maxLoginAttempts: 5, passwordMinLength: 12, credentialLinkHours: 24 });
     expect(passwordLengthProblem('Abcdef123', 10)).not.toBeNull();
     expect(passwordLengthProblem('Abcdef1234', 10)).toBeNull();
   });

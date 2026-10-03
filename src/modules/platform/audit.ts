@@ -56,3 +56,53 @@ export async function audit(tx: TxClient, input: AuditInput): Promise<{ id: stri
     select: { id: true },
   });
 }
+
+/** One row of an entity's audit trail (AuditRecord), for the modules' rules that must look at history. */
+export interface AuditTrailRow {
+  id: string;
+  action: string;
+  actorId: string | null;
+  occurredAt: Date;
+  before: Prisma.JsonValue | null;
+  after: Prisma.JsonValue | null;
+}
+
+/**
+ * The audit trail of one entity, newest first (AuditRecord is platform's table: other modules read it here,
+ * ARCH-001). BL-PAY-005 reads who changed an account's email or role before an attestation.
+ */
+export async function auditTrailOf(
+  db: Prisma.TransactionClient,
+  q: { entityType: string; entityId: string; actions?: readonly string[]; actorId?: string },
+  take = 200,
+): Promise<AuditTrailRow[]> {
+  return db.auditRecord.findMany({
+    where: { entityType: q.entityType, entityId: q.entityId, ...(q.actions ? { action: { in: [...q.actions] } } : {}), ...(q.actorId ? { actorId: q.actorId } : {}) },
+    orderBy: { seq: 'desc' },
+    take,
+    select: { id: true, action: true, actorId: true, occurredAt: true, before: true, after: true },
+  });
+}
+
+/** One row of the legacy AuditLog (details is the JSON text the legacy logAudit wrote). */
+export interface LegacyAuditRow {
+  id: string;
+  action: string;
+  userId: string | null;
+  createdAt: Date;
+  details: string | null;
+}
+
+/** The legacy AuditLog rows of one entity, newest first (append-only, ADR-0003). */
+export async function legacyAuditOf(
+  db: Prisma.TransactionClient,
+  q: { entityType: string; entityId: string; userId?: string },
+  take = 200,
+): Promise<LegacyAuditRow[]> {
+  return db.auditLog.findMany({
+    where: { entityType: q.entityType, entityId: q.entityId, ...(q.userId ? { userId: q.userId } : {}) },
+    orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+    take,
+    select: { id: true, action: true, userId: true, createdAt: true, details: true },
+  });
+}

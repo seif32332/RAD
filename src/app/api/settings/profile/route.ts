@@ -1,14 +1,17 @@
+import { randomUUID } from 'crypto';
 import { NextResponse } from 'next/server';
 import bcrypt from 'bcryptjs';
 import { z } from 'zod';
 import { prisma } from '@/lib/prisma';
 import { getClientIp, requireUser } from '@/lib/auth';
-import { HttpError, conflict, handleApiError, notFound, parseBody } from '@/lib/http';
+import { HttpError, handleApiError, notFound, parseBody } from '@/lib/http';
 import { zEmail, zPassword } from '@/lib/validation';
 import { rateLimit, resetRateLimit } from '@/lib/rate-limit';
 import { logAudit } from '@/lib/audit';
 import { SESSION_COOKIE, sessionCookieOptions, signSession } from '@/lib/session';
 import { assertPasswordLength, friendlyValidationError, loadSecurityPolicy } from '../security';
+import { changeOwnEmail, changeOwnPassword, confirmOwnEmail, runIdentityTransaction } from '@/modules/iam';
+import { moneyActorOf } from '@/modules/platform';
 
 export const dynamic = 'force-dynamic';
 
@@ -19,6 +22,11 @@ const ATTEMPT_WINDOW_MS = 15 * 60_000;
 const accountSelect = { id: true, email: true, role: true, isActive: true, createdAt: true, updatedAt: true } as const;
 
 const ChangeSchema = z.discriminatedUnion('actionType', [
+  // BL-PAY-005: the holder re-confirms that the login email (set by an admin) is his own.
+  z.object({
+    actionType: z.literal('CONFIRM_EMAIL'),
+    currentPassword: z.string().min(1, 'كلمة المرور الحالية مطلوبة').max(200),
+  }),
   z.object({
     actionType: z.literal('CHANGE_EMAIL'),
     newEmail: zEmail,
@@ -70,14 +78,19 @@ export async function POST(req: Request) {
     }
     resetRateLimit(attemptKey);
 
-    if (body.actionType === 'CHANGE_EMAIL') {
-      const existing = await prisma.user.findFirst({
-        where: { email: { equals: body.newEmail, mode: 'insensitive' }, NOT: { id: user.id } },
-        select: { id: true },
-      });
-      if (existing) throw conflict('هذا البريد الإلكتروني مستخدم من قبل حساب آخر');
+    if (body.actionType === 'CONFIRM_EMAIL') {
+      await runIdentityTransaction(prisma, (tx) =>
+        confirmOwnEmail(tx, { actor: moneyActorOf(user), operationKey: `self.confirmEmail:${user.id}:${randomUUID()}`, ipAddress: ip }),
+      );
+      return NextResponse.json({ message: 'تم تأكيد بريد الدخول بأنه بريدك ✅' });
+    }
 
-      await prisma.user.update({ where: { id: user.id }, data: { email: body.newEmail } });
+    if (body.actionType === 'CHANGE_EMAIL') {
+      // The named self-change operation (BL-PAY-005): refused for an attested account (through Radeef,
+      // RT-PAY-1001); the uniqueness and the audit are in the transition.
+      await runIdentityTransaction(prisma, (tx) =>
+        changeOwnEmail(tx, { actor: moneyActorOf(user), newEmail: body.newEmail, operationKey: `self.email:${user.id}:${randomUUID()}`, ipAddress: ip }),
+      );
       await logAudit({ userId: user.id, action: 'UPDATE', entityType: 'User', entityId: user.id, details: { field: 'email', from: user.email, to: body.newEmail }, ipAddress: ip });
       return NextResponse.json({ message: 'تم تحديث البريد الإلكتروني بنجاح ✅' });
     }
@@ -91,7 +104,10 @@ export async function POST(req: Request) {
     }
     await assertPasswordLength(body.newPassword);
     const passwordHash = await bcrypt.hash(body.newPassword, BCRYPT_COST);
-    await prisma.user.update({ where: { id: user.id }, data: { passwordHash } });
+    // The named self-change operation (BL-PAY-005, RT-PAY-904): it never drops the attestation.
+    await runIdentityTransaction(prisma, (tx) =>
+      changeOwnPassword(tx, { actor: moneyActorOf(user), passwordHash, operationKey: `self.password:${user.id}:${randomUUID()}`, ipAddress: ip }),
+    );
     await logAudit({ userId: user.id, action: 'UPDATE', entityType: 'User', entityId: user.id, details: { field: 'password' }, ipAddress: ip });
 
     // Other sessions of this user carry the old credential version and stop working (see

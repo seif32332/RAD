@@ -46,6 +46,11 @@
 | قرار الموافقة على طلب (من يعتمد، في أي مرحلة، وما النتيجة) | `WorkflowInstance` + `WorkflowTask` (REQUEST) | انتقالات `src/modules/workflow/transitions/*` (`workflow.start/act/cancel/pause/resume/closeExternally/recheck/resubmit/restartRound`) | حالة الطلب نفسه يكتبها محوّل وحدته عند القرار (G10)، ولا يكتبها المحرك | `workflow` queries (`instanceOf`، `tasksForUser`، `timelineOf`)؛ وقرّاء المعتمدين `*ById` ∪ `approversOf` | قرارات متفرقة لكل نوع طلب بلا محرك (WFE AS-IS) | P2-WFE (ADR-0006) (BL-WFE-001/002) |
 | مسار الموافقة لكل نوع طلب وشركة | `WorkflowDefinition` (FACT بإصدارات؛ المفعَّل لا يتغير، G6) | `workflow.saveDefinitionDraft/activateDefinition/retireDefinition` | — | تعريف الشركة المفعَّل، وإلا تعريف المستأجر | مسارات ثابتة في الكود | P2-WFE (ADR-0006) (BL-WFE-001/007) |
 | تفويض صلاحية الاعتماد | `ApprovalDelegation` (FACT؛ الحالة الوحيدة الإلغاء) | انتقالات تفويض `src/modules/workflow` (الحزمة D) | — | `workflow` queries مع فلتر `companyIds` | لا يوجد | P2-WFE (ADR-0006) (BL-WFE-006) |
+| ربط حساب المستخدم بملف الموظف | `UserEmployeeLink` (خطوتان: اقتراح ثم تأكيد) | `iam.proposeLink/confirmLink/rejectLink/endLink` (والإقرار للروابط القديمة) | `Employee.userId` | الجلسة (session) | كتابة مباشرة لـ`Employee.userId` من الإعدادات | BL-PAY-005 (ADR-0007) |
+| هوية الشخص الحقيقي (إقرار المعتمد) | أعمدة الهوية على `User` + سجل `AuditRecord` | `iam.attestIdentity`، `iam.completeCredentialSetup`؛ وتُسقطها `resetCredentials` و`promoteApprover` | — | `iam.identityOf`، `iam.countsTowardEnforced` | لا يوجد | BL-PAY-005 (ADR-0007) |
+| جذر المستأجر TENANT_ROOT | `User.tenantRoot` | لوحة المورّد فقط (BL-PAY-017)؛ و`rootSuspendedAt` تكتبه `iam.resetCredentials` (ولاحقاً BL-LCY-010) | — | `iam` | لا يوجد | BL-PAY-005/017 (ADR-0007) |
+| رابط بيانات الدخول لمرة واحدة | `CredentialToken` (REQUEST) | `iam` | — | `iam` | المسؤول يضع كلمة مرور غيره | BL-PAY-005 (ADR-0007) |
+| تغيير هوية يحتاج شخصين | `IdentityChangeRequest` (REQUEST) | `iam.decideChangeRequest` | — | `iam` | تعطيل أو تخفيض المعتمد بشخص واحد | BL-PAY-005 (ADR-0007) |
 
 ## 3.2 الاستعلامات القانونية (Canonical Queries): التقارير
 

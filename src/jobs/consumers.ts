@@ -5,10 +5,14 @@
 // A module whose index registers its consumers is imported and asked to register (a deep import of
 // a module's consumers.ts would bypass its public interface, ARCH-001).
 import { INV_SAL_01_ID, payProjectionCheck, registerCompensationConsumers } from '@/modules/compensation';
+import { registerIamConsumers } from '@/modules/iam';
 import { registerOffboardingConsumers } from '@/modules/offboarding';
 import { INV_PAY_04_ID, employmentChangeCheck, registerPayrollConsumers } from '@/modules/payroll';
 import { consumerRegistry, registerConsumer, registerInvariantCheck } from '@/modules/platform';
 import { INV_RULE_02_ID, RULES_CONSUMERS, belowLegalOverrideCheck } from '@/modules/rules';
+
+// BL-PAY-005: iam queues the one-time credential link emails (reset, first attestation).
+registerIamConsumers();
 
 // P1-LCY: offboarding projects the exit reason of every employment.* event.
 registerOffboardingConsumers();

@@ -63,3 +63,83 @@ export type { AuthzResource, AuthzDecision } from './authz';
 
 export { activeUsersWithRoles } from './users';
 export type { ActiveUser } from './users';
+
+// BL-PAY-005 identity controls (pay-to-be.md BR-PAY-005): the rules, the writers (behind money.gateway's iam
+// operations), the one-time credential links and the side effects of their events.
+export {
+  FINANCIAL_APPROVER_ROLES,
+  IDENTITY_SELECT,
+  ATTEST_MESSAGES,
+  isFinancialApproverRole,
+  identityOf,
+  isActingRoot,
+  isAttestedPerson,
+  countsTowardEnforced,
+  protectedByTwoPerson,
+  attestationChain,
+  attestProblems,
+  linkConfirmReasons,
+  canApproveChange,
+  needsTwoChannel,
+  identityView,
+  CREDENTIAL_LINK_ISSUED_EVENT,
+  OPEN_LINK_STATUSES,
+  RESET_MARKER,
+  EMAIL_CHANGED_BY_ADMIN_EVENT,
+  RESET_NOTICE_PREVIOUS_EMAIL_EVENT,
+  RESET_NOTICE_WINDOW_HOURS,
+  touchedByAttester,
+  emailSetByAttesterSide,
+  attesterSide,
+  creatorAncestry,
+  touchedBySide,
+  emailSetBySide,
+  emailOwnedByHolder,
+  creatorUnknown,
+  isResetMarker,
+  inspectCredentialToken,
+} from './identity';
+export type { IdentityUser, IdentityView, AttestProblem, ChainResult } from './identity';
+export {
+  AttestRefusedError,
+  createUser,
+  proposeLink,
+  confirmLink,
+  rejectLink,
+  endLink,
+  attestIdentity,
+  completeCredentialSetup,
+  requestCredentialReset,
+  changeUserByAdmin,
+  decideChangeRequest,
+  changeOwnPassword,
+  rehashLegacyPassword,
+  changeOwnEmail,
+  confirmOwnEmail,
+} from './transitions/identity';
+export type {
+  CreateUserInput,
+  LinkView,
+  AttestInput,
+  AttestResult,
+  CredentialSetupOutcome,
+  ChangeRequestView,
+  ChangeOutcome,
+  AdminChangeInput,
+  AdminChangeOutcome,
+} from './transitions/identity';
+export { CODE_MAX_ATTEMPTS, credentialCodeFor, credentialTokenId, appBaseUrl } from './credentials';
+export { runIdentityTransaction } from './run';
+export { runExitAccessChange } from './exit-access';
+export {
+  CREDENTIAL_LINK_MAIL_CONSUMER,
+  IAM_CONSUMERS,
+  credentialLinkMail,
+  credentialLinkMailConsumer,
+  credentialOutboxRender,
+  ACCOUNT_NOTICE_MAIL_CONSUMER,
+  accountNoticeMail,
+  accountNoticeMailConsumer,
+  registerIamConsumers,
+} from './consumers';
+

@@ -84,6 +84,12 @@ export interface OutboxDispatchOptions {
   env?: JobEnv;
   /** Re-check before sending; false = do not send (FAILED, no attempts left). */
   shouldSend?: (db: RootClient, message: ClaimedOutboxRow) => Promise<boolean>;
+  /**
+   * The text to send, from the stored body (injected by the composition root): BL-PAY-005 credential links
+   * are stored as a placeholder and rendered here, so the secret is never written to the outbox. null = do
+   * not send (FAILED, no attempts left). The rendered text is never written back.
+   */
+  render?: (db: RootClient, message: ClaimedOutboxRow) => Promise<string | null>;
   /** Tests: a transport instead of nodemailer. */
   transport?: MailTransport;
 }
@@ -154,8 +160,17 @@ export async function dispatchOutbox(db: RootClient, opts: OutboxDispatchOptions
       result.skipped += 1;
       continue;
     }
+    const text = opts.render ? await opts.render(db, msg) : msg.body;
+    if (text === null) {
+      await db.notificationOutbox.updateMany({
+        where: { id: msg.id, status: 'SENDING' },
+        data: { status: 'FAILED', attempts: cfg.maxAttempts, leaseUntil: null, lastError: 'message can no longer be rendered (link used, revoked or expired, or APP_URL missing)' },
+      });
+      result.skipped += 1;
+      continue;
+    }
     try {
-      await transport.sendMail({ from: String(env.SMTP_FROM), to: msg.recipient, subject: msg.subject || 'رديف', text: msg.body });
+      await transport.sendMail({ from: String(env.SMTP_FROM), to: msg.recipient, subject: msg.subject || 'رديف', text });
       await db.notificationOutbox.updateMany({
         where: { id: msg.id, status: 'SENDING' },
         data: { status: 'SENT', sentAt: new Date(), leaseUntil: null, lastError: null },
@@ -174,7 +189,7 @@ export async function dispatchOutbox(db: RootClient, opts: OutboxDispatchOptions
 }
 
 /** The outbox-dispatch job (cross-company: the outbox has no company). */
-export function createOutboxDispatchJob<S>(opts: Pick<OutboxDispatchOptions, 'shouldSend' | 'transport'> = {}): JobDefinition<S> {
+export function createOutboxDispatchJob<S>(opts: Pick<OutboxDispatchOptions, 'shouldSend' | 'render' | 'transport'> = {}): JobDefinition<S> {
   return {
     name: OUTBOX_DISPATCH_JOB,
     description: 'Sends queued emails (dry run unless OUTBOX_SEND=true and SMTP is configured); expires stale ones',

@@ -11,6 +11,7 @@ const PUBLIC_PAGE_PREFIXES = ['/login', '/apply', '/v', '/offer'];
 const PUBLIC_API_PREFIXES = [
   '/api/auth/login',
   '/api/auth/logout',
+  '/api/auth/credential-setup', // BL-PAY-005: the one-time credential link is the credential
   '/api/health',
   '/api/apply', // public job application form
   '/api/upload', // the route itself only allows restricted anonymous uploads for job applications

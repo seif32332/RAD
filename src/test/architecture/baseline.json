@@ -23,8 +23,6 @@
       "src/app/api/payments/[id]/route.ts": 1,
       "src/app/api/payroll-hub/route.ts": 2,
       "src/app/api/renewals/action/route.ts": 5,
-      "src/app/api/settings/users/[id]/route.ts": 1,
-      "src/app/api/settings/users/shared.ts": 2,
       "src/app/api/settlements/[id]/muqeem/route.ts": 3,
       "src/app/api/settlements/route.ts": 2,
       "src/app/api/workforce/plans/_lib/actions.ts": 2,
@@ -107,8 +105,7 @@
       "src/app/api/documents/[id]/route.ts": 1,
       "src/app/api/documents/requests/[id]/route.ts": 1,
       "src/app/api/documents/requests/route.ts": 1,
-      "src/app/api/documents/settings/route.ts": 1,
-      "src/app/api/settings/profile/route.ts": 1
+      "src/app/api/documents/settings/route.ts": 1
     },
     "ARCH-019": {
       "scripts/seed-demo.mjs": 1,
@@ -117,7 +114,6 @@
       "src/app/api/employees/gosi-review/route.ts": 1,
       "src/app/api/integrations/muqeem/residents/apply/route.ts": 1,
       "src/app/api/portal/attendance/punch/route.ts": 1,
-      "src/app/api/settings/users/[id]/route.ts": 1,
       "src/app/api/settlements/[id]/muqeem/route.ts": 1
     }
   },

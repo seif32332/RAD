@@ -166,9 +166,20 @@ async function seedSuperAdmin(prisma) {
 
   if (existing) {
     // An inactive or lower-role account already uses this e-mail: promote and re-activate it.
+    // BL-PAY-005: a password set by a vendor script on a non-vendor account suspends its attestation.
+    const identity = await prisma.user.findUnique({ where: { id: existing.id }, select: { isVendorStaff: true, identityStatus: true, tenantRoot: true } });
+    const counted = identity.identityStatus !== 'UNATTESTED' || identity.tenantRoot;
     await prisma.user.update({
       where: { id: existing.id },
-      data: { role: 'SUPER_ADMIN', isActive: true, passwordHash },
+      data: {
+        role: 'SUPER_ADMIN',
+        isActive: true,
+        passwordHash,
+        sessionVersion: { increment: 1 },
+        ...(identity.isVendorStaff
+          ? {}
+          : { identityStatus: 'UNATTESTED', ...(counted ? { identityDroppedReason: 'CREDENTIAL_RESET', identityDroppedAt: new Date() } : {}), ...(identity.tenantRoot ? { rootSuspendedAt: new Date() } : {}) }),
+      },
     });
     await audit(prisma, existing.id, 'UPDATE', { reason: 'seed: promoted to SUPER_ADMIN (none active)' });
     console.log(`[seed] SUPER_ADMIN: existing user ${existing.email} promoted, re-activated and password set`);
@@ -180,6 +191,10 @@ async function seedSuperAdmin(prisma) {
         role: 'SUPER_ADMIN',
         isActive: true,
         name: (process.env.ADMIN_NAME ?? '').trim() || 'مدير النظام',
+        // BL-PAY-005 (BR-PAY-005 "التمهيد"): an account a vendor script creates is vendor staff with the vendor
+        // identity, written explicitly. The customer's first admin is created with create-admin --customer-admin.
+        isVendorStaff: true,
+        identityStatus: 'VENDOR_BOOTSTRAP',
       },
       select: { id: true },
     });

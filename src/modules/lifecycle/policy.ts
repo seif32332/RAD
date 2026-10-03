@@ -13,8 +13,9 @@
 //     (or single operator), flagged for the owner (N-LCY-006).
 //
 // Not here yet (declared dependencies of BL-LCY-010, lcy-to-be.md §24): the financial approver's exit
-// (DEC-PO-021 / 039 / 042 / 052: identityStatus, controlsMode, tenant root) needs BL-PAY-005 / 021 / 022,
-// and "not vendor staff" needs isVendorStaff (BL-PAY-005). See assertFinancialApproverExit below.
+// (DEC-PO-021 / 039 / 042 / 052). BL-PAY-005 now provides identityStatus, isVendorStaff, tenantRoot /
+// rootSuspendedAt and the iam reads (protectedByTwoPerson, countsTowardEnforced, canApproveChange); the
+// computed controlsMode is BL-PAY-021 and the root's lifecycle BL-PAY-022. See assertFinancialApproverExit below.
 import { ROLE_GROUPS } from '@/lib/constants';
 import { forbidden } from '@/lib/http';
 import { activeUsersWithRoles } from '@/modules/iam';

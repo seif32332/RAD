@@ -42,7 +42,7 @@ export type HarnessUser = Scoped | 'owner' | 'empA' | 'empB';
 export async function createRouteHarness(state: HarnessState) {
   const { prisma } = await import('@/lib/prisma');
   const { signSession } = await import('@/lib/session');
-  const { employeeFixture } = await import('@/test/money-fixtures');
+  const { employeeFixture, linkFixture } = await import('@/test/money-fixtures');
 
   const tag = randomUUID().replace(/-/g, '').slice(0, 8);
   let seq = 0;
@@ -73,7 +73,8 @@ export async function createRouteHarness(state: HarnessState) {
     const u = await prisma.user.create({
       data: { email: `rh-${key.toLowerCase()}-${tag}@example.test`, passwordHash: 'x', role },
     });
-    if (employeeId) await prisma.employee.update({ where: { id: employeeId }, data: { userId: u.id } }); // Employee.userId links the login
+    // Employee.userId links the login (BL-PAY-005: an identity column, written here as a fixture with its link row).
+    if (employeeId) await linkFixture(u.id, employeeId);
     if (company) await prisma.userCompanyScope.create({ data: { userId: u.id, companyId: co[company] } });
     users[key] = { id: u.id, role, employeeId };
   }

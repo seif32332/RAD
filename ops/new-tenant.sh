@@ -302,8 +302,8 @@ Tenant "$TENANT" is provisioned. Next steps:
                volume $DATA_DIR/$TENANT/uploads:/app/uploads) to docker-compose.yml, then
                sudo ops/deploy.sh --mode docker $TENANT
   2. First administrator (prints a one-time password):
-       cd $RADEEF_ROOT/src && sudo -u $SERVICE_USER node --env-file=$ENV_FILE scripts/create-admin.mjs admin@$DOMAIN
-     (Docker: docker run --rm --env-file $ENV_FILE --add-host host.docker.internal:host-gateway radeef:live-$TENANT node scripts/create-admin.mjs admin@$DOMAIN)
+       cd $RADEEF_ROOT/src && sudo -u $SERVICE_USER node --env-file=$ENV_FILE scripts/create-admin.mjs admin@$DOMAIN --customer-admin
+     (Docker: docker run --rm --env-file $ENV_FILE --add-host host.docker.internal:host-gateway radeef:live-$TENANT node scripts/create-admin.mjs admin@$DOMAIN --customer-admin)
   3. Backups: ops/backup.sh --all already picks up $ENV_FILE (check the cron entry).
   4. Store DATA_ENCRYPTION_KEY from $ENV_FILE in the company password manager.
 EOF

@@ -22,8 +22,8 @@ export type { EventConsumer, ConsumerContext, ConsumerResult, RunConsumersOption
 export { eventsNotConsumed, consumptionsOf } from './consumption';
 export type { EventConsumptionView, ConsumptionQuery } from './consumption';
 
-export { audit } from './audit';
-export type { AuditActor, AuditInput } from './audit';
+export { audit, auditTrailOf, legacyAuditOf } from './audit';
+export type { AuditActor, AuditInput, AuditTrailRow, LegacyAuditRow } from './audit';
 
 export { redact, isSensitiveKey } from './redact';
 

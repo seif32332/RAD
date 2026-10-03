@@ -41,7 +41,14 @@ export interface GuardActor {
   employeeId: string | null;
 }
 
-export type GuardReason = 'SELF_BENEFICIARY' | 'PAYER_IS_APPROVER' | 'SAME_PERSON_TWICE' | 'UNKNOWN_APPROVER';
+export type GuardReason =
+  | 'SELF_BENEFICIARY'
+  | 'PAYER_IS_APPROVER'
+  | 'SAME_PERSON_TWICE'
+  | 'UNKNOWN_APPROVER'
+  // BL-PAY-005 (BR-PAY-005): the second person of an identity act is not the account's creator, and is real (attested).
+  | 'CREATOR_IS_SECOND_PERSON'
+  | 'UNATTESTED_SECOND_PERSON';
 
 export interface GuardDecision {
   /** true: proceed (possibly as a recorded self-act). */
@@ -58,6 +65,8 @@ export const GUARD_MESSAGES: Readonly<Record<GuardReason, string>> = Object.free
   PAYER_IS_APPROVER: 'لا يجوز أن يصرف أو يحوّل المال من اعتمده (فصل الصلاحيات)',
   SAME_PERSON_TWICE: 'يلزم شخص ثانٍ غير من طلب الإجراء',
   UNKNOWN_APPROVER: 'لا يوجد معتمد مسجَّل لهذا المال؛ يلزم إقرار شخص ثانٍ قبل الصرف',
+  CREATOR_IS_SECOND_PERSON: 'لا يكون الشخص الثاني من أنشأ الحساب نفسه',
+  UNATTESTED_SECOND_PERSON: 'الشخص الثاني يجب أن يكون مستخدماً مُقرّاً بهويته (من سلسلة الجذر)',
 });
 
 function decide(reasons: GuardReason[], mode: OperatorMode): GuardDecision {

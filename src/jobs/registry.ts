@@ -11,7 +11,7 @@ import { expiryDigestJob } from '@/lib/alerts-digest';
 import { applyEmployeeChangesJob } from '@/lib/documents/change-orders';
 import { documentsIntegrityJob, documentsRetentionJob } from '@/lib/documents/jobs';
 import { purgeAttendanceBiometricsJob } from '@/lib/self-attendance-retention';
-import type { SystemContext } from '@/modules/iam';
+import { credentialOutboxRender, type SystemContext } from '@/modules/iam';
 import { noticeEndJob, stateOpeningJob } from '@/modules/lifecycle';
 import { applyFinancialChangesJob } from '@/modules/compensation';
 import { createDomainEventsJob, createOutboxDispatchJob, createReconcileJob, defineJobs, type JobDefinition } from '@/modules/platform';
@@ -23,7 +23,8 @@ export const JOBS: readonly JobDefinition<SystemContext>[] = defineJobs<SystemCo
   createReconcileJob<SystemContext>(),
   expiryDigestJob,
   deactivateTerminatedJob,
-  createOutboxDispatchJob<SystemContext>({ shouldSend: outboxRecipientStillActive }),
+  // BL-PAY-005: credential links are stored as a placeholder and rendered only at send time.
+  createOutboxDispatchJob<SystemContext>({ shouldSend: outboxRecipientStillActive, render: credentialOutboxRender }),
   purgeAttendanceBiometricsJob,
   documentsRetentionJob,
   documentsIntegrityJob,

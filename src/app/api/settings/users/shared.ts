@@ -1,9 +1,11 @@
 // Shared rules for the user-management endpoints (settings/users and settings/users/[id]).
 import { Prisma } from '@prisma/client';
 import { z } from 'zod';
+import { prisma } from '@/lib/prisma';
 import { ALL_ROLES, type AppRole } from '@/lib/constants';
 import { conflict, forbidden, notFound, type HttpError } from '@/lib/http';
 import { zPassword } from '@/lib/validation';
+import { IDENTITY_SELECT, OPEN_LINK_STATUSES, identityView } from '@/modules/iam';
 
 export const BCRYPT_COST = 12;
 
@@ -20,6 +22,50 @@ export const safeUserSelect = {
   updatedAt: true,
   employeeProfile: { select: { id: true, firstNameArabic: true, lastNameArabic: true, employeeId: true } },
 } satisfies Prisma.UserSelect;
+
+type SafeUser = Prisma.UserGetPayload<{ select: typeof safeUserSelect }>;
+
+/**
+ * The users with their identity summary (BL-PAY-005: attestation, root, vendor) and their open employee link
+ * (PROPOSED waits for a second person; CONFIRMED / LEGACY_LINKED is the access link). Never a hash or token.
+ */
+export async function withIdentity(users: SafeUser[]) {
+  if (!users.length) return [];
+  const ids = users.map((u) => u.id);
+  const [identities, links, pending] = await Promise.all([
+    prisma.user.findMany({ where: { id: { in: ids } }, select: IDENTITY_SELECT }),
+    prisma.userEmployeeLink.findMany({
+      where: { userId: { in: ids }, status: { in: [...OPEN_LINK_STATUSES] } },
+      select: { id: true, userId: true, employeeId: true, status: true, proposedById: true, employee: { select: { firstNameArabic: true, lastNameArabic: true, employeeId: true } } },
+    }),
+    prisma.identityChangeRequest.findMany({ where: { userId: { in: ids }, status: 'PENDING' }, select: { id: true, userId: true, kind: true, nextRole: true, requestedById: true } }),
+  ]);
+  const idOf = new Map(identities.map((i) => [i.id, i]));
+  return users.map((u) => {
+    const i = idOf.get(u.id);
+    const link = links.find((l) => l.userId === u.id) ?? null;
+    return {
+      ...u,
+      identity: i ? identityView(i) : null,
+      employeeLink: link
+        ? {
+            id: link.id,
+            employeeId: link.employeeId,
+            status: link.status,
+            proposedById: link.proposedById,
+            employee: link.employee,
+          }
+        : null,
+      pendingChange: pending.find((p) => p.userId === u.id) ?? null,
+    };
+  });
+}
+
+/** 404 when the employee file does not exist (the link is then proposed by iam). */
+export async function assertEmployeeExists(employeeId: string): Promise<void> {
+  const e = await prisma.employee.findUnique({ where: { id: employeeId }, select: { id: true } });
+  if (!e) throw notFound('الموظف المحدد غير موجود');
+}
 
 export const zRole = z.enum(ALL_ROLES, { errorMap: () => ({ message: 'الدور غير صالح' }) });
 
@@ -81,25 +127,6 @@ export function checkUserChange(actor: ActorInfo, target: TargetInfo, change: Us
 export function checkCreateRole(actor: ActorInfo, role: string): HttpError | null {
   if (role === 'SUPER_ADMIN' && actor.role !== 'SUPER_ADMIN') return forbidden('فقط مدير النظام يمكنه منح صلاحية مدير النظام');
   return null;
-}
-
-/** 409 when another user already has this email (case-insensitive). */
-export async function assertEmailAvailable(tx: Prisma.TransactionClient, email: string, excludeUserId?: string) {
-  const existing = await tx.user.findFirst({
-    where: { email: { equals: email, mode: 'insensitive' }, ...(excludeUserId ? { NOT: { id: excludeUserId } } : {}) },
-    select: { id: true },
-  });
-  if (existing) throw conflict('هذا البريد الإلكتروني مسجل لحساب آخر مسبقاً');
-}
-
-/** Links `employeeId` to `userId` (unlinking any employee currently linked to that user). */
-export async function linkEmployee(tx: Prisma.TransactionClient, userId: string, employeeId: string) {
-  const employee = await tx.employee.findUnique({ where: { id: employeeId }, select: { id: true, userId: true } });
-  if (!employee) throw notFound('الموظف المحدد غير موجود');
-  if (employee.userId && employee.userId !== userId) throw conflict('هذا الموظف مرتبط بحساب مستخدم آخر');
-  if (employee.userId === userId) return;
-  await tx.employee.updateMany({ where: { userId }, data: { userId: null } });
-  await tx.employee.update({ where: { id: employeeId }, data: { userId } });
 }
 
 /** Serializable-transaction write conflicts (P2034) become a retryable 409 instead of a 500. */

@@ -37,18 +37,22 @@ export const SECURITY_SETTING_KEYS = {
   sessionTimeoutMinutes: 'session_timeout_minutes',
   maxLoginAttempts: 'max_login_attempts',
   passwordMinLength: 'password_min_length',
+  /** BL-PAY-005: lifetime of a one-time credential link (reset, first attestation), in hours. */
+  credentialLinkHours: 'credential_link_hours',
 } as const;
 
 export interface SecurityPolicy {
   sessionTimeoutMinutes: number;
   maxLoginAttempts: number;
   passwordMinLength: number;
+  credentialLinkHours: number;
 }
 
 export const DEFAULT_SECURITY_POLICY: SecurityPolicy = {
   sessionTimeoutMinutes: 12 * 60,
   maxLoginAttempts: 5,
   passwordMinLength: 8,
+  credentialLinkHours: 24,
 };
 
 const int = (defaultValue: number, min: number, max: number): SettingDef => ({ defaultValue: String(defaultValue), min, max, integer: true });
@@ -103,6 +107,7 @@ export const SETTING_DEFS: Readonly<Record<string, SettingDef>> = {
   [SECURITY_SETTING_KEYS.sessionTimeoutMinutes]: int(DEFAULT_SECURITY_POLICY.sessionTimeoutMinutes, 15, 7 * 24 * 60),
   [SECURITY_SETTING_KEYS.maxLoginAttempts]: int(DEFAULT_SECURITY_POLICY.maxLoginAttempts, 3, 20),
   [SECURITY_SETTING_KEYS.passwordMinLength]: int(DEFAULT_SECURITY_POLICY.passwordMinLength, 8, 64),
+  [SECURITY_SETTING_KEYS.credentialLinkHours]: int(DEFAULT_SECURITY_POLICY.credentialLinkHours, 1, 72),
 };
 
 export const DEFAULT_SETTINGS: Readonly<Record<string, string>> = Object.fromEntries(
@@ -175,6 +180,7 @@ export function parseSecurityPolicy(rows: ReadonlyArray<{ key: string; value: st
     sessionTimeoutMinutes: numericOr(map.get(K.sessionTimeoutMinutes), SETTING_DEFS[K.sessionTimeoutMinutes]),
     maxLoginAttempts: numericOr(map.get(K.maxLoginAttempts), SETTING_DEFS[K.maxLoginAttempts]),
     passwordMinLength: numericOr(map.get(K.passwordMinLength), SETTING_DEFS[K.passwordMinLength]),
+    credentialLinkHours: numericOr(map.get(K.credentialLinkHours), SETTING_DEFS[K.credentialLinkHours]),
   };
 }
 

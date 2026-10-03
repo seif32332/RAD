@@ -58,11 +58,55 @@ model User {
   /// موظف انتهت خدمته: الدخول لمستنداته الرسمية فقط (تنزيل وموافقة على المخالصة) حتى هذا الوقت، ثم يُعطَّل الحساب
   documentsOnlyUntil DateTime?
 
+  // BL-PAY-005 (9zk_identity_controls): identity controls (pay-to-be.md BR-PAY-005, §2, §17; DEC-PO-013 / 016 /
+  // 021 / 024 / 027). Written only inside the iam identity operations (money.gateway refuses them elsewhere).
+  /// Who created the account. NULL: created before 9zk and not found in AuditLog, or by a vendor script.
+  createdById            String?
+  /// Radeef (vendor) staff: TRUE only from the vendor scripts (seed.mjs, create-admin.mjs); never in-app.
+  isVendorStaff          Boolean             @default(false)
+  identityStatus         IdentityStatus      @default(UNATTESTED)
+  identityAttestedById   String?
+  identityAttestedAt     DateTime?
+  /// The email the attester confirmed belongs to the person; credential links go there only (RT-PAY-1001).
+  attestedEmail          String?
+  /// A user with no employee file: who attested he is a real person (BR-PAY-005).
+  noEmployeeAttestedById String?
+  /// Why the last attestation was dropped (decides who may re-attest), and when.
+  identityDroppedReason  IdentityDropReason?
+  identityDroppedAt      DateTime?
+  /// TENANT_ROOT (DEC-PO-016): marked by Radeef from the vendor panel only (BL-PAY-017). At most one per tenant.
+  tenantRoot             Boolean             @default(false)
+  /// Root powers suspended (root credential reset RT-PAY-1004; approved exit DEC-PO-042).
+  rootSuspendedAt        DateTime?
+  /// Who last set the login email, and when (the holder, an admin, NULL = a vendor script or unknown). An
+  /// attester never attests an account whose email he (or someone he attested) set (BL-PAY-005 review).
+  emailSetById           String?
+  emailSetAt             DateTime?
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
   employeeProfile Employee?
   auditLogs       AuditLog[]
+  // 9zk_identity_controls (BL-PAY-005)
+  createdBy                    User?                   @relation("UserCreatedBy", fields: [createdById], references: [id], onDelete: Restrict)
+  usersCreated                 User[]                  @relation("UserCreatedBy")
+  identityAttestedBy           User?                   @relation("UserIdentityAttestedBy", fields: [identityAttestedById], references: [id], onDelete: Restrict)
+  identitiesAttested           User[]                  @relation("UserIdentityAttestedBy")
+  noEmployeeAttestedBy         User?                   @relation("UserNoEmployeeAttestedBy", fields: [noEmployeeAttestedById], references: [id], onDelete: Restrict)
+  noEmployeeAttested           User[]                  @relation("UserNoEmployeeAttestedBy")
+  emailSetBy                   User?                   @relation("UserEmailSetBy", fields: [emailSetById], references: [id], onDelete: Restrict)
+  emailsSet                    User[]                  @relation("UserEmailSetBy")
+  employeeLinks                UserEmployeeLink[]      @relation("UserEmployeeLinkUser")
+  employeeLinksProposed        UserEmployeeLink[]      @relation("UserEmployeeLinkProposedBy")
+  employeeLinksConfirmed       UserEmployeeLink[]      @relation("UserEmployeeLinkConfirmedBy")
+  employeeLinksEnded           UserEmployeeLink[]      @relation("UserEmployeeLinkEndedBy")
+  credentialTokens             CredentialToken[]       @relation("CredentialTokenUser")
+  credentialTokensIssued       CredentialToken[]       @relation("CredentialTokenIssuedBy")
+  credentialTokensAttested     CredentialToken[]       @relation("CredentialTokenAttester")
+  identityChangeRequests       IdentityChangeRequest[] @relation("IdentityChangeTarget")
+  identityChangesRequested     IdentityChangeRequest[] @relation("IdentityChangeRequestedBy")
+  identityChangesDecided       IdentityChangeRequest[] @relation("IdentityChangeDecidedBy")
   uploadedFiles   UploadedFile[]
   companyScopes                UserCompanyScope[]     @relation("ScopedUser") // back-relations of the foreign keys added by 9x_db_constraints (P1-FND-DB)
   paymentsRequested            PaymentRequest[]       @relation("PaymentRequestedBy")
@@ -122,6 +166,152 @@ model User {
   delegationsTo                ApprovalDelegation[] @relation("ApprovalDelegationTo")
   delegationsCreated           ApprovalDelegation[] @relation("ApprovalDelegationCreatedBy")
   delegationsRevoked           ApprovalDelegation[] @relation("ApprovalDelegationRevokedBy")
+}
+
+// --- ضوابط الهوية (BL-PAY-005, 9zk_identity_controls; owner iam) ---
+
+/// UNATTESTED: not a real second person yet (every account at rollout, DEC-PO-013, and every new one).
+/// ATTESTED: attested by a person chained to TENANT_ROOT. VENDOR_BOOTSTRAP: an account a vendor script
+/// created (vendor identity only, never an attestation for approvals).
+enum IdentityStatus {
+  UNATTESTED
+  ATTESTED
+  VENDOR_BOOTSTRAP
+}
+
+/// Why an attestation was dropped. CREDENTIAL_RESET and PROMOTION: only TENANT_ROOT re-attests (DEC-PO-027).
+enum IdentityDropReason {
+  CREDENTIAL_RESET
+  PROMOTION
+  EMAIL_CHANGE
+}
+
+/// PROPOSED (one admin) -> CONFIRMED (a second person, BR-PAY-005) | REJECTED | CANCELLED; CONFIRMED or
+/// LEGACY_LINKED (an Employee.userId found at 9zk; confirmed by the attestation itself) -> ENDED (unlink).
+enum UserEmployeeLinkStatus {
+  PROPOSED
+  CONFIRMED
+  LEGACY_LINKED
+  REJECTED
+  CANCELLED
+  ENDED
+}
+
+/// The two-step link between a login and an employee file (BR-PAY-005). Employee.userId is its projection
+/// (written by the same iam operation): the access link of the self-service portal.
+model UserEmployeeLink {
+  id                    String                 @id @default(uuid())
+  userId                String
+  employeeId            String
+  status                UserEmployeeLinkStatus
+  /// NULL only for LEGACY_LINKED rows created by 9zk.
+  proposedById          String?
+  proposedAt            DateTime               @default(now())
+  confirmedById         String?
+  confirmedAt           DateTime?
+  /// The confirmation broke a two-person rule and went through as a recorded SINGLE_OPERATOR self-act.
+  selfActSingleOperator Boolean                @default(false)
+  /// An access link that existed before 9zk (Employee.userId): it has no proposer (LEGACY_LINKED, then
+  /// CONFIRMED by the attestation itself, §17).
+  legacy                Boolean                @default(false)
+  endedById             String?
+  endedAt               DateTime?
+  endReason             String?
+  createdAt             DateTime               @default(now())
+  updatedAt             DateTime               @updatedAt
+
+  user        User     @relation("UserEmployeeLinkUser", fields: [userId], references: [id], onDelete: Cascade)
+  employee    Employee @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+  proposedBy  User?    @relation("UserEmployeeLinkProposedBy", fields: [proposedById], references: [id], onDelete: Restrict)
+  confirmedBy User?    @relation("UserEmployeeLinkConfirmedBy", fields: [confirmedById], references: [id], onDelete: Restrict)
+  endedBy     User?    @relation("UserEmployeeLinkEndedBy", fields: [endedById], references: [id], onDelete: Restrict)
+
+  @@index([userId])
+  @@index([employeeId])
+}
+
+/// RESET: identity.resetCredentials (the holder chooses his password, DEC-PO-027). FIRST_ATTESTATION: the
+/// two-channel setup of a first attestation (link + a code the attester hands over, RT-PAY-1102 / 1201).
+enum CredentialTokenPurpose {
+  RESET
+  FIRST_ATTESTATION
+}
+
+/// A one-time credential link. The secret is never stored: it is derived from the row id with the server
+/// key, and only its keyed hash is kept (tokenHash; codeHash for the in-person code). Single use, short expiry.
+model CredentialToken {
+  id               String                 @id @default(uuid())
+  userId           String
+  purpose          CredentialTokenPurpose
+  tokenHash        String                 @unique
+  codeHash         String?
+  /// The address the link goes to (the attested email when there is one).
+  sentTo           String
+  /// Keyed hash of the account's password hash when the link was issued: any later credential change (a
+  /// vendor-script reset, a self change) makes the link unusable.
+  credentialFingerprint String
+  issuedById       String?
+  /// FIRST_ATTESTATION: the attester, and how he verified the person outside the system.
+  attesterId       String?
+  verificationNote String?
+  /// RESET: the IdentityChangeRequest that ordered it.
+  changeRequestId  String?
+  expiresAt        DateTime
+  attempts         Int                    @default(0)
+  usedAt           DateTime?
+  revokedAt        DateTime?
+  revokeReason     String?
+  createdAt        DateTime               @default(now())
+
+  user          User                   @relation("CredentialTokenUser", fields: [userId], references: [id], onDelete: Cascade)
+  issuedBy      User?                  @relation("CredentialTokenIssuedBy", fields: [issuedById], references: [id], onDelete: Restrict)
+  attester      User?                  @relation("CredentialTokenAttester", fields: [attesterId], references: [id], onDelete: Restrict)
+  changeRequest IdentityChangeRequest? @relation(fields: [changeRequestId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+}
+
+/// DEACTIVATE / CHANGE_ROLE of an account that counts toward ENFORCED (DEC-PO-021, identity.deactivateApprover)
+/// and RESET_CREDENTIALS (DEC-PO-024: two people for such an account; recorded for every reset so the
+/// re-attestation excludes whoever asked for or approved it, DEC-PO-027).
+enum IdentityChangeKind {
+  DEACTIVATE
+  CHANGE_ROLE
+  RESET_CREDENTIALS
+}
+
+enum IdentityChangeStatus {
+  PENDING
+  EXECUTED
+  REJECTED
+  CANCELLED
+}
+
+model IdentityChangeRequest {
+  id            String               @id @default(uuid())
+  userId        String
+  kind          IdentityChangeKind
+  nextRole      Role?
+  status        IdentityChangeStatus
+  /// A second person (the user himself or another attested admin) had to approve it.
+  twoPerson     Boolean
+  requestedById String
+  requestedAt   DateTime             @default(now())
+  reason        String?
+  decidedById   String?
+  decidedAt     DateTime?
+  decisionNote  String?
+  executedAt    DateTime?
+  createdAt     DateTime             @default(now())
+  updatedAt     DateTime             @updatedAt
+
+  user             User              @relation("IdentityChangeTarget", fields: [userId], references: [id], onDelete: Cascade)
+  requestedBy      User              @relation("IdentityChangeRequestedBy", fields: [requestedById], references: [id], onDelete: Restrict)
+  decidedBy        User?             @relation("IdentityChangeDecidedBy", fields: [decidedById], references: [id], onDelete: Restrict)
+  credentialTokens CredentialToken[]
+
+  @@index([userId, status])
+  @@index([status, requestedAt])
 }
 
 // --- وحدة التدقيق (Audit Logs) ---
@@ -647,6 +837,7 @@ model Employee {
   compensationPeriods       CompensationPeriod[]
   bankIdentityPeriods       BankIdentityPeriod[]      // 9zg_financial_change (P1-PAY-B)
   financialChanges          EmployeeFinancialChange[] // 9zg_financial_change (P1-PAY-B)
+  userLinks                 UserEmployeeLink[]        // 9zk_identity_controls (BL-PAY-005)
   assignmentPeriods         AssignmentPeriod[]   @relation("AssignmentEmployee")
   managedAssignmentPeriods  AssignmentPeriod[]   @relation("AssignmentManager")
   // back-relations of the foreign keys added by 9x_db_constraints (P1-FND-DB)

@@ -36,7 +36,7 @@ describe.skipIf(process.env.SCOPE_IT !== '1')('portal routes: self scope (real a
   // A second employee of company A with his own login (same company as empA, another person).
   const a2 = await h.employee('A');
   const a2User = await h.prisma.user.create({ data: { email: `rh-empa2-${h.tag}@example.test`, passwordHash: 'x', role: 'EMPLOYEE' } });
-  await h.prisma.employee.update({ where: { id: a2.id }, data: { userId: a2User.id } });
+  await (await import('@/test/money-fixtures')).linkFixture(a2User.id, a2.id);
   await h.prisma.userCompanyScope.create({ data: { userId: a2User.id, companyId: h.co.A } });
   const asA2 = async () => {
     state.token = await signSession({ sub: a2User.id, role: 'EMPLOYEE', passwordHash: 'x', sessionVersion: 0 });

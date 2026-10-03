@@ -311,6 +311,9 @@ async function seed(tx, passwordHash) {
         role: u.role,
         isActive: u.active !== false,
         name: u.name,
+        // BL-PAY-005: a vendor script writes the identity of its accounts explicitly (demo people: vendor identity).
+        isVendorStaff: true,
+        identityStatus: 'VENDOR_BOOTSTRAP',
       },
     });
     bump('User');
@@ -386,6 +389,10 @@ async function seed(tx, passwordHash) {
     });
     bump('Employee');
   }
+  // BL-PAY-005: every access link (Employee.userId) has its UserEmployeeLink row; a vendor script's link is
+  // LEGACY_LINKED (not a confirmed two-step link).
+  const demoLinks = Object.values(emps).filter((e) => e.userId).map((e) => ({ userId: e.userId, employeeId: e.id, status: 'LEGACY_LINKED', legacy: true }));
+  if (demoLinks.length) await tx.userEmployeeLink.createMany({ data: demoLinks });
 
   // --- M3: monthly allowances (housing counts toward GOSI; transport) ---
   for (const e of EMPLOYEES) {

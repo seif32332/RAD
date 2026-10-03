@@ -144,6 +144,7 @@ const SETTING_SECTIONS: SectionDef[] = [
       { key: 'session_timeout_minutes', label: 'مدة صلاحية الجلسة (دقيقة)', hint: 'بعد انتهائها يجب تسجيل الدخول من جديد. تُطبق على الجلسات الجديدة (من 15 دقيقة حتى 7 أيام).' },
       { key: 'max_login_attempts', label: 'عدد محاولات الدخول المسموحة خلال 15 دقيقة', hint: 'بعد تجاوزها يُمنع الدخول لهذا الحساب من نفس العنوان مؤقتاً' },
       { key: 'password_min_length', label: 'الحد الأدنى لطول كلمة المرور', hint: 'يُطبق عند إنشاء المستخدمين وتغيير كلمات المرور (لا يقل عن 8، مع حرف ورقم)' },
+      { key: 'credential_link_hours', label: 'صلاحية رابط اختيار كلمة المرور (ساعة)', hint: 'رابط لمرة واحدة يصل صاحب الحساب عند إعادة ضبط بيانات دخوله أو إقرار هويته أول مرة (من ساعة حتى 72 ساعة)' },
     ],
     note: 'المصادقة الثنائية (2FA) غير متوفرة في هذا الإصدار. النسخ الاحتياطي لقاعدة البيانات يُدار من الخادم عبر ops/backup.sh (جدولة cron) وليس من هذه الصفحة، ولا يوجد إرسال رسائل SMS في النظام حالياً.',
   },
@@ -259,6 +260,31 @@ export default function SettingsPage() {
       setEmailForm(prev => ({ ...prev, currentPassword: '' }));
       fetchProfile();
       refreshSession().catch(() => undefined);
+    } catch {
+      setProfileMsg({ type: 'error', text: 'تعذر الاتصال بالخادم' });
+    } finally {
+      setIsSavingEmail(false);
+    }
+  };
+
+  /** BL-PAY-005: the holder re-confirms his own login email (needed before a first attestation when an admin set it). */
+  const handleEmailConfirm = async () => {
+    if (isSavingEmail) return;
+    setProfileMsg({ type: '', text: '' });
+    setIsSavingEmail(true);
+    try {
+      const res = await fetch('/api/settings/profile', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ actionType: 'CONFIRM_EMAIL', currentPassword: emailForm.currentPassword })
+      });
+      if (res.status === 401) { window.location.href = '/login'; return; }
+      if (!res.ok) { setProfileMsg({ type: 'error', text: await readApiError(res, 'تعذر تأكيد البريد') }); return; }
+      const data = await res.json().catch(() => ({}));
+      const msg = data?.message || 'تم تأكيد البريد';
+      setProfileMsg({ type: 'success', text: msg });
+      toast.success(msg);
+      setEmailForm(prev => ({ ...prev, currentPassword: '' }));
     } catch {
       setProfileMsg({ type: 'error', text: 'تعذر الاتصال بالخادم' });
     } finally {
@@ -455,6 +481,10 @@ export default function SettingsPage() {
                         </div>
                         <button type="submit" disabled={isSavingEmail} className="px-8 py-3 bg-indigo-600 hover:bg-indigo-700 text-white font-black text-[13px] rounded-xl transition shadow-lg shadow-indigo-600/20 flex items-center gap-2 disabled:opacity-50">
                            <AtSign size={16}/> {isSavingEmail ? 'جاري التحديث...' : 'تحديث البريد الإلكتروني'}
+                        </button>
+                        {/* BL-PAY-005: when an admin set the login email, the holder confirms it is his before a first attestation. */}
+                        <button type="button" disabled={isSavingEmail || !emailForm.currentPassword} onClick={handleEmailConfirm} title="أكّد أن بريد الدخول الحالي بريدك (مطلوب قبل إقرار هويتك أول مرة إن عيّنه مسؤول)" className="px-6 py-3 bg-white border border-indigo-200 text-indigo-700 hover:bg-indigo-50 font-black text-[13px] rounded-xl transition disabled:opacity-50">
+                           تأكيد أن البريد الحالي بريدي
                         </button>
                      </form>
                   </SettingsCard>

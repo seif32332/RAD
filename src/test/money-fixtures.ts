@@ -8,9 +8,10 @@
 // imports (money-gateway-static.test.ts refuses an import of src/test from src/app, src/lib, src/modules
 // and src/jobs). It is a SYSTEM operation: no guard applies, the writes are recorded under its name.
 import { randomUUID } from 'crypto';
-import { MONEY_TABLES, defineMoneyOperation, runMoneyOperation, type TxClient } from '@/modules/platform';
+import { IDENTITY_TABLES, MONEY_TABLES, defineMoneyOperation, runMoneyOperation, type TxClient } from '@/modules/platform';
 
-const writes: Record<string, '*'> = Object.fromEntries([...MONEY_TABLES, 'Employee', 'OvertimeRequest'].map((t) => [t, '*']));
+// BL-PAY-005: the identity tables and columns (User control / credential columns, Employee.userId) too.
+const writes: Record<string, '*'> = Object.fromEntries([...MONEY_TABLES, ...IDENTITY_TABLES, 'Employee', 'OvertimeRequest', 'User'].map((t) => [t, '*']));
 
 const TEST_FIXTURE = defineMoneyOperation<Record<string, never>>({
   name: 'test.fixture.write',
@@ -98,4 +99,42 @@ export async function employeeFixture<T extends Record<string, unknown>>(data: T
     }
     return emp;
   });
+}
+
+/**
+ * A login linked to an employee file as a fixture (BL-PAY-005: Employee.userId is the projection of a
+ * UserEmployeeLink and an identity column money.gateway guards): the access link and its LEGACY_LINKED row.
+ */
+export async function linkFixture(userId: string, employeeId: string): Promise<void> {
+  await moneyFixture(async (tx) => {
+    await tx.employee.update({ where: { id: employeeId }, data: { userId } });
+    await tx.userEmployeeLink.create({ data: { userId, employeeId, status: 'LEGACY_LINKED', legacy: true } });
+  });
+}
+
+/** Identity columns of a user as a fixture (e.g. the TENANT_ROOT that only Radeef's vendor panel marks, BL-PAY-017). */
+export async function identityFixture(userId: string, data: Record<string, unknown>): Promise<void> {
+  await moneyFixture((tx) => tx.user.update({ where: { id: userId }, data: data as never }));
+}
+
+/**
+ * TENANT_ROOT as a fixture (DEC-PO-016: one per database; only Radeef's vendor panel marks it, BL-PAY-017).
+ * Test files run in parallel on one database: a file HOLDS the root mark for the tests that need it (waiting
+ * while another file holds it) and releases it in a finally block.
+ */
+export async function holdTenantRoot(userId: string, timeoutMs = 240_000): Promise<void> {
+  const until = Date.now() + timeoutMs;
+  for (;;) {
+    try {
+      await identityFixture(userId, { tenantRoot: true, rootSuspendedAt: null });
+      return;
+    } catch (err) {
+      if (Date.now() > until) throw err;
+      await new Promise((r) => setTimeout(r, 250));
+    }
+  }
+}
+
+export async function releaseTenantRoot(userId: string): Promise<void> {
+  await identityFixture(userId, { tenantRoot: false, rootSuspendedAt: null });
 }

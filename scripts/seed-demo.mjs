@@ -368,8 +368,9 @@ async function main() {
   let accounts = 'none (set DEMO_PASSWORD to create demo-hr / demo-employee logins)';
   if (DEMO_PASSWORD) {
     const hash = await bcrypt.hash(DEMO_PASSWORD, BCRYPT_COST);
-    await prisma.user.create({ data: { email: `demo-hr${DEMO_EMAIL_DOMAIN}`, passwordHash: hash, role: 'HR_MANAGER', name: 'مسؤول موارد بشرية (تجريبي)' } });
-    const empUser = await prisma.user.create({ data: { email: `demo-employee${DEMO_EMAIL_DOMAIN}`, passwordHash: hash, role: 'EMPLOYEE', name: 'موظف تجريبي' } });
+    // BL-PAY-005: a vendor script writes the identity of its accounts explicitly (demo logins: vendor identity).
+    await prisma.user.create({ data: { email: `demo-hr${DEMO_EMAIL_DOMAIN}`, passwordHash: hash, role: 'HR_MANAGER', name: 'مسؤول موارد بشرية (تجريبي)', isVendorStaff: true, identityStatus: 'VENDOR_BOOTSTRAP' } });
+    const empUser = await prisma.user.create({ data: { email: `demo-employee${DEMO_EMAIL_DOMAIN}`, passwordHash: hash, role: 'EMPLOYEE', name: 'موظف تجريبي', isVendorStaff: true, identityStatus: 'VENDOR_BOOTSTRAP' } });
     await prisma.employee.update({ where: { id: employees[0].id }, data: { userId: empUser.id } });
     accounts = `demo-hr${DEMO_EMAIL_DOMAIN}, demo-employee${DEMO_EMAIL_DOMAIN} (password from DEMO_PASSWORD)`;
   }

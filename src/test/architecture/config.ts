@@ -208,6 +208,8 @@ export const EMPLOYEE_PROJECTIONS: Record<string, string> = {
   gosiDeduction: 'payroll',
   // leave (LeaveLedgerEntry)
   leaveAccrualStartDate: 'leave',
+  // iam (UserEmployeeLink, ADR-0007): the access link, written by projectAccessLink only
+  userId: 'iam',
 };
 
 /** ARCH-005: the employment-state columns only `transitionEmploymentState` may write. */
@@ -288,6 +290,7 @@ export const SCRIPT_WRITE_ALLOWLIST: string[] = [];
 export const PUBLIC_ROUTES = [
   'src/app/api/auth/login/route.ts',
   'src/app/api/auth/logout/route.ts',
+  'src/app/api/auth/credential-setup/route.ts', // BL-PAY-005: the one-time credential link is the credential
   'src/app/api/health/route.ts',
   'src/app/api/apply/[jobRequestId]/route.ts', // public job application form
 ];

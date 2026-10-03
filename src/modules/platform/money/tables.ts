@@ -69,3 +69,68 @@ export const MONEY_GUARDED_DELETES: readonly string[] = ['Employee'];
 export function isMoneyTable(model: string): boolean {
   return (MONEY_TABLES as readonly string[]).includes(model);
 }
+
+/**
+ * BL-PAY-005 (pay-to-be.md §2 "حقول الضوابط نفسها" and "بيانات الدخول"; BR-PAY-018 names identity.link /
+ * identity.attest as gateway operations): the identity tables and columns are protected like the money
+ * ones. They are not money (ARCH-004 MONEY_MODELS is unchanged); only iam's identity operations
+ * (src/modules/iam/operations.ts) write them:
+ *   - the identity tables: every write;
+ *   - User control columns (createdById, isVendorStaff, identityStatus, the attestation, tenantRoot …): every
+ *     write including a CREATE, so no in-app code creates an account as vendor staff, attested or root;
+ *   - User credential and standing columns (passwordHash, email, role, isActive): on UPDATE. An account is
+ *     created with them; every later change is a named identity operation (resetCredentials, the self-change
+ *     operations, promoteApprover, deactivateApprover, the exit of an employee's login);
+ *   - Employee.userId (the access link, projection of UserEmployeeLink): every write.
+ * The vendor scripts write isVendorStaff / identityStatus with their own client (BR-PAY-018 "السكربتات").
+ */
+export const IDENTITY_TABLES = ['UserEmployeeLink', 'CredentialToken', 'IdentityChangeRequest'] as const;
+
+export const USER_CONTROL_COLUMNS = [
+  'createdById',
+  'isVendorStaff',
+  'identityStatus',
+  'identityAttestedById',
+  'identityAttestedAt',
+  'attestedEmail',
+  'noEmployeeAttestedById',
+  'identityDroppedReason',
+  'identityDroppedAt',
+  'tenantRoot',
+  'rootSuspendedAt',
+  'emailSetById',
+  'emailSetAt',
+] as const;
+
+export const USER_CREDENTIAL_COLUMNS = ['passwordHash', 'email', 'role', 'isActive'] as const;
+
+export const IDENTITY_COLUMNS: Readonly<Record<string, readonly ProtectedColumns[]>> = Object.freeze({
+  User: [
+    { columns: USER_CONTROL_COLUMNS, on: 'all' },
+    { columns: USER_CREDENTIAL_COLUMNS, on: 'update' },
+  ],
+  Employee: [{ columns: ['userId'], on: 'all' }],
+});
+
+/** Every table the extension guards (money + identity). */
+export const GUARDED_TABLES: readonly string[] = Object.freeze([...MONEY_TABLES, ...IDENTITY_TABLES]);
+
+export function isGuardedTable(model: string): boolean {
+  return GUARDED_TABLES.includes(model);
+}
+
+/** Every protected column spec of a model (money + identity). */
+export function guardedColumnSpecs(model: string): readonly ProtectedColumns[] {
+  const out: ProtectedColumns[] = [];
+  const money = MONEY_COLUMNS[model];
+  if (money) out.push(money);
+  for (const spec of IDENTITY_COLUMNS[model] ?? []) out.push(spec);
+  return out;
+}
+
+/** For raw SQL: the protected columns of each model, every spec together. */
+export const GUARDED_RAW_COLUMNS: Readonly<Record<string, { columns: readonly string[] }>> = Object.freeze(
+  Object.fromEntries(
+    [...new Set([...Object.keys(MONEY_COLUMNS), ...Object.keys(IDENTITY_COLUMNS)])].map((m) => [m, { columns: guardedColumnSpecs(m).flatMap((s) => [...s.columns]) }]),
+  ),
+);

@@ -25,7 +25,7 @@ src/modules/<domain>/
 | الوحدة | تملك (الحالي) | تملك (جديد في الخطة) |
 |---|---|---|
 | **platform** | AuditLog (قديم، يُكتب بالإضافة فقط، ADR-0003)، SystemSetting، JobRun، NotificationOutbox، UploadedFile | DomainEvent، EventConsumption، OperationLog، AuditRecord (سجل التدقيق غير القابل للتعديل، ADR-0003)، Discrepancy، InvariantRun |
-| **iam** | User، RolePermission، UserCompanyScope | Permission، RoleGrant (P6-AUTHZ)، MfaFactor |
+| **iam** | User، RolePermission، UserCompanyScope | Permission، RoleGrant (P6-AUTHZ)، MfaFactor، UserEmployeeLink، CredentialToken، IdentityChangeRequest (BL-PAY-005، ADR-0007) |
 | **rules** | RuleParameter، GosiRate | CompanyRuleOverride |
 | **calendar** | WorkSchedule (يصبح WorkPattern) | HolidayCalendar، RamadanPeriod |
 | **org** | Company، Administration، Branch، Department، TransferRequest (يُدمج في قرار النقل الموحد، P3-ORG) | AssignmentPeriod، Position، JobGrade، CostCenter |
@@ -52,7 +52,7 @@ src/modules/<domain>/
 | **workforce** | WorkforceAssumption، WorkforceCalculation، NitaqatActivity، NitaqatCurve، LocalizationDecision، HeadcountPlan، PlannedPosition، PlanRaise | — |
 | **reporting** | — (لا جداول. تقرأ الاستعلامات القانونية، ونماذج قراءة إن لزم) | ReadModel* |
 
-**`Employee` حالة خاصة:** الجدول ملك `people`، لكن أعمدة الإسقاط عليه ملك كتّابها: lifecycle للحالة، وcompensation للراتب، وorg للتعيين. ويُفرض ذلك على مستوى **العمود** (ARCH-003).
+**`Employee` حالة خاصة:** الجدول ملك `people`، لكن أعمدة الإسقاط عليه ملك كتّابها: lifecycle للحالة، وcompensation للراتب، وorg للتعيين، وiam لرابط الدخول `userId` (إسقاط `UserEmployeeLink`، ADR-0007). ويُفرض ذلك على مستوى **العمود** (ARCH-003).
 
 ## 5.3 اتجاه الاعتماد (بلا دوائر)
 

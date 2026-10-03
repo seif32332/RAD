@@ -10,9 +10,19 @@
  *   - otherwise a random 16-character password is generated and printed ONCE to stdout.
  *
  * Behaviour:
- *   - New e-mail  -> creates an active user with the given role (default SUPER_ADMIN).
+ *   - New e-mail  -> creates an active user with the given role (default SUPER_ADMIN). One of two flags is
+ *                    REQUIRED (BL-PAY-005, pay-to-be.md BR-PAY-005 "التمهيد"):
+ *                      --vendor-staff     a Radeef staff account: isVendorStaff=true, identityStatus=VENDOR_BOOTSTRAP
+ *                                         (never an approver, never attested);
+ *                      --customer-admin   the first admin handed to the customer: isVendorStaff=false,
+ *                                         identityStatus=VENDOR_BOOTSTRAP (recorded). He counts as an attested
+ *                                         person only once Radeef marks the tenant root (BL-PAY-017) or the
+ *                                         root's chain attests him.
  *   - Existing    -> resets the password and re-activates the account. The role is changed only
  *                    when --role is passed explicitly. Linked employee profile is untouched.
+ *                    Every session ends. A non-vendor account loses its attestation (identityStatus=UNATTESTED,
+ *                    until another attested admin attests it again; a root's powers are suspended until
+ *                    Radeef re-confirms him); a one-time credential link issued before stops working.
  *
  * Environment: DATABASE_URL (or ./.env). bcrypt cost 12, same as the login route.
  */
@@ -38,17 +48,22 @@ const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 function usage(msg) {
   if (msg) console.error(`Error: ${msg}\n`);
-  console.error('Usage: node scripts/create-admin.mjs <email> [--role <ROLE>] [--name <display name>]');
+  console.error('Usage: node scripts/create-admin.mjs <email> (--vendor-staff | --customer-admin) [--role <ROLE>] [--name <display name>]');
+  console.error('  --vendor-staff / --customer-admin: required when the account is new (BL-PAY-005).');
   console.error(`Roles: ${ROLES.join(', ')}`);
   console.error('Password: env NEW_ADMIN_PASSWORD, or a random one is generated and printed once.');
   process.exit(2);
 }
 
 function parseArgs(argv) {
-  const out = { email: '', role: undefined, name: undefined };
+  const out = { email: '', role: undefined, name: undefined, kind: undefined };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === '--help' || a === '-h') usage();
+    else if (a === '--vendor-staff' || a === '--customer-admin') {
+      if (out.kind && out.kind !== a) usage('pass only one of --vendor-staff / --customer-admin');
+      out.kind = a;
+    }
     else if (a === '--role') out.role = argv[++i];
     else if (a.startsWith('--role=')) out.role = a.slice('--role='.length);
     else if (a === '--name') out.name = argv[++i];
@@ -123,20 +138,48 @@ async function main() {
     let userId;
     let summary;
     if (existing) {
-      const data = { passwordHash, isActive: true };
+      const identity = await prisma.user.findUnique({
+        where: { id: existing.id },
+        select: { isVendorStaff: true, identityStatus: true, tenantRoot: true, rootSuspendedAt: true },
+      });
+      const data = { passwordHash, isActive: true, sessionVersion: { increment: 1 } };
       if (args.role) data.role = args.role;
       if (args.name) data.name = args.name;
+      // BL-PAY-005: a reset of a non-vendor account suspends its eligibility as an approver until another
+      // attested admin attests it again (a root's powers until Radeef re-confirms him, RT-PAY-1004).
+      if (!identity.isVendorStaff) {
+        const counted = identity.identityStatus !== 'UNATTESTED' || identity.tenantRoot;
+        data.identityStatus = 'UNATTESTED';
+        if (counted) {
+          data.identityDroppedReason = 'CREDENTIAL_RESET';
+          data.identityDroppedAt = new Date();
+        }
+        if (identity.tenantRoot && !identity.rootSuspendedAt) data.rootSuspendedAt = new Date();
+      }
+      // A one-time credential link issued before this reset stops working by itself: it is bound to the
+      // credentials it was issued for (CredentialToken.credentialFingerprint).
       await prisma.user.update({ where: { id: existing.id }, data });
       userId = existing.id;
-      summary = `Password reset for ${existing.email} (role: ${args.role ?? existing.role}, active).`;
+      summary = `Password reset for ${existing.email} (role: ${args.role ?? existing.role}, active${identity.isVendorStaff ? ', vendor staff' : ', identity UNATTESTED'}).`;
     } else {
+      if (!args.kind) usage('a new account needs --vendor-staff or --customer-admin (BL-PAY-005)');
       const role = args.role ?? 'SUPER_ADMIN';
+      const isVendorStaff = args.kind === '--vendor-staff';
       const user = await prisma.user.create({
-        data: { email: args.email, passwordHash, role, isActive: true, name: args.name ?? null },
+        data: {
+          email: args.email,
+          passwordHash,
+          role,
+          isActive: true,
+          name: args.name ?? null,
+          // BL-PAY-005: a vendor script writes both explicitly (never left to the column defaults).
+          isVendorStaff,
+          identityStatus: 'VENDOR_BOOTSTRAP',
+        },
         select: { id: true },
       });
       userId = user.id;
-      summary = `Created ${args.email} with role ${role}.`;
+      summary = `Created ${args.email} with role ${role} (${isVendorStaff ? 'Radeef staff' : 'customer first admin'}, identity VENDOR_BOOTSTRAP).`;
     }
 
     try {
@@ -146,7 +189,7 @@ async function main() {
           action: existing ? 'PASSWORD_RESET' : 'CREATE',
           entityType: 'User',
           entityId: userId,
-          details: JSON.stringify({ source: 'scripts/create-admin.mjs', role: args.role ?? null }),
+          details: JSON.stringify({ source: 'scripts/create-admin.mjs', role: args.role ?? null, kind: existing ? 'reset' : args.kind }),
           ipAddress: 'cli',
         },
       });

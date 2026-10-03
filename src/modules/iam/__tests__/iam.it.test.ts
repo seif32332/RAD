@@ -112,10 +112,11 @@ describe.skipIf(!RUN)('company scope (P1-FND-SCOPE) on PostgreSQL', { timeout: 6
             email: `${key}-${tag}@example.test`,
             passwordHash: 'x',
             role: u.role as 'HR_MANAGER',
-            ...(u.employeeId ? { employeeProfile: { connect: { id: u.employeeId } } } : {}),
           },
         })
       ).id;
+      // BL-PAY-005: Employee.userId is the identity projection (money.gateway guards it): a link fixture.
+      if (u.employeeId) await (await import('@/test/money-fixtures')).linkFixture(u.id, u.employeeId);
     }
     await prisma.userCompanyScope.createMany({
       data: [

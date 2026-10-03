@@ -35,7 +35,7 @@ describe.skipIf(!RUN)('finance payment requests on PostgreSQL (P1-PAY-A)', { tim
       const u = await prisma.user.create({ data: { email: `fn-${k}-${tag}@example.test`, passwordHash: 'x', role } });
       a[k] = { id: u.id, role, employeeId: k === 'beneficiary' ? employeeId : null };
     }
-    await prisma.employee.update({ where: { id: employeeId }, data: { userId: a.beneficiary.id } });
+    await (await import('@/test/money-fixtures')).linkFixture(a.beneficiary.id, employeeId);
   });
 
   const tx = <T,>(fn: (t: import('@/modules/platform').TxClient) => Promise<T>) => runPayrollTransaction(prisma, fn);

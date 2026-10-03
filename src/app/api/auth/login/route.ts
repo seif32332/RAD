@@ -1,3 +1,4 @@
+import { randomUUID } from 'crypto';
 import { NextResponse } from 'next/server';
 import bcrypt from 'bcryptjs';
 import { z } from 'zod';
@@ -8,6 +9,7 @@ import { rateLimit, refundRateLimit, resetRateLimit } from '@/lib/rate-limit';
 import { getClientIp } from '@/lib/auth';
 import { logAudit } from '@/lib/audit';
 import { loadSecurityPolicy } from '@/app/api/settings/security';
+import { isResetMarker, rehashLegacyPassword, runIdentityTransaction } from '@/modules/iam';
 
 export const dynamic = 'force-dynamic';
 
@@ -50,11 +52,16 @@ export async function POST(req: Request) {
     if (user) {
       if (BCRYPT_PREFIX.test(user.passwordHash)) {
         valid = await bcrypt.compare(password, user.passwordHash);
-      } else if (user.passwordHash.length > 0 && user.passwordHash === password) {
-        // Legacy account whose password was stored in plain text: accept once and hash it now.
+      } else if (user.passwordHash.length > 0 && !isResetMarker(user.passwordHash) && user.passwordHash === password) {
+        // Legacy account whose password was stored in plain text: accept once and hash it now (the named
+        // operation iam.self.rehashPassword, BL-PAY-005 / RT-PAY-904). A credential reset leaves an unusable
+        // marker (never a password): the holder sets a new one through his one-time link.
         valid = true;
+        const legacy = user.passwordHash;
         storedHash = await bcrypt.hash(password, 12);
-        await prisma.user.update({ where: { id: user.id }, data: { passwordHash: storedHash } });
+        await runIdentityTransaction(prisma, (tx) =>
+          rehashLegacyPassword(tx, { userId: user.id, expectedHash: legacy, passwordHash: storedHash, operationKey: `login.rehash:${user.id}:${randomUUID()}`, ipAddress: ip }),
+        );
       }
     } else {
       // Constant-ish time for unknown emails to avoid user enumeration by timing.

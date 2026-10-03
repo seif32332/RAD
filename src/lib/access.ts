@@ -14,7 +14,7 @@ import { logAudit } from '@/lib/audit';
 import { ALL_ROLES, type AppRole } from '@/lib/constants';
 import { daysUntil } from '@/lib/dates';
 import { isOutboxEmailAddress, type JobDefinition, type JobSummary } from '@/modules/platform';
-import type { SystemContext } from '@/modules/iam';
+import { runExitAccessChange, type SystemContext } from '@/modules/iam';
 
 export const TERMINATED_ACCESS_SETTING = 'terminated_access_days';
 export const TERMINATED_DOCUMENTS_SETTING = 'terminated_documents_access_days';
@@ -69,10 +69,13 @@ export async function deactivateEmployeeUser(
   const documentsDays = opts.documentsAccess === false ? 0 : await terminatedDocumentsDays(tx);
   if (documentsDays > 0) {
     const until = new Date(Date.now() + documentsDays * 86400e3);
-    const res = await tx.user.updateMany({
-      where: { id: employee.userId, isActive: true, documentsOnlyUntil: null },
-      data: { documentsOnlyUntil: until, sessionVersion: { increment: 1 } },
-    });
+    const userId = employee.userId;
+    const res = await runExitAccessChange(tx, userId, (w) =>
+      w.user.updateMany({
+        where: { id: userId, isActive: true, documentsOnlyUntil: null },
+        data: { documentsOnlyUntil: until, sessionVersion: { increment: 1 } },
+      }),
+    );
     if (res.count > 0) {
       await logAudit(
         {
@@ -90,10 +93,14 @@ export async function deactivateEmployeeUser(
   }
 
 
-  const res = await tx.user.updateMany({
-    where: { id: employee.userId, isActive: true },
-    data: { isActive: false, documentsOnlyUntil: null, sessionVersion: { increment: 1 } },
-  });
+  const loginId = employee.userId;
+  // User.isActive is an identity column (BL-PAY-005): written inside iam.access.endOnExit.
+  const res = await runExitAccessChange(tx, loginId, (w) =>
+    w.user.updateMany({
+      where: { id: loginId, isActive: true },
+      data: { isActive: false, documentsOnlyUntil: null, sessionVersion: { increment: 1 } },
+    }),
+  );
   if (res.count > 0) {
     await logAudit(
       {
@@ -183,10 +190,12 @@ export async function deactivateTerminatedLogins(db: PrismaClient, opts: { dryRu
     if (step.action !== 'DOCUMENTS' || !e.userId) continue;
     const userId = e.userId;
     summary.documentsOnly += await db.$transaction(async (tx) => {
-      const res = await tx.user.updateMany({
-        where: { id: userId, isActive: true, documentsOnlyUntil: null },
-        data: { documentsOnlyUntil: step.until, sessionVersion: { increment: 1 } },
-      });
+      const res = await runExitAccessChange(tx, userId, (w) =>
+        w.user.updateMany({
+          where: { id: userId, isActive: true, documentsOnlyUntil: null },
+          data: { documentsOnlyUntil: step.until, sessionVersion: { increment: 1 } },
+        }),
+      );
       if (res.count > 0) {
         const details = { field: 'documentsOnlyUntil', to: step.until.toISOString(), reason: 'terminated_access_expired', employeeId: e.id, graceDays, documentsDays, job: DEACTIVATE_TERMINATED_JOB };
         await logAudit({ userId: null, action: 'UPDATE', entityType: 'User', entityId: userId, details }, tx);
@@ -198,10 +207,12 @@ export async function deactivateTerminatedLogins(db: PrismaClient, opts: { dryRu
     if (!e.userId) continue;
     const userId = e.userId;
     summary.deactivated += await db.$transaction(async (tx) => {
-      const res = await tx.user.updateMany({
-        where: { id: userId, isActive: true },
-        data: { isActive: false, documentsOnlyUntil: null, sessionVersion: { increment: 1 } },
-      });
+      const res = await runExitAccessChange(tx, userId, (w) =>
+        w.user.updateMany({
+          where: { id: userId, isActive: true },
+          data: { isActive: false, documentsOnlyUntil: null, sessionVersion: { increment: 1 } },
+        }),
+      );
       if (res.count > 0) {
         const details = { field: 'isActive', to: false, reason: 'terminated_access_expired', employeeId: e.id, graceDays, job: DEACTIVATE_TERMINATED_JOB };
         await logAudit({ userId: null, action: 'UPDATE', entityType: 'User', entityId: userId, details }, tx);

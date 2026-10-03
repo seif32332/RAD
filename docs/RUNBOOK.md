@@ -119,8 +119,9 @@ sudo chown radeef:radeef /etc/radeef/*.env && sudo chmod 600 /etc/radeef/*.env
 حُذف حساب الدخول الخلفي الثابت والمقارنة النصية لكلمات المرور من الكود، لذا تسجيل الدخول يتم فقط بحسابات حقيقية في قاعدة البيانات. بعد نشر النسخة الجديدة لكل مستأجر:
 ```bash
 cd /opt/radeef/src
-sudo -u radeef node --env-file=/etc/radeef/dar.env scripts/create-admin.mjs owner@company.sa
+sudo -u radeef node --env-file=/etc/radeef/dar.env scripts/create-admin.mjs owner@company.sa --customer-admin
 ```
+حساب جديد يحتاج `--customer-admin` (أول مسؤول يُسلَّم للعميل) أو `--vendor-staff` (حساب لفريق رديف) (BL-PAY-005). إعادة التعيين لحساب ليس من رديف تُسقط إقرار هويته حتى يقرّه مسؤول آخر مُقرّ به.
 يطبع كلمة مرور عشوائية **مرة واحدة**. نفس الأمر مع بريد موجود يعيد تعيين كلمة مروره: نفّذه على `admin@dar.com` (كلمة مروره القديمة `admin123` مكشوفة) وعلى أي حساب بكلمة مرور ضعيفة معروفة. راجع جدول المستخدمين وعطّل من لا تعرفه من صفحة الإعدادات ← المستخدمين.
 
 ### 1.5 تبنّي الترحيلات
@@ -313,7 +314,7 @@ sudo crontab -e
 ```bash
 sudo /opt/radeef/src/ops/new-tenant.sh --email ops@company.sa acme acme.radeef-sa.com 3003
 sudo -iu radeef /opt/radeef/src/ops/deploy.sh acme                     # الترحيلات + التشغيل
-sudo -u radeef node --env-file=/etc/radeef/acme.env /opt/radeef/src/scripts/create-admin.mjs owner@acme.sa
+sudo -u radeef node --env-file=/etc/radeef/acme.env /opt/radeef/src/scripts/create-admin.mjs owner@acme.sa --customer-admin
 ```
 يجب أن يشير DNS النطاق إلى السيرفر قبل التشغيل (لشهادة Let's Encrypt)، أو استخدم `--skip-certbot` ثم أعد تشغيله بـ `--nginx-only` لاحقًا. في مسار Docker أضف خدمة للمستأجر في `docker-compose.yml` أولًا.
 
@@ -334,7 +335,7 @@ sudo -u radeef node --env-file=/etc/radeef/acme.env /opt/radeef/src/scripts/crea
 | مراجعة المستخدمين النشطين وسجل التدقيق | شهريًا |
 
 ### 3.8 تدوير الأسرار
-- **كلمة مرور مستخدم:** `node --env-file=/etc/radeef/<t>.env scripts/create-admin.mjs <email>` (يطبع كلمة مرور جديدة).
+- **كلمة مرور مستخدم:** `node --env-file=/etc/radeef/<t>.env scripts/create-admin.mjs <email>` (يطبع كلمة مرور جديدة، وينهي الجلسات، ويُسقط إقرار الهوية لحساب ليس من رديف). داخل التطبيق لا يضبط المسؤول كلمة مرور غيره: "إعادة ضبط بيانات الدخول" ترسل رابطاً لمرة واحدة لصاحب الحساب (DEC-PO-027).
 - **كلمة مرور قاعدة مستأجر:** `ALTER ROLE <t>_app PASSWORD '<new>';` ← حدّث `DATABASE_URL` ← أعد النشر (`deploy.sh --release <current> --skip-migrate <t>`) أو `pm2 reload <t> --update-env` / `docker compose up -d <t>`.
 - **SESSION_SECRET:** غيّره ثم أعد التشغيل؛ كل المستخدمين يسجلون الدخول من جديد.
 - **DATA_ENCRYPTION_KEY:** لا يُدوَّر بتغيير القيمة فقط (البيانات المشفرة القديمة ستصبح غير مقروءة)؛ يحتاج سكربت إعادة تشفير مخصصًا.
